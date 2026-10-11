@@ -29,6 +29,8 @@ _SESSION_CONFIRMATION_TOKENS = frozenset(
         "s",
         "session",
         "allow session",
+        "allow_session",
+        "allow_session_exact",
         "allow this session",
         "session allow",
     }
@@ -201,7 +203,8 @@ def confirmation_required_user_message(
         lines.append("Reply exactly yes to allow once, or no to cancel.")
     else:
         lines.append(
-            "Reply exactly yes to allow once, session to allow this tool for the "
-            "session, or no to cancel."
+            "Reply exactly yes or allow_once to allow once, session or "
+            "allow_session to allow this tool for the session, or no or deny "
+            "to cancel."
         )
     return "\n".join(str(redact_sensitive_text(line)[0]) for line in lines)

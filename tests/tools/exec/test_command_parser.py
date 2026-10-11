@@ -206,6 +206,35 @@ def test_is_read_only_exec_command_accepts_disclosure_safe_inspection(
 @pytest.mark.parametrize(
     "command",
     [
+        "ping -c 4 google.com",
+        "getent hosts google.com",
+    ],
+)
+def test_is_read_only_exec_command_accepts_bounded_network_diagnostics(
+    command: str,
+) -> None:
+    assert is_read_only_exec_command(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ping google.com",
+        "ping -c 11 google.com",
+        "ping -c invalid google.com",
+        "getent passwd",
+        "getent hosts --help",
+    ],
+)
+def test_is_read_only_exec_command_rejects_unbounded_network_commands(
+    command: str,
+) -> None:
+    assert not is_read_only_exec_command(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "ps aux",
         "docker info --format json",
         "docker ps -a",

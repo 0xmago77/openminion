@@ -266,7 +266,7 @@ def test_plan_review_preserves_plan_for_model_owned_reply() -> None:
 # classifies as `affirm` or `deny`. Verified against the real parser to
 # avoid mirroring its vocabulary in this test file.
 _PARSED_AFFIRM_INPUTS = ["yes", "Y", "YES", "y", "proceed", "confirm"]
-_PARSED_DENY_INPUTS = ["no", "n", "abort", "stop"]
+_PARSED_DENY_INPUTS = ["no", "n", "abort", "stop", "deny"]
 # the canonical parser classifies it as `deny`, so both gates fire.
 # Inputs the canonical parser classifies as `unclear` (NOT affirm/deny).
 # These should fall through and wipe the pending command.
@@ -276,7 +276,6 @@ _PARSED_UNCLEAR_INPUTS = [
     "nope",
     "ok",
     "okay",
-    "deny",
     "approve",
     "go ahead",
 ]

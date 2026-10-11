@@ -292,24 +292,6 @@ def test_provider_free_focus_permission_journey(
             {"preparation_digest": preparation_digest_value},
             "OPPC_FULL_EXACT_DENIED",
         )[0],
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "post-action-judgment",
-                    "function": {
-                        "name": "submit_output",
-                        "arguments": {
-                            "outcome": "halt",
-                            "reason": "operator denied exact blockchain send",
-                            "user_message": "OPPC_FULL_EXACT_DENIED",
-                            "confidence": 1.0,
-                        },
-                    },
-                }
-            ],
-        },
         *(
             {
                 "role": "assistant",
@@ -576,7 +558,7 @@ def test_provider_free_focus_permission_journey(
                         "tool blockchain.send_transaction for the deterministic "
                         "exact-approval floor check"
                     ),
-                    expected_markers=("OPPC_FULL_EXACT_DENIED",),
+                    expected_markers=("Confirmation denied. The action was not run.",),
                     requires_approval=True,
                     approval_reply="no",
                 ),

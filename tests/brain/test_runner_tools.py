@@ -1143,9 +1143,7 @@ def test_confirmation_replay_creates_once_grant_and_requires_reconfirm_after_use
                     },
                     "duration_options": [
                         "allow_once",
-                        "allow_until",
                         "allow_session",
-                        "allow_forever",
                         "deny",
                     ],
                 }
@@ -1154,13 +1152,13 @@ def test_confirmation_replay_creates_once_grant_and_requires_reconfirm_after_use
                     "Side effects: local",
                     "Reversibility: reversible",
                     "Reason: HIGH_RISK",
-                    "Choices: allow_once, allow_until, allow_session, allow_forever, deny",
+                    "Choices: allow_once, allow_session, deny",
                 ):
                     assert expected in (first.message or "")
 
                 second = runner.step(
                     session_id="s-runtime-confirm",
-                    user_input="yes",
+                    user_input="allow_once",
                     trace_id="t-runtime-confirm-2",
                 )
                 assert second.status == "done"
@@ -1175,6 +1173,16 @@ def test_confirmation_replay_creates_once_grant_and_requires_reconfirm_after_use
                 assert third.status == "waiting_user"
                 assert "confirm" in (third.message or "").lower()
                 assert "bypass" not in observed_permission_modes
+
+                denied = runner.step(
+                    session_id="s-runtime-confirm",
+                    user_input="deny",
+                    trace_id="t-runtime-confirm-4",
+                )
+                assert denied.status == "waiting_user"
+                assert denied.message == "Confirmation denied. The action was not run."
+                state_after_deny = runner._load_or_init_state("s-runtime-confirm")
+                assert state_after_deny.pending_confirmation_command is None
         finally:
             ctl.close()
 

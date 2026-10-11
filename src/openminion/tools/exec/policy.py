@@ -454,7 +454,9 @@ def _validate_command_against_policy(
     for segment in parsed.segments:
         executable = str(segment.argv[0])
         try:
-            resolved = ctx.policy.ensure_command_allowed(list(segment.argv))
+            resolved = ctx.policy.ensure_command_allowed(
+                list(segment.argv), confirm=ctx.confirm
+            )
         except ToolRuntimeError as exc:
             details = dict(exc.details or {})
             if executable == "mkdir":
