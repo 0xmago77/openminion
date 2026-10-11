@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from openminion.cli.commands.agent.delegation import (
     AgentDelegateRequest,
     request_from_slash_args,
@@ -356,7 +358,12 @@ def test_focus_delegate_parses_readonly_child_permission() -> None:
     assert request.child_permission_mode == "readonly"
 
 
-def test_visible_agent_delegate_command_uses_operator_seam(capsys, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "scope", [[], ["--parent-agent-id", "selected", "--session-id", "conversation-1"]]
+)
+def test_visible_agent_delegate_command_uses_operator_seam(
+    capsys, monkeypatch, scope
+) -> None:
     import openminion.cli.commands.agent.control as agents_mod
 
     seen: dict[str, object] = {}
@@ -404,6 +411,7 @@ def test_visible_agent_delegate_command_uses_operator_seam(capsys, monkeypatch) 
             "--child-permission-mode",
             "readonly",
             "--json",
+            *scope,
         ]
     )
     code = args.handler(args)
@@ -417,7 +425,8 @@ def test_visible_agent_delegate_command_uses_operator_seam(capsys, monkeypatch) 
     assert request.target_agent_id == "worker"
     assert request.instruction == "do work"
     assert request.child_permission_mode == "readonly"
-    assert seen["parent_agent_id"] == "parent"
+    assert seen["parent_agent_id"] == ("selected" if scope else "parent")
+    assert seen["session_id"] == ("conversation-1" if scope else "")
     assert seen["home_root"] == "/tmp/openminion-home"
 
 
@@ -506,3 +515,37 @@ def test_delegate_request_threads_runtime_resolver_to_a2a_builder(monkeypatch) -
     assert payload["ok"] is True
     assert seen["runtime_resolver"]() is runtime
     assert seen["approval_callback"] is approval_callback
+
+
+@pytest.mark.parametrize("action", ["list", "status", "result", "resume", "cancel"])
+def test_delegation_lifecycle_accepts_explicit_scope(action):
+    args = build_parser().parse_args(
+        [
+            "agent",
+            f"delegate-{action}",
+            *([] if action == "list" else ["--task-id", "task-1"]),
+            "--parent-agent-id",
+            "selected",
+            "--session-id",
+            "conversation-1",
+            "--json",
+        ]
+    )
+    assert args.parent_agent_id == "selected"
+    assert args.session_id == "conversation-1"
+
+
+def test_delegation_preserves_parent_position_session_flag():
+    args = build_parser().parse_args(
+        [
+            "agent",
+            "--session-id",
+            "conversation-1",
+            "delegate-list",
+            "--parent-agent-id",
+            "selected",
+            "--json",
+        ]
+    )
+    assert args.session_id == "conversation-1"
+    assert args.parent_agent_id == "selected"
