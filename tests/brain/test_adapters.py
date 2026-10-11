@@ -832,6 +832,56 @@ class ToolAdapterTests(unittest.TestCase):
             self.assertEqual(captured["path"], str(child / "accepted.txt"))
             self.assertEqual(captured["workspace_root"], str(child))
 
+    def test_tool_adapter_keeps_absolute_child_workspace_path(self) -> None:
+        from openminion.modules.brain.adapters.tool.workspace_policy import (
+            rebase_child_path_argument,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "parent"
+            child = parent / "openminion"
+            child.mkdir(parents=True)
+            target = child / "hello.py"
+            args = {"path": str(target)}
+
+            rebase_child_path_argument(args, parent=parent, child=child)
+
+            self.assertEqual(args["path"], str(target))
+
+    def test_exec_run_reports_missing_sandbox_before_policy_confirmation(self) -> None:
+        from openminion.modules.brain.adapters.tool.runtime import ToolAdapter
+        from openminion.modules.tool.plugin_api import PolicyDecision
+
+        class _TrackingPolicyAdapter:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def evaluate(self, **_kwargs: object) -> PolicyDecision:
+                self.calls += 1
+                return PolicyDecision(
+                    allowed=False,
+                    reason="approval required",
+                    code="CONFIRM_REQUIRED",
+                    requires_confirm=True,
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            policy_adapter = _TrackingPolicyAdapter()
+            adapter = ToolAdapter(
+                workspace_root=Path(tmp),
+                policy_adapter=policy_adapter,
+            )
+
+            result = adapter.execute(
+                command={"tool_name": "exec.run", "args": {"command": "echo hi"}},
+                session_id="s1",
+                trace_id="t1",
+            )
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error"]["code"], "SANDBOX_UNAVAILABLE")
+        self.assertEqual(policy_adapter.calls, 0)
+
     def test_tool_adapter_applies_added_roots_without_mutating_base_policy(
         self,
     ) -> None:

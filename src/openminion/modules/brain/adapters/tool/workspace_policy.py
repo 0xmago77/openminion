@@ -14,10 +14,11 @@ def rebase_child_path_argument(
     candidate = Path(raw_path).expanduser()
     if not raw_path or not candidate.is_absolute():
         return
+    resolved_candidate = candidate.resolve(strict=False)
+    if resolved_candidate.is_relative_to(child.resolve(strict=False)):
+        return
     try:
-        relative_path = candidate.resolve(strict=False).relative_to(
-            parent.resolve(strict=False)
-        )
+        relative_path = resolved_candidate.relative_to(parent.resolve(strict=False))
     except ValueError:
         return
     args["path"] = str(child / relative_path)

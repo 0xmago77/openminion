@@ -72,6 +72,7 @@ def test_os_adapter_returns_needs_user_on_confirm_required(tmp_path: Path):
     adapter = ToolAdapter(
         workspace_root=tmp_path,
         policy_adapter=RequireConfirmAdapter(),
+        sandbox_runner=object(),
     )
     result = adapter.execute(
         command={"tool_name": "exec.run", "args": {"command": "ls"}},

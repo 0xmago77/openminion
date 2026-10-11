@@ -548,6 +548,7 @@ class BrainRunner:
                 "trigger": str(trigger or "user_input"),
             },
         )
+        result: StepOutput | None = None
         try:
             result = run_until_idle_runner_lifecycle(
                 self,
@@ -560,11 +561,10 @@ class BrainRunner:
                 capture_identity=identity,
                 runtime_conversation_id=runtime_conversation_id,
             )
-            turn_id = _result_trace_id(result, effective_trace_id)
             result_status = str(result.status).strip().lower()
             self._emit_brain_operation(
                 session_id=session_id,
-                turn_id=turn_id,
+                turn_id=_result_trace_id(result, effective_trace_id),
                 operation="turn_finish",
                 status="error" if result_status in {"error", "failed"} else "ok",
                 extra={
@@ -586,13 +586,14 @@ class BrainRunner:
                 status="error",
                 extra={"entrypoint": "run", "brain_status": "error"},
             )
-            self._emit_failed_turn_outcome(
-                session_id=session_id,
-                entrypoint="run",
-                trace_id=effective_trace_id,
-                error=exc,
-                capture_identity=identity,
-            )
+            if result is None or result.terminal_capture_intent_receipt is None:
+                self._emit_failed_turn_outcome(
+                    session_id=session_id,
+                    entrypoint="run",
+                    trace_id=effective_trace_id,
+                    error=exc,
+                    capture_identity=identity,
+                )
             raise
         finally:
             self._telemetry_turn_active = previous_telemetry_turn_active
@@ -633,6 +634,7 @@ class BrainRunner:
                     "capability_category": str(capability_category or "").strip(),
                 },
             )
+        result: StepOutput | None = None
         try:
             result = run_step(
                 self,
@@ -675,13 +677,14 @@ class BrainRunner:
                     status="error",
                     extra={"entrypoint": "step", "brain_status": "error"},
                 )
-                self._emit_failed_turn_outcome(
-                    session_id=session_id,
-                    entrypoint="step",
-                    trace_id=effective_trace_id,
-                    error=exc,
-                    capture_identity=identity,
-                )
+                if result is None or result.terminal_capture_intent_receipt is None:
+                    self._emit_failed_turn_outcome(
+                        session_id=session_id,
+                        entrypoint="step",
+                        trace_id=effective_trace_id,
+                        error=exc,
+                        capture_identity=identity,
+                    )
             raise
         finally:
             if progress_callback is not None:
