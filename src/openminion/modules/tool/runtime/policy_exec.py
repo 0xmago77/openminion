@@ -125,7 +125,7 @@ class PolicyExecMixin:
                 details,
             )
 
-    def ensure_command_allowed(self, argv: list[str]) -> str:
+    def ensure_command_allowed(self, argv: list[str], *, confirm: bool = False) -> str:
         effective_argv = effective_command_argv(argv)
         if not effective_argv:
             raise _invalid_argument("cmd.run argv must include executable")
@@ -180,7 +180,7 @@ class PolicyExecMixin:
             )
 
         if mode == TOOL_EXEC_SECURITY_ALLOWLIST:
-            if exec_name not in allow and allow_pattern is None:
+            if exec_name not in allow and allow_pattern is None and not confirm:
                 raise ToolRuntimeError(
                     "POLICY_DENIED",
                     f"Denied by policy: command '{exec_name}' is not allowlisted",

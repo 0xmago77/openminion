@@ -882,6 +882,48 @@ class ToolAdapterTests(unittest.TestCase):
         self.assertEqual(result["error"]["code"], "SANDBOX_UNAVAILABLE")
         self.assertEqual(policy_adapter.calls, 0)
 
+    @unittest.skipIf(os.name == "nt", "host exec smoke uses POSIX printf")
+    def test_exec_run_confirmation_replay_carries_through_command_allowlist(
+        self,
+    ) -> None:
+        import copy
+
+        from openminion.modules.brain.adapters.tool.runtime import ToolAdapter
+        from openminion.modules.tool import DEFAULT_POLICY, Policy
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            policy_raw = copy.deepcopy(DEFAULT_POLICY)
+            policy_raw["workspace_root"] = str(workspace)
+            policy_raw["paths"]["read_allow"] = [str(workspace)]
+            policy_raw["paths"]["write_allow"] = [str(workspace)]
+            policy_raw["exec"]["host_enabled"] = True
+            adapter = ToolAdapter(
+                workspace_root=workspace,
+                policy=Policy(raw=policy_raw),
+            )
+            approvals: list[str] = []
+            adapter.set_approval_callback(
+                lambda tool_name, *_args: approvals.append(tool_name) or True
+            )
+            result = adapter.execute(
+                command={
+                    "tool_name": "exec.run",
+                    "args": {
+                        "command": "printf approved",
+                        "workdir": str(workspace),
+                    },
+                    "inputs": {"permission_mode": "ask"},
+                },
+                session_id="issue-239",
+                trace_id="issue-239",
+            )
+            adapter.close()
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(approvals, ["exec.run"])
+        self.assertIn("approved", result["summary"])
+
     def test_tool_adapter_applies_added_roots_without_mutating_base_policy(
         self,
     ) -> None:

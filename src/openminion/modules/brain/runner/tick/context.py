@@ -81,8 +81,12 @@ def _parse_confirmation_response(
 ) -> str:
     from ...loop.tools.confirmation import requires_individual_confirmation
 
+    reply = str(text or "").strip().lower()
+    if reply == "allow_once":
+        return BRAIN_CONFIRM_RESPONSE_AFFIRM
+    if reply == "deny":
+        return BRAIN_CONFIRM_RESPONSE_DENY
     if requires_individual_confirmation(command):
-        reply = str(text or "").strip().lower()
         if reply == "yes":
             return BRAIN_CONFIRM_RESPONSE_AFFIRM
         if reply == "no":

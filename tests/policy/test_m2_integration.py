@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from openminion.modules.brain.schemas import ToolCommand
 from openminion.modules.policy.adapters.brain import PolicyCtlBrainAdapter
-from openminion.modules.policy.models import PolicyConfig, PolicyGrantInput
+from openminion.modules.policy.models import PolicyConfig, PolicyGrantInput, RiskSpec
 from openminion.modules.policy.runtime.service import PolicyCtl
 
 
@@ -37,6 +40,48 @@ def test_brain_adapter_require_confirm_for_destructive_tool(tmp_path):
         assert result.code in {"HIGH_RISK", "DEFAULT_CONFIRM"}
     finally:
         adapter.close()
+
+
+def test_brain_adapter_classifies_bounded_exec_diagnostic_as_read_only(tmp_path):
+    ctl = PolicyCtl.with_sqlite(tmp_path / "exec-policy.db")
+    ctl.register_risk(
+        "exec.run",
+        RiskSpec(
+            risk_class="destructive",
+            side_effects="local",
+            reversibility="irreversible",
+            default_confirm=True,
+        ),
+    )
+    adapter = PolicyCtlBrainAdapter(ctl)
+    try:
+        result = adapter.evaluate(
+            command=ToolCommand(
+                title="Ping Google",
+                tool_name="exec.run",
+                args={"command": "ping -c 4 google.com"},
+                risk_level="high",
+            ),
+            working_state=SimpleNamespace(
+                session_id="sess-1",
+                agent_id="agent-1",
+                trace_id="trace-1",
+                permission_mode="ask",
+                permission_overrides={},
+            ),
+            session_context={},
+        )
+
+        assert result.outcome == "ALLOW"
+        assert result.policy_facts["risk"] == {
+            "risk_class": "read",
+            "side_effects": "none",
+            "reversibility": "reversible",
+            "default_confirm": False,
+            "sensitive_targets": [],
+        }
+    finally:
+        ctl.close()
 
 
 def test_brain_adapter_allows_with_active_grant(tmp_path):

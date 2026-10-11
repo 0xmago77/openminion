@@ -3,6 +3,7 @@ import shlex
 from typing import Any
 
 from openminion.modules.tool.commands import normalize_cd_prefixed_command
+from openminion.modules.tool.errors import ToolRuntimeError
 
 from .policy import Policy
 from .policy_normalization import canonical_tool_name
@@ -43,7 +44,16 @@ def run_policy_preflight(
             argv = shlex.split(raw_command) if raw_command else []
         else:
             argv = list(args.get("argv", []))
-        policy.ensure_command_allowed(argv)
+        try:
+            policy.ensure_command_allowed(argv, confirm=confirm)
+        except ToolRuntimeError as exc:
+            if (
+                exc.code != "POLICY_DENIED"
+                or exc.details.get("rule") != "commands.allow"
+            ):
+                raise
+            policy.ensure_exec_allowed(argv=argv, workspace=workspace, confirm=confirm)
+            raise
         policy.ensure_exec_allowed(argv=argv, workspace=workspace, confirm=confirm)
         match = detect_dangerous_command(argv, cwd=args.get("cwd"))
         policy.ensure_dangerous_allowed(
