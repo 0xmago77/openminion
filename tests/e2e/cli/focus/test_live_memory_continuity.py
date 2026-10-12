@@ -31,6 +31,7 @@ def test_live_focus_memory_survives_distinct_session(focus_probe: FocusProbe) ->
                 scenario_id="memory_continuity_teach",
                 prompt=teach_prompt,
                 expected_markers=("stored",),
+                requires_approval=True,
                 timeout=240,
                 include_project_context=False,
             ),
