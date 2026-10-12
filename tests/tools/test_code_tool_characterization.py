@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -370,7 +371,7 @@ def test_failed_second_patch_hunk_preserves_original(tmp_path):
     result = _h_patch(
         {
             "path": "partial.txt",
-            "patch": "--- partial.txt\n+++ partial.txt\n@@ -1,2 +1,2 @@\n-one\n+changed\n two\n@@ -9,2 +9,2 @@\n absent\n-ten\n+newten\n",
+            "patch": "--- partial.txt\n+++ partial.txt\n@@ -1,2 +1,2 @@\n-one\n+changed\n two\n@@ -9,2 +9,2 @@\n nine\n-missing\n+newten\n",
         },
         ctx,
     )
@@ -382,6 +383,7 @@ def test_failed_second_patch_hunk_preserves_original(tmp_path):
 @pytest.mark.parametrize(
     "name,pattern", [("ordinary.txt", "-needle"), ("a:b.txt", "needle")]
 )
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
 def test_grep_literal_dash_and_colon_paths(tmp_path, name, pattern):
     ctx = _ctx(tmp_path)
     (ctx.workspace / name).write_text("-needle\n")
@@ -404,6 +406,8 @@ def test_grep_literal_dash_and_colon_paths(tmp_path, name, pattern):
 def test_recursive_code_tools_respect_denied_descendants(tmp_path, tool, args):
     import json
 
+    if tool is _h_grep and shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
     ctx = _ctx(tmp_path)
     private = ctx.workspace / "private"
     private.mkdir()
@@ -411,7 +415,10 @@ def test_recursive_code_tools_respect_denied_descendants(tmp_path, tool, args):
     ctx.policy.raw["paths"]["deny"] = [str(private)]
     result = tool({"path": ".", **args}, ctx)
     assert "secret.py" not in json.dumps(result)
-    if result["ok"]:
+    if tool is _h_symbol_find:
+        assert result["error"]["code"] == "NOT_FOUND"
+    else:
+        assert result["ok"] is True
         assert "hidden_symbol" not in json.dumps(
             result.get("matches", result.get("repo_map", result.get("repo_index", {})))
         )

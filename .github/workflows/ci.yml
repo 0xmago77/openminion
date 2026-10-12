@@ -254,6 +254,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
+      - name: Install code-search test dependency (3.11)
+        if: matrix.python-version == '3.11'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ripgrep
+
       - name: Bootstrap repo venv (3.11 package suite)
         if: matrix.python-version == '3.11'
         shell: bash

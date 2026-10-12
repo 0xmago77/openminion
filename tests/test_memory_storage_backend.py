@@ -188,19 +188,18 @@ def test_memory_backend_edit_anchor_errors(tmp_path: Path):
     assert ambiguous_exc.value.code == "AMBIGUOUS"
 
 
-def test_memory_backend_trash_file_and_directory(tmp_path: Path):
+def test_memory_backend_trash_preserves_unsupported_file_and_directory(tmp_path: Path):
     backend, workspace = _backend(tmp_path)
     file_target = workspace / "alpha.txt"
     dir_target = workspace / "nested"
     backend.write(str(file_target), "alpha")
     backend.write(str(dir_target / "beta.txt"), "beta")
 
-    assert backend.trash(str(file_target)) is True
-    assert not backend.exists(str(file_target))
-
-    assert backend.trash(str(dir_target)) is True
-    assert not backend.exists(str(dir_target))
-    assert not backend.exists(str(dir_target / "beta.txt"))
+    for target in (file_target, dir_target):
+        with pytest.raises(ToolRuntimeError, match="recoverable trash is unavailable"):
+            backend.trash(str(target))
+    assert backend.read(str(file_target)).content == "alpha"
+    assert backend.read(str(dir_target / "beta.txt")).content == "beta"
 
 
 def test_memory_backend_recursive_list_skips_hidden_by_default(tmp_path: Path):

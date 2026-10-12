@@ -494,13 +494,16 @@ def test_trash_file_removes_target(tmp_path: Path):
     assert not target.exists()
 
 
-def test_trash_directory_moves_to_home_trash(
+def test_trash_directory_uses_recoverable_adapter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     home = tmp_path / "home"
     trash_dir = home / ".Trash"
     trash_dir.mkdir(parents=True)
-    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(
+        "send2trash.send2trash",
+        lambda path: Path(path).rename(trash_dir / Path(path).name),
+    )
 
     ctx = _ctx(tmp_path)
     target = ctx.workspace / "nested"
@@ -537,7 +540,7 @@ def test_edit_file_keeps_exec_error_on_read_failure(tmp_path: Path):
     target = ctx.workspace / "alpha.txt"
     target.write_text("alpha", encoding="utf-8")
 
-    with mock.patch.object(Path, "read_text", side_effect=OSError("boom")):
+    with mock.patch.object(Path, "open", side_effect=OSError("boom")):
         result = _h_edit_file(
             {
                 "path": "alpha.txt",
