@@ -48,6 +48,7 @@ class ExecToolDeclaration:
     dangerous: bool = False
     idempotent: bool = True
     block_under_readonly: bool = False
+    availability_check: Callable[[dict[str, Any], RuntimeContext], None] | None = None
 
 
 def _sync_compat_globals() -> None:
@@ -144,6 +145,7 @@ def _register_tool(
             tags=("plugin", "exec"),
             capabilities=("exec", "process", "pty"),
             block_under_readonly=declaration.block_under_readonly,
+            availability_check=declaration.availability_check,
         )
     )
 
@@ -158,6 +160,7 @@ def register(registry: ToolRegistry) -> None:
             dangerous=True,
             idempotent=False,
             block_under_readonly=True,
+            availability_check=_handlers._check_exec_run_availability,
         ),
         ExecToolDeclaration(
             name=MODEL_EXEC_POLL,

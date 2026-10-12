@@ -139,7 +139,7 @@ def test_allowlist_denies_ungranted_mutation(policy_allowlist, argv):
     assert excinfo.value.code == "POLICY_DENIED"
 
 
-def test_preflight_denies_unallowlisted_exec_before_confirmation(tmp_path):
+def test_preflight_requests_confirmation_for_unallowlisted_exec(tmp_path):
     policy = _exec_policy_for_preflight(tmp_path)
 
     with pytest.raises(ToolRuntimeError) as excinfo:
@@ -156,10 +156,34 @@ def test_preflight_denies_unallowlisted_exec_before_confirmation(tmp_path):
             workspace=tmp_path,
         )
 
+    assert excinfo.value.code == "CONFIRM_REQUIRED"
+    assert excinfo.value.details["rule"] == "exec.ask.on_miss"
+
+
+def test_preflight_allows_exact_unallowlisted_exec_after_confirmation(tmp_path):
+    policy = _exec_policy_for_preflight(tmp_path)
+
+    run_policy_preflight(
+        policy=policy,
+        tool_spec=_exec_tool_spec(),
+        tool_name="exec.run",
+        args={"command": "echo approved", "workdir": str(tmp_path)},
+        effective_scope="POWER_USER",
+        confirm=True,
+        workspace=tmp_path,
+    )
+
+
+@pytest.mark.parametrize("argv", [["rm", "file"], ["pip", "install", "demo"]])
+def test_confirmation_does_not_override_hard_command_denials(policy_allowlist, argv):
+    with pytest.raises(ToolRuntimeError) as excinfo:
+        policy_allowlist.ensure_command_allowed(argv, confirm=True)
+
     assert excinfo.value.code == "POLICY_DENIED"
-    assert excinfo.value.details["rule"] == "commands.allow"
-    assert excinfo.value.details["command"] == "mkdir"
-    assert excinfo.value.details["suggested_tool"] == "file.write"
+    assert excinfo.value.details["rule"] in {
+        "commands.deny_exact",
+        "commands.install",
+    }
 
 
 def test_preflight_normalizes_cd_prefix_before_command_check(tmp_path):

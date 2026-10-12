@@ -482,7 +482,7 @@ class IntegrationBrainV1Tests(unittest.TestCase):
             else:
                 self.assertEqual(no_output.working_state.cursor, 0)
                 self.assertEqual(no_output.working_state.phase, "CLARIFY")
-                self.assertIn(
-                    "post-confirmation judgment is unavailable",
-                    str(no_output.message or "").lower(),
+                self.assertEqual(
+                    str(no_output.message or ""),
+                    "Confirmation denied. The action was not run.",
                 )

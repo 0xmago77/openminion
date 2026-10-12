@@ -21,6 +21,8 @@ from openminion.modules.tool.plugin_api import (
     is_policy_authorization_pair,
 )
 from openminion.modules.tool.registry import ToolRegistry, ToolSpec
+from openminion.tools.exec.command_parser import is_read_only_exec_command
+from openminion.tools.exec.process import resolve_shell_family
 from ..runtime.action_policy import policy_config_from_action_policy
 from ..constants import (
     POLICY_DECISION_ALLOW,
@@ -32,6 +34,7 @@ from ..constants import (
     POLICY_RISK_DESTRUCTIVE,
     POLICY_RISK_READ,
     POLICY_RISK_WRITE,
+    POLICY_REVERSIBILITY_REVERSIBLE,
     POLICY_REVERSIBILITY_UNKNOWN,
     POLICY_SIDE_EFFECT_NONE,
     POLICY_SUBJECT_ID_LOCAL,
@@ -41,8 +44,10 @@ from ..models import (
     PolicyConfig,
     PolicyMode,
     PolicyRule,
+    Reversibility,
     RiskClass,
     RiskSpec,
+    SideEffects,
     build_policy_facts,
 )
 from ..runtime.service import PolicyCtl
@@ -50,6 +55,7 @@ from ..runtime.service import PolicyCtl
 _LOGGER = logging.getLogger(__name__)
 _CLARIFICATION_DECISIONS = {"REQUIRE_CLARIFICATION", "CLARIFY", "ASK"}
 _ALLOW_DECISIONS = {"ALLOW", "LOG_ONLY_ALLOW", "DISABLED"}
+_BRAIN_CONFIRMATION_CHOICES = frozenset({"allow_once", "allow_session", "deny"})
 
 
 class PolicyCheckResult:
@@ -210,6 +216,25 @@ class PolicyCtlBrainAdapter:
         )
 
     @staticmethod
+    def _trusted_risk_override_for_command(command: Any) -> RiskSpec | None:
+        if str(getattr(command, "tool_name", "") or "").strip() != "exec.run":
+            return None
+        args = getattr(command, "args", {}) or {}
+        if not isinstance(args, Mapping):
+            return None
+        command_text = str(args.get("command", "") or "")
+        if not is_read_only_exec_command(
+            command_text, shell_family=resolve_shell_family()
+        ):
+            return None
+        return RiskSpec(
+            risk_class=cast(RiskClass, POLICY_RISK_READ),
+            side_effects=cast(SideEffects, POLICY_SIDE_EFFECT_NONE),
+            reversibility=cast(Reversibility, POLICY_REVERSIBILITY_REVERSIBLE),
+            default_confirm=False,
+        )
+
+    @staticmethod
     def _is_policy_disabled(*, config_overrides: PolicyConfig | None) -> bool:
         return (
             config_overrides is not None
@@ -239,6 +264,8 @@ class PolicyCtlBrainAdapter:
             "ctx": ctx,
             "risk_override": self._risk_override_for_command(command),
         }
+        if trusted_risk := self._trusted_risk_override_for_command(command):
+            check_kwargs["trusted_risk_override"] = trusted_risk
         tool_name = str(getattr(command, "tool_name", "") or "").strip()
         tool, method = self._tool_method(tool_name)
         if is_policy_authorization_pair(tool, method):
@@ -317,6 +344,11 @@ class PolicyCtlBrainAdapter:
                 for choice in confirm_request.get("suggested_choices", ()) or ()
                 if isinstance(choice, dict) and str(choice.get("action", "") or "")
             ]
+        duration_options = [
+            option
+            for option in duration_options
+            if option in _BRAIN_CONFIRMATION_CHOICES
+        ]
         return PolicyDecision(
             outcome=cast(Any, outcome),
             explanation=str(getattr(decision, "reason", "") or ""),

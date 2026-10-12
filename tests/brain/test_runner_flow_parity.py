@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,12 @@ from openminion.modules.brain.adapters.session import LocalSessionStore
 from openminion.modules.brain.adapters.tool import LocalToolAdapter
 from openminion.modules.brain.runner import RunnerOptions, BrainRunner
 from openminion.modules.llm import ProviderError
+from openminion.modules.session.capture import (
+    RuntimeTerminalCaptureWriter,
+    build_capture_identity,
+)
+from openminion.modules.storage.runtime.migrations import run_migrations
+from openminion.modules.storage.runtime.session_store import SessionStore
 from openminion.modules.brain.schemas import (
     AgentBudgets,
     AgentDefaults,
@@ -311,6 +318,88 @@ def test_failed_turn_evidence_failure_does_not_mask_provider_error() -> None:
             )
 
         assert raised.value is failure
+
+
+@pytest.mark.parametrize("entrypoint", ["run", "step"])
+def test_post_commit_provider_failure_does_not_rewrite_terminal_outcome(
+    entrypoint: str,
+) -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    run_migrations(connection)
+    sessions = SessionStore(connection)
+    sessions.resolve_session(
+        agent_id="test-agent",
+        channel="console",
+        target="local",
+        session_id="runtime-session",
+    )
+    identity = build_capture_identity(
+        runtime_session_id="runtime-session",
+        root_turn_id="root-turn",
+    )
+    runner = BrainRunner(
+        profile=_profile(),
+        session_api=_StorageShapeSessionAPI(),
+        options=RunnerOptions(metactl_enabled=False),
+        terminal_capture_writer=RuntimeTerminalCaptureWriter(sessions),
+    )
+    result = StepOutput(
+        session_id="brain-session",
+        status="done",
+        working_state=WorkingState(
+            session_id="brain-session",
+            agent_id="test-agent",
+            trace_id="trace-1",
+            runtime_session_id=identity.runtime_session_id,
+            root_turn_id=identity.root_turn_id,
+            capture_event_id=identity.event_id,
+            capture_id=identity.capture_id,
+            budgets_remaining=BudgetCounters(
+                ticks=1,
+                tool_calls=1,
+                a2a_calls=0,
+                tokens=1,
+                time_ms=1,
+            ),
+        ),
+    )
+    failure = ProviderError("feedback provider failed", code="PROVIDER_ERROR")
+    patch_target = (
+        "run_until_idle_runner_lifecycle" if entrypoint == "run" else "run_step"
+    )
+
+    with (
+        patch(
+            f"openminion.modules.brain.runner.coordinator.{patch_target}",
+            return_value=result,
+        ),
+        patch.object(
+            runner,
+            "_apply_typed_memory_outcome",
+            side_effect=failure,
+        ),
+        pytest.raises(ProviderError) as raised,
+    ):
+        if entrypoint == "run":
+            runner.run(
+                session_id="brain-session",
+                runtime_session_id=identity.runtime_session_id,
+                root_turn_id=identity.root_turn_id,
+                capture_event_id=identity.event_id,
+                capture_id=identity.capture_id,
+            )
+        else:
+            runner.step(
+                session_id="brain-session",
+                capture_identity=identity,
+            )
+
+    assert raised.value is failure
+    stored = sessions.get_event_by_canonical_id(identity.event_id)
+    assert stored is not None
+    assert stored.payload["status"] == "done"
+    assert stored.payload["entrypoint"] == entrypoint
 
 
 def test_failed_standalone_step_uses_its_trace() -> None:

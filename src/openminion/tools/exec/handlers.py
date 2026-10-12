@@ -10,6 +10,7 @@ from openminion.modules.tool.contracts.model_ids import (
 )
 from openminion.modules.tool.runtime.context import RuntimeContext
 from openminion.modules.tool.family.events import emit_family_event
+from openminion.modules.tool.errors import ToolRuntimeError
 
 from .constants import (
     EXEC_PROCESS_STATUS_KILLED,
@@ -76,6 +77,34 @@ def _gateway_fallback_policy(command: str, ctx: RuntimeContext) -> dict[str, str
     return {"host": "gateway", "security": "full", "ask": "on-miss"}
 
 
+def _exec_run_sandbox_unavailable(params: ExecRunArgs, ctx: RuntimeContext) -> bool:
+    return (
+        not _security_lab_required(ctx)
+        and params.host == "sandbox"
+        and _sandbox_runner_for_ctx(ctx) is None
+        and _sandbox_session_manager_for_ctx(ctx) is None
+    )
+
+
+def _check_exec_run_availability(args: dict[str, Any], ctx: RuntimeContext) -> None:
+    params = ExecRunArgs.model_validate(args)
+    if _exec_run_sandbox_unavailable(params, ctx) and not _host_execution_enabled(ctx):
+        raise ToolRuntimeError(
+            "SANDBOX_UNAVAILABLE",
+            (
+                "sandbox execution is not configured; use structured file tools, "
+                "configure a sandbox, or restart with --allow-unsandboxed-exec"
+            ),
+            {
+                "host": params.host,
+                "host_warning": (
+                    "Unsandboxed commands use the OpenMinion process's OS "
+                    "permissions and are not confined to workspace roots."
+                ),
+            },
+        )
+
+
 def _encode_keys(keys: Iterable[str]) -> bytes:
     output = bytearray()
     for raw in keys:
@@ -139,12 +168,7 @@ def _h_exec_run(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
         "include_evidence_artifact": params.include_evidence_artifact,
     }
     emit_family_event(ctx, event="tool.requested", payload={"request": request_payload})
-    if (
-        not security_lab_required
-        and params.host == "sandbox"
-        and _sandbox_runner_for_ctx(ctx) is None
-        and _sandbox_session_manager_for_ctx(ctx) is None
-    ):
+    if _exec_run_sandbox_unavailable(params, ctx):
         return _sandbox_error_result(
             ctx=ctx,
             request_payload=request_payload,

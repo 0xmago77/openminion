@@ -1,9 +1,8 @@
 import fnmatch
+from io import StringIO
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import cast
 
-from openminion.modules.tool.contracts.schemas import ErrorCode
 from openminion.modules.tool.errors import ToolRuntimeError
 
 from .protocol import (
@@ -14,13 +13,14 @@ from .protocol import (
     ListResult,
     MatchInfo,
     ReadResult,
+    RangeResult,
     SearchMatch,
     SearchResult,
     WriteResult,
 )
 from .searching import compile_line_matcher, search_snippet
-
-_LEGACY_AMBIGUOUS_CODE = cast(ErrorCode, "AMBIGUOUS")
+from .text import edit_content, encode_text, select_range
+from openminion.tools.file.constants import FILE_SEARCH_MAX_SCANNED_FILES
 
 
 class InMemoryStorageBackend:
@@ -156,6 +156,16 @@ class InMemoryStorageBackend:
             truncated=truncated,
         )
 
+    def read_range(
+        self, path: str, *, start_line: int, end_line: int, max_chars: int
+    ) -> RangeResult:
+        if not self.is_file(path):
+            raise ToolRuntimeError("NOT_FOUND", f"file does not exist: {path}")
+        with StringIO(self._files[self._normalize(path)], newline=None) as handle:
+            return select_range(
+                handle, start_line=start_line, end_line=end_line, max_chars=max_chars
+            )
+
     def write(
         self,
         path: str,
@@ -164,6 +174,7 @@ class InMemoryStorageBackend:
         append: bool = False,
         create_dirs: bool = True,
     ) -> WriteResult:
+        encoded = encode_text(content)
         normalized = self._normalize(path)
         parent = self._normalize(Path(normalized).parent)
         if create_dirs:
@@ -176,7 +187,7 @@ class InMemoryStorageBackend:
         self._ensure_dir(parent)
         return WriteResult(
             path=normalized,
-            bytes_written=len(content.encode("utf-8")),
+            bytes_written=len(encoded),
             mode="append" if append else "write",
         )
 
@@ -238,26 +249,33 @@ class InMemoryStorageBackend:
             case_sensitive=case_sensitive,
         )
 
-        glob_name = Path(file_glob).name or "*"
         matches: list[SearchMatch] = []
         scanned_files = 0
+        truncated = False
         for entry, content in sorted(self._files.items()):
-            if len(matches) >= max_matches:
-                break
             if not Path(entry).is_relative_to(root):
                 continue
             name = Path(entry).name
             if not include_hidden and self._has_hidden_component(entry, root):
                 continue
-            if not fnmatch.fnmatchcase(name, glob_name):
+            relative = Path(entry).relative_to(root).as_posix()
+            if not any(
+                fnmatch.fnmatch(value, file_glob) for value in (name, entry, relative)
+            ):
                 continue
             if path_filter is not None and not path_filter(entry):
                 continue
+            if scanned_files >= FILE_SEARCH_MAX_SCANNED_FILES:
+                truncated = True
+                break
             scanned_files += 1
             lines = content.splitlines()
             for line_no, line in enumerate(lines, start=1):
                 if not _matches(line):
                     continue
+                if len(matches) >= max_matches:
+                    truncated = True
+                    break
                 matches.append(
                     SearchMatch(
                         path=entry,
@@ -270,12 +288,13 @@ class InMemoryStorageBackend:
                         ),
                     )
                 )
-                if len(matches) >= max_matches:
-                    break
+            if truncated:
+                break
         return SearchResult(
             matches=matches,
             count=len(matches),
             scanned_files=scanned_files,
+            truncated=truncated,
         )
 
     def edit(
@@ -292,33 +311,8 @@ class InMemoryStorageBackend:
             raise ToolRuntimeError("INVALID_ARGUMENT", "path is not a file")
 
         content = self._files[normalized]
-        operations_applied = 0
-        for operation in operations:
-            old_text = operation.old_text
-            new_text = operation.new_text
-            count = content.count(old_text)
-            if count == 0:
-                raise ToolRuntimeError(
-                    "NOT_FOUND",
-                    f"anchor not found: {old_text[:60]!r}",
-                )
-            if count > 1:
-                raise ToolRuntimeError(
-                    _LEGACY_AMBIGUOUS_CODE,
-                    f"anchor matches {count} times: {old_text[:60]!r}",
-                )
-            if operation.op == "replace":
-                content = content.replace(old_text, new_text, 1)
-            elif operation.op == "insert_before":
-                content = content.replace(old_text, new_text + "\n" + old_text, 1)
-            elif operation.op == "insert_after":
-                content = content.replace(old_text, old_text + "\n" + new_text, 1)
-            else:
-                raise ToolRuntimeError(
-                    "INVALID_ARGUMENT",
-                    f"unknown edit operation: {operation.op}",
-                )
-            operations_applied += 1
+        content = edit_content(content, operations)
+        operations_applied = len(operations)
 
         if not dry_run:
             self._files[normalized] = content
@@ -333,24 +327,10 @@ class InMemoryStorageBackend:
         normalized = self._normalize(path)
         if not self.exists(normalized):
             raise ToolRuntimeError("NOT_FOUND", f"path does not exist: {path}")
-        if self.is_file(normalized):
-            del self._files[normalized]
-            return True
-
-        to_delete_files = [
-            entry for entry in self._files if Path(entry).is_relative_to(normalized)
-        ]
-        for entry in to_delete_files:
-            del self._files[entry]
-
-        to_delete_dirs = [
-            entry
-            for entry in self._dirs
-            if entry == normalized or Path(entry).is_relative_to(normalized)
-        ]
-        for entry in to_delete_dirs:
-            self._dirs.discard(entry)
-        return True
+        raise ToolRuntimeError(
+            "INVALID_ARGUMENT",
+            "recoverable trash is unavailable for the memory backend",
+        )
 
     def exists(self, path: str) -> bool:
         normalized = self._normalize(path)

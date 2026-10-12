@@ -1,11 +1,39 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-08
+Last updated: 2026-10-12
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+## Current package line - 2026-10-12
+
+- Generalize approval-bound blockchain operations with atomic, session-safe
+  preparations, durable lifecycle facts, and optional read-only child-agent
+  delegation for research and resolution.
+- Preserve exact agent and session delegation scope across CLI and Desktop
+  requests while retaining unscoped CLI defaults.
+- Fix child-workspace path handling, detect unavailable sandbox execution before
+  approval, and preserve canonical terminal outcomes when later provider work
+  fails.
+- Classify bounded network diagnostics as read-only, turn command allowlist
+  misses into exact approval requests, preserve denylist and install blocks,
+  and stop cleanly after denial.
+- Make file trash recoverable through Send2Trash; fail without deletion when
+  recovery is unavailable, including the memory backend.
+- Preserve original bytes on invalid UTF-8 writes and edits, and retain newline
+  sequences outside edited spans.
+- Return accurate large-file line ranges and search completeness, and honor
+  search-root-relative globs. A range starting beyond EOF now fails explicitly.
+- Preserve non-secret configuration settings during export while removing
+  credential headers and nested channel secrets.
+- Preflight patch hunks before mutation, handle grep patterns beginning with a
+  dash and filenames containing colons, and enforce descendant read policies
+  across code search, maps, indexes and symbol discovery.
+- Request complete unsigned cross-platform runtime binaries after final PyPI
+  releases and require public checksum readback while stable binary promotion
+  remains protected by signing and qualification gates.
 
 ## Current package line - 2026-10-08
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -360,3 +361,80 @@ def test_patch_uses_context_metadata_cwd_for_relative_paths(tmp_path: Path) -> N
         "hunk_count": 1,
     }
     assert target.read_text(encoding="utf-8") == "one\nthree\n"
+
+
+def test_failed_second_patch_hunk_preserves_original(tmp_path):
+    ctx = _ctx(tmp_path)
+    target = ctx.workspace / "partial.txt"
+    original = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n"
+    target.write_text(original)
+    result = _h_patch(
+        {
+            "path": "partial.txt",
+            "patch": "--- partial.txt\n+++ partial.txt\n@@ -1,2 +1,2 @@\n-one\n+changed\n two\n@@ -9,2 +9,2 @@\n nine\n-missing\n+newten\n",
+        },
+        ctx,
+    )
+    assert result["ok"] is False
+    assert target.read_text() == original
+    assert sorted(p.name for p in ctx.workspace.iterdir()) == ["partial.txt"]
+
+
+@pytest.mark.parametrize(
+    "name,pattern", [("ordinary.txt", "-needle"), ("a:b.txt", "needle")]
+)
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_grep_literal_dash_and_colon_paths(tmp_path, name, pattern):
+    ctx = _ctx(tmp_path)
+    (ctx.workspace / name).write_text("-needle\n")
+    (ctx.workspace / "false-positive.txt").write_text("edle\n")
+    result = _h_grep({"path": ".", "pattern": pattern}, ctx)
+    assert result["ok"] is True
+    assert result["count"] == 1
+    assert result["matches"][0]["file"] == str(ctx.workspace / name)
+
+
+@pytest.mark.parametrize(
+    "tool,args",
+    [
+        (_h_grep, {"pattern": "hidden_symbol"}),
+        (_h_repo_map, {}),
+        (_h_repo_index, {}),
+        (_h_symbol_find, {"symbol": "hidden_symbol"}),
+    ],
+)
+def test_recursive_code_tools_respect_denied_descendants(tmp_path, tool, args):
+    import json
+
+    if tool is _h_grep and shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+    ctx = _ctx(tmp_path)
+    private = ctx.workspace / "private"
+    private.mkdir()
+    (private / "secret.py").write_text("def hidden_symbol():\n    pass\n")
+    ctx.policy.raw["paths"]["deny"] = [str(private)]
+    result = tool({"path": ".", **args}, ctx)
+    assert "secret.py" not in json.dumps(result)
+    if tool is _h_symbol_find:
+        assert result["error"]["code"] == "NOT_FOUND"
+    else:
+        assert result["ok"] is True
+        assert "hidden_symbol" not in json.dumps(
+            result.get("matches", result.get("repo_map", result.get("repo_index", {})))
+        )
+
+
+def test_repo_map_does_not_reuse_cache_after_policy_change(tmp_path):
+    ctx = _ctx(tmp_path)
+    (ctx.workspace / "secret.py").write_text("def hidden_symbol():\n    pass\n")
+    assert "hidden_symbol" in _h_repo_map({"path": "."}, ctx)["repo_map"]
+    ctx.policy.raw["paths"]["deny"] = [str(ctx.workspace / "secret.py")]
+    assert "hidden_symbol" not in _h_repo_map({"path": "."}, ctx)["repo_map"]
+
+
+def test_symbol_find_accepts_an_explicit_file(tmp_path):
+    ctx = _ctx(tmp_path)
+    (ctx.workspace / "a:b.py").write_text("def exact_symbol():\n    pass\n")
+    result = _h_symbol_find({"path": "a:b.py", "symbol": "exact_symbol"}, ctx)
+    assert result["ok"] is True
+    assert result["matches"][0]["start_line"] == 1

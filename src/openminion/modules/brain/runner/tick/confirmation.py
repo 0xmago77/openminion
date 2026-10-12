@@ -4,7 +4,6 @@ from typing import Any
 
 from ...constants import (
     BRAIN_STATE_ACTIVE,
-    BRAIN_STATE_DONE,
     BRAIN_STATE_WAITING_USER,
 )
 from ...loop.tools.budget_extension import (
@@ -20,13 +19,7 @@ from ...loop.tools.confirmation import (
 )
 from ...loop.tools.direct_reasons import is_explicit_direct_tool_reason
 from ...diagnostics.transitions import set_status_unchecked, transition
-from ...execution.continuation import continuation_choice_message
-from ...execution import (
-    apply_post_action_judgment,
-    clear_post_action_user_message,
-    final_close_message,
-    transition_to_replan_state,
-)
+from ...execution import clear_post_action_user_message
 from ...schemas import (
     ActDecision,
     Plan,
@@ -187,24 +180,6 @@ def _process_adaptive_budget_extension_reply(
     )
 
 
-def _transition_to_replan_after_deny(*, runner, state, reason: str) -> bool:
-    retained_limit = int(
-        getattr(
-            runner.options,
-            "adaptive_replan_retained_step_outputs",
-            0,
-        )
-        or 0
-    )
-    transitioned, _retained_count = transition_to_replan_state(
-        state=state,
-        max_replans=int(getattr(runner.options, "max_replans", 0) or 0),
-        retained_step_outputs=retained_limit,
-    )
-    del reason
-    return transitioned
-
-
 def _prepare_confirmation_replay_commands(
     *, runner: Any, state: Any, confirmed: Any, session_grant: bool, logger: Any
 ) -> list[Any] | None:
@@ -357,10 +332,8 @@ def process(*, runner, state, logger, tick_ctx: TickRunContext):
         elif confirmation_reply == "deny":
             denied_command = None
             denied_cursor = state.cursor
-            denied_total_steps = 1
             if state.plan is not None and 0 <= state.cursor < len(state.plan.steps):
                 denied_command = state.plan.steps[state.cursor]
-                denied_total_steps = len(state.plan.steps)
             elif state.pending_confirmation_command is not None:
                 denied_command = state.pending_confirmation_command
             _deny_pending_confirmation(runner, state=state)
@@ -378,116 +351,15 @@ def process(*, runner, state, logger, tick_ctx: TickRunContext):
                 trace_id=state.trace_id,
             )
 
-            judgment = _runner_delegate(
-                "_evaluate_post_action_judgment",
+            transition(state, "confirmation_denied", logger=logger)
+            return _runner_delegate(
+                "_respond_with_meta",
                 runner,
                 state=state,
                 logger=logger,
-                fact_kind="confirmation_denied",
-                action_result=None,
-                current_command=denied_command,
-                current_step_index=denied_cursor,
-                total_steps=denied_total_steps,
-                runtime_facts={
-                    "confirmation_reply": "deny",
-                    "confirmation_denied": True,
-                },
+                message="Confirmation denied. The action was not run.",
+                status=BRAIN_STATE_WAITING_USER,
             )
-            if judgment is None:
-                return _runner_delegate(
-                    "_respond_with_meta",
-                    runner,
-                    state=state,
-                    logger=logger,
-                    message=(
-                        "Post-confirmation judgment is unavailable after the "
-                        "denied confirmation."
-                    ),
-                    status=BRAIN_STATE_WAITING_USER,
-                )
-            apply_post_action_judgment(
-                state=state,
-                judgment=judgment,
-                step_key=denied_command.command_id if denied_command else "",
-                total_steps=denied_total_steps,
-                max_retries_per_step=int(
-                    getattr(runner.options, "max_retries_per_step", 0) or 0
-                ),
-                transition_to_replan=lambda *, reason: _transition_to_replan_after_deny(
-                    runner=runner,
-                    state=state,
-                    reason=reason,
-                ),
-            )
-            tick_ctx.user_input = None
-            if state.status == BRAIN_STATE_DONE:
-                judgment_result = _runner_delegate(
-                    "_evaluate_turn_closure",
-                    runner,
-                    state=state,
-                    action_result=None,
-                    logger=logger,
-                    completion_reason="plan_completed_after_denied_step",
-                )
-                disposition = _runner_delegate(
-                    "_apply_closure_judgment",
-                    runner,
-                    state=state,
-                    judgment=judgment_result,
-                )
-                if disposition == "close":
-                    return _runner_delegate(
-                        "_respond_with_meta",
-                        runner,
-                        state=state,
-                        logger=logger,
-                        message=final_close_message(
-                            state=state,
-                            judgment=judgment_result,
-                            action_result=None,
-                            fallback_message=(
-                                "Understood. I skipped the denied final step and "
-                                "there is no remaining plan work."
-                            ),
-                        ),
-                        status=BRAIN_STATE_DONE,
-                    )
-                if disposition == "continue":
-                    transition(state, "confirmation_denied", logger=logger)
-                    return _runner_delegate(
-                        "_respond_with_meta",
-                        runner,
-                        state=state,
-                        logger=logger,
-                        message=continuation_choice_message(judgment_result.reason),
-                        status=BRAIN_STATE_WAITING_USER,
-                    )
-                if disposition == "replan":
-                    tick_ctx.user_input = None
-                else:
-                    return _runner_delegate(
-                        "_respond_with_meta",
-                        runner,
-                        state=state,
-                        logger=logger,
-                        message=(
-                            judgment_result.reason
-                            or "I need guidance before closing this task."
-                        ),
-                        status=BRAIN_STATE_WAITING_USER,
-                    )
-            elif state.status in {BRAIN_STATE_WAITING_USER, "stopped"}:
-                return _runner_delegate(
-                    "_respond_with_meta",
-                    runner,
-                    state=state,
-                    logger=logger,
-                    message=(
-                        state.post_action_user_message.strip()
-                        or "Understood. I stopped after that denied confirmation."
-                    ),
-                    status=state.status,
-                )
         else:
             state.pending_confirmation_command = None
             _clear_pending_confirmation_metadata(state)

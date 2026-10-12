@@ -215,12 +215,16 @@ def test_local_backend_trash_file_and_directory(
     home = tmp_path / "home"
     trash_dir = home / ".Trash"
     trash_dir.mkdir(parents=True)
-    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(
+        "send2trash.send2trash",
+        lambda path: Path(path).rename(trash_dir / Path(path).name),
+    )
 
     file_target = workspace / "alpha.txt"
     file_target.write_text("alpha", encoding="utf-8")
     assert backend.trash(str(file_target)) is True
     assert not file_target.exists()
+    assert (trash_dir / "alpha.txt").read_text() == "alpha"
 
     dir_target = workspace / "nested"
     dir_target.mkdir()

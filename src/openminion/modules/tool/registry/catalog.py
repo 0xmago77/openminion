@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
 
 Handler = Callable[[dict[str, Any], "RuntimeContext"], dict[str, Any]]
+AvailabilityCheck = Callable[[dict[str, Any], "RuntimeContext"], None]
 Scope = Literal["READ_ONLY", "WRITE_SAFE", "POWER_USER", "UI_AUTOMATION"]
 
 
@@ -53,6 +54,7 @@ class ToolSpec:
     canonical_args: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     confirmation_preview: ConfirmationPreviewBuilder | None = None
     policy_authorizer: PolicyAuthorizer | None = None
+    availability_check: AvailabilityCheck | None = None
 
     def resolved_capabilities(self) -> tuple[str, ...]:
         return self.capabilities or self.tags

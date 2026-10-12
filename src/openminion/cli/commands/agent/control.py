@@ -74,8 +74,9 @@ def run_agent_operator(args) -> int:
         return agent_delegate(
             config=config,
             home_root=roots.home_root,
-            parent_agent_id=_default_agent_id(config),
+            parent_agent_id=args.parent_agent_id or _default_agent_id(config),
             request=request_from_operator_args(args),
+            session_id=args.session_id or "",
             as_json=getattr(args, "json", False),
         )
 
@@ -90,6 +91,7 @@ def agent_delegate(
     request,
     as_json: bool,
     delegate_api: Any | None = None,
+    session_id: str = "",
 ) -> int:
     payload = run_agent_delegate_request(
         config=config,
@@ -97,6 +99,7 @@ def agent_delegate(
         parent_agent_id=parent_agent_id,
         request=request,
         delegate_api=delegate_api,
+        session_id=session_id,
     )
     if as_json:
         print_json_payload(payload)
@@ -604,11 +607,18 @@ def _add_agent_delegation_subcommands(
         help="Run synchronously or return an inspectable async task handle",
     )
     delegate_cmd.add_argument(
+        "--child-permission-mode",
+        choices=("readonly",),
+        default="",
+        help="Run the child with read-only permissions",
+    )
+    delegate_cmd.add_argument(
         "--timeout-seconds",
         type=int,
         default=120,
         help="Delegated turn timeout in seconds",
     )
+    _add_delegate_scope_arguments(delegate_cmd)
     add_json_output_flag(delegate_cmd)
     delegate_cmd.set_defaults(handler=run_agent_operator, needs_app=False)
 
@@ -616,6 +626,7 @@ def _add_agent_delegation_subcommands(
         "delegate-list", help="List recent delegated tasks owned by this agent/session"
     )
     delegate_list.add_argument("--limit", type=int, default=20, choices=range(1, 201))
+    _add_delegate_scope_arguments(delegate_list)
     add_json_output_flag(delegate_list)
     delegate_list.set_defaults(handler=run_agent_operator, needs_app=False)
 
@@ -631,8 +642,20 @@ def _add_agent_delegation_subcommands(
             required=True,
             help="Task id returned by `openminion agent delegate --mode async`",
         )
+        _add_delegate_scope_arguments(delegate_lifecycle)
         add_json_output_flag(delegate_lifecycle)
         delegate_lifecycle.set_defaults(handler=run_agent_operator, needs_app=False)
+
+
+def _add_delegate_scope_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--parent-agent-id", help="Exact parent agent that owns this delegated task"
+    )
+    parser.add_argument(
+        "--session-id",
+        default=argparse.SUPPRESS,
+        help="Exact parent session that owns this delegated task",
+    )
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

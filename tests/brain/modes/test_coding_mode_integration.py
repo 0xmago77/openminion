@@ -3251,7 +3251,8 @@ def test_coding_loop_preserves_confirmation_replay_state() -> None:
     assert state.pending_confirmation_command.tool_name == "exec.run"
     assert state.pending_confirmation_command.args == {"command": "python --version"}
     assert (
-        "Reply exactly yes to allow once, session to allow this tool for the session, or no to cancel."
+        "Reply exactly yes or allow_once to allow once, session or allow_session "
+        "to allow this tool for the session, or no or deny to cancel."
         in state.post_action_user_message
     )
     assert "command=python --version" in state.post_action_user_message

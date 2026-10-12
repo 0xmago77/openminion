@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from threading import Barrier
 
 from openminion.modules.brain.execution.orchestrate.handler import (
     OrchestrateMode,
@@ -50,10 +51,13 @@ def test_parallel_execution_strategy_runs_independent_subtasks_concurrently(
         ],
     )
     ctx._services.runner.llm_api.answer = "parallel summary"
+    started_together = Barrier(3, timeout=5)
+    completed: list[str] = []
 
     def _fake_invoke(self, *, state, decision, user_input, logger, depth=0):
         del self, state, decision, logger, depth
-        time.sleep(0.05)
+        started_together.wait()
+        completed.append(user_input)
         return _mode_result(ctx.state, f"done:{user_input}")
 
     monkeypatch.setattr(
@@ -69,14 +73,16 @@ def test_parallel_execution_strategy_runs_independent_subtasks_concurrently(
     )
 
     mode = OrchestrateMode(
-        strategy=ParallelExecutionStrategy(),
+        strategy=ParallelExecutionStrategy(
+            side_effect_policy=ConservativeSideEffectPolicy(
+                parallel_writes_enabled=True
+            )
+        ),
         allocator=EvenSplitBudgetAllocator(),
     )
-    started = time.monotonic()
     result = mode.execute(ctx)
-    elapsed = time.monotonic() - started
 
-    assert elapsed < 0.20
+    assert len(completed) == 3
     assert result.message == "parallel summary"
     assert [
         item["subtask_id"] for item in result.action_result.outputs["subtask_results"]
@@ -137,6 +143,7 @@ def test_parallel_execution_strategy_respects_dependency_levels(monkeypatch) -> 
         ],
     )
     ctx._services.runner.llm_api.answer = "dependency summary"
+    level_barriers = [Barrier(2, timeout=5), Barrier(2, timeout=5)]
     starts: dict[str, float] = {}
     ends: dict[str, float] = {}
 
@@ -144,7 +151,7 @@ def test_parallel_execution_strategy_respects_dependency_levels(monkeypatch) -> 
         del self, state, decision, logger, depth
         label = user_input.split("Subtask goal: ", 1)[1].strip()
         starts[label] = time.monotonic()
-        time.sleep(0.05)
+        level_barriers[0 if label in {"A", "B"} else 1].wait()
         ends[label] = time.monotonic()
         return _mode_result(ctx.state, label)
 
@@ -161,14 +168,16 @@ def test_parallel_execution_strategy_respects_dependency_levels(monkeypatch) -> 
     )
 
     mode = OrchestrateMode(
-        strategy=ParallelExecutionStrategy(),
+        strategy=ParallelExecutionStrategy(
+            side_effect_policy=ConservativeSideEffectPolicy(
+                parallel_writes_enabled=True
+            )
+        ),
         allocator=EvenSplitBudgetAllocator(),
     )
-    started = time.monotonic()
     result = mode.execute(ctx)
-    elapsed = time.monotonic() - started
 
-    assert elapsed < 0.25
+    assert set(ends) == {"A", "B", "C", "D"}
     assert starts["C"] >= ends["A"]
     assert starts["D"] >= ends["B"]
     assert [

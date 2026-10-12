@@ -104,6 +104,29 @@ _PROJECT_GITHUB_EFFECTS: dict[str, Callable[..., dict[str, Any]]] = {
 }
 
 
+def _availability_error(
+    spec: ToolSpec,
+    args: dict[str, Any],
+    ctx: RuntimeContext,
+    start_time: float,
+) -> dict[str, Any] | None:
+    check = spec.availability_check
+    if check is None:
+        return None
+    try:
+        check(args, ctx)
+    except ToolRuntimeError as exc:
+        return _error_envelope(
+            status=BRAIN_STATE_ERROR,
+            summary=exc.message or "Tool is unavailable",
+            code=exc.code,
+            message=exc.message or "Tool is unavailable",
+            latency_ms=int((time.monotonic() - start_time) * 1000),
+            details=dict(exc.details or {}),
+        )
+    return None
+
+
 class ToolAdapter:
     contract_version = BRAIN_ADAPTER_INTERFACE_VERSION
 
@@ -507,7 +530,6 @@ class ToolAdapter:
                 message=str(exc),
                 latency_ms=int((time.monotonic() - start_time) * 1000),
             )
-
         effective_workspace_root = self._effective_workspace_root(policy_for_run)
         replay_confirmed = bool(replay_confirmation_metadata)
         watch_write_authorization_requested = _watch_write_authorization_requested(
@@ -577,7 +599,7 @@ class ToolAdapter:
             tool_spec=spec,
             policy=policy_for_run,
             workspace=effective_workspace_root,
-            confirm=auto_confirm,
+            confirm=auto_confirm or requires_canonical_policy(tool_name),
             extra_adapter=self.policy_adapter,
             approval_satisfied=approval_satisfied,
         )
@@ -624,6 +646,8 @@ class ToolAdapter:
         ctx.invocation_id = str(command.get("idempotency_key", "") or "")
         if runtime_message_ref is not None:
             ctx.message_ref = dict(runtime_message_ref)
+        if error := _availability_error(spec, validated_args, ctx, start_time):
+            return error
         if ctx.policy_adapter is not None:
             policy_decision = ctx.policy_adapter.evaluate(
                 tool_name=tool_name,
@@ -680,7 +704,6 @@ class ToolAdapter:
                 )
             if policy_decision.modified_args:
                 validated_args = dict(policy_decision.modified_args)
-
         return self._invoke_validated_tool(
             command=command,
             validated_args=validated_args,

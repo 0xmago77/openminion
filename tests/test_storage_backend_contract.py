@@ -168,19 +168,32 @@ def test_contract_find_matches_shape(tmp_path: Path, backend_kind: str):
 
 
 @pytest.mark.parametrize("backend_kind", ["local", "memory"])
-def test_contract_trash_file_removes_entry(tmp_path: Path, backend_kind: str):
+def test_contract_trash_file_preserves_recovery(
+    tmp_path: Path, backend_kind: str, monkeypatch: pytest.MonkeyPatch
+):
     backend, workspace = _make_backend(
         backend_kind,
         tmp_path,
         initial_files={"alpha.txt": "alpha"},
     )
 
-    assert backend.trash(str(workspace / "alpha.txt")) is True
-    assert backend.exists(str(workspace / "alpha.txt")) is False
+    target = workspace / "alpha.txt"
+    if backend_kind == "memory":
+        with pytest.raises(ToolRuntimeError, match="recoverable trash is unavailable"):
+            backend.trash(str(target))
+        assert backend.read(str(target)).content == "alpha"
+        return
+    recovered = tmp_path / "recovered"
+    monkeypatch.setattr(
+        "send2trash.send2trash", lambda path: Path(path).rename(recovered)
+    )
+    assert backend.trash(str(target)) is True
+    assert not backend.exists(str(target))
+    assert recovered.read_text() == "alpha"
 
 
 @pytest.mark.parametrize("backend_kind", ["local", "memory"])
-def test_contract_trash_directory_removes_tree(
+def test_contract_trash_directory_preserves_recovery(
     tmp_path: Path,
     backend_kind: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -190,15 +203,19 @@ def test_contract_trash_directory_removes_tree(
         tmp_path,
         initial_files={"nested/alpha.txt": "alpha"},
     )
-    if backend_kind == "local":
-        home = tmp_path / "home"
-        trash_dir = home / ".Trash"
-        trash_dir.mkdir(parents=True)
-        monkeypatch.setenv("HOME", str(home))
-
-    assert backend.trash(str(workspace / "nested")) is True
-    assert backend.exists(str(workspace / "nested")) is False
-    assert backend.exists(str(workspace / "nested" / "alpha.txt")) is False
+    target = workspace / "nested"
+    if backend_kind == "memory":
+        with pytest.raises(ToolRuntimeError, match="recoverable trash is unavailable"):
+            backend.trash(str(target))
+        assert backend.read(str(target / "alpha.txt")).content == "alpha"
+        return
+    recovered = tmp_path / "recovered"
+    monkeypatch.setattr(
+        "send2trash.send2trash", lambda path: Path(path).rename(recovered)
+    )
+    assert backend.trash(str(target)) is True
+    assert not backend.exists(str(target))
+    assert (recovered / "alpha.txt").read_text() == "alpha"
 
 
 @pytest.mark.parametrize("backend_kind", ["local", "memory"])

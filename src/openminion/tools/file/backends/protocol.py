@@ -33,6 +33,15 @@ class WriteResult:
 
 
 @dataclass(frozen=True)
+class RangeResult:
+    content: str
+    start_line: int
+    end_line: int
+    total_lines: int
+    truncated: bool
+
+
+@dataclass(frozen=True)
 class FindResult:
     matches: list[MatchInfo]
     count: int
@@ -77,6 +86,10 @@ class EditResult:
 
 @runtime_checkable
 class StorageBackend(Protocol):
+    def read_range(
+        self, path: str, *, start_line: int, end_line: int, max_chars: int
+    ) -> RangeResult: ...
+
     def list_dir(
         self,
         path: str,

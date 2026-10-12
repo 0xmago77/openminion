@@ -190,6 +190,7 @@ class PolicyCtl:
         ctx: Any,
         *,
         risk_override: Optional[RiskSpec] = None,
+        trusted_risk_override: Optional[RiskSpec] = None,
         config_overrides: Optional[PolicyConfig] = None,
         confirmation_preview: ConfirmationPreviewInput | None = None,
         confirmation_preview_error: str | None = None,
@@ -200,13 +201,14 @@ class PolicyCtl:
         csum = self._normalize_context(ctx)
         exact_policy_authorization = is_policy_authorization_pair(inv.tool, inv.method)
         registered_risk = self._resolve_risk(inv)
-        risk = (
-            registered_risk
-            if exact_policy_authorization
-            else merge_policy_risk(
+        if exact_policy_authorization:
+            risk = registered_risk
+        elif trusted_risk_override is not None:
+            risk = trusted_risk_override
+        else:
+            risk = merge_policy_risk(
                 registered_risk, risk_override, risk_order=POLICY_RISK_ORDER
             )
-        )
         effective_config = config_overrides or self._config
         mode = effective_config.mode if config_overrides is not None else self.mode()
         decision = authorization_preflight_decision(

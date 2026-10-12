@@ -131,7 +131,7 @@ def test_local_policy_adapter_allows_valid_command(tmp_path):
     assert decision.reason
 
 
-def test_local_policy_adapter_denies_blocked_command(tmp_path):
+def test_local_policy_adapter_honors_confirmation_for_unallowlisted_command(tmp_path):
     policy = _policy({"commands": {"mode": "allowlist", "allow": ["git"]}}, tmp_path)
     adapter = LocalPolicyAdapter(
         policy=policy,
@@ -147,9 +147,36 @@ def test_local_policy_adapter_denies_blocked_command(tmp_path):
         args={"argv": ["echo", "nope"], "cwd": str(tmp_path / "workspace")},
     )
 
+    assert decision.allowed is True
+
+
+def test_local_policy_adapter_keeps_denylist_after_confirmation(tmp_path):
+    policy = _policy(
+        {
+            "commands": {
+                "mode": "allowlist",
+                "allow": ["git"],
+                "deny_exact": ["echo"],
+            }
+        },
+        tmp_path,
+    )
+    adapter = LocalPolicyAdapter(
+        policy=policy,
+        workspace=tmp_path,
+        scope="WRITE_SAFE",
+        confirm=True,
+    )
+
+    decision = adapter.evaluate(
+        tool_name="cmd.run",
+        tool_spec=_tool_spec(),
+        args={"argv": ["echo", "nope"], "cwd": str(tmp_path / "workspace")},
+    )
+
     assert decision.allowed is False
     assert decision.code == "POLICY_DENIED"
-    assert decision.details.get("rule") == "commands.allow"
+    assert decision.details.get("rule") == "commands.deny_exact"
 
 
 def test_allow_all_safety_adapter_passes_through():
