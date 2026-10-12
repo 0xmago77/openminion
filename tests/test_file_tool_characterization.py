@@ -485,7 +485,9 @@ def test_trash_file_uses_recoverable_adapter(
     target = ctx.workspace / "alpha.txt"
     target.write_text("alpha", encoding="utf-8")
     recovered = tmp_path / "recovered.txt"
-    monkeypatch.setattr("send2trash.send2trash", lambda path: Path(path).rename(recovered))
+    monkeypatch.setattr(
+        "send2trash.send2trash", lambda path: Path(path).rename(recovered)
+    )
 
     result = _h_trash({"path": "alpha.txt"}, ctx)
 
