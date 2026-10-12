@@ -1,7 +1,6 @@
 import fnmatch
 import errno
 import os
-import shutil
 import stat
 from pathlib import Path
 from typing import Callable, cast
@@ -21,13 +20,14 @@ from .protocol import (
     ListResult,
     MatchInfo,
     ReadResult,
+    RangeResult,
     SearchMatch,
     SearchResult,
     WriteResult,
 )
 from .searching import compile_line_matcher, search_snippet
+from .text import edit_content, encode_text, select_range
 
-_LEGACY_AMBIGUOUS_CODE = cast(ErrorCode, "AMBIGUOUS")
 _LEGACY_ERROR_CODE = cast(ErrorCode, "ERROR")
 _SEARCH_PRUNED_DIRS = frozenset(
     {
@@ -191,6 +191,29 @@ class LocalStorageBackend:
             truncated=truncated,
         )
 
+    def read_range(
+        self, path: str, *, start_line: int, end_line: int, max_chars: int
+    ) -> RangeResult:
+        try:
+            fd = self._open_leaf_no_symlink(Path(path), flags=os.O_RDONLY)
+            with os.fdopen(fd, "r", encoding="utf-8") as handle:
+                return select_range(
+                    handle,
+                    start_line=start_line,
+                    end_line=end_line,
+                    max_chars=max_chars,
+                )
+        except UnicodeDecodeError as exc:
+            raise ToolRuntimeError(
+                "INVALID_ARGUMENT", "file is not text-encoded"
+            ) from exc
+        except FileNotFoundError as exc:
+            raise ToolRuntimeError("NOT_FOUND", f"path does not exist: {path}") from exc
+        except PermissionError as exc:
+            raise ToolRuntimeError("POLICY_DENIED", "permission denied") from exc
+        except OSError as exc:
+            raise ToolRuntimeError("EXEC_ERROR", str(exc)) from exc
+
     def write(
         self,
         path: str,
@@ -200,6 +223,7 @@ class LocalStorageBackend:
         create_dirs: bool = True,
     ) -> WriteResult:
         target = Path(path)
+        encoded = encode_text(content)
 
         try:
             if create_dirs:
@@ -210,9 +234,9 @@ class LocalStorageBackend:
             flags = os.O_WRONLY | os.O_CREAT
             flags |= os.O_APPEND if append else os.O_TRUNC
             fd = self._open_leaf_no_symlink(target, flags=flags)
-            mode = "a" if append else "w"
-            with os.fdopen(fd, mode, encoding="utf-8") as handle:
-                handle.write(content)
+            mode = "ab" if append else "wb"
+            with os.fdopen(fd, mode) as handle:
+                handle.write(encoded)
         except PermissionError as exc:
             raise ToolRuntimeError("POLICY_DENIED", "permission denied") from exc
         except OSError as exc:
@@ -228,7 +252,7 @@ class LocalStorageBackend:
 
         return WriteResult(
             path=str(target),
-            bytes_written=len(content.encode("utf-8")),
+            bytes_written=len(encoded),
             mode="append" if append else "write",
         )
 
@@ -320,14 +344,14 @@ class LocalStorageBackend:
                 else:
                     dirs[:] = [name for name in dirs if name not in _SEARCH_PRUNED_DIRS]
                 for name in files:
-                    if len(matches) >= max_matches:
-                        break
-                    if scanned_files >= FILE_SEARCH_MAX_SCANNED_FILES:
-                        truncated = True
-                        break
                     candidate = Path(root) / name
-                    if not fnmatch.fnmatch(name, file_glob) and not fnmatch.fnmatch(
-                        str(candidate), file_glob
+                    if not any(
+                        fnmatch.fnmatch(value, file_glob)
+                        for value in (
+                            name,
+                            str(candidate),
+                            candidate.relative_to(target).as_posix(),
+                        )
                     ):
                         continue
                     if not candidate.is_file() or candidate.is_symlink():
@@ -342,12 +366,18 @@ class LocalStorageBackend:
                         continue
                     if b"\x00" in raw:
                         continue
+                    if scanned_files >= FILE_SEARCH_MAX_SCANNED_FILES:
+                        truncated = True
+                        break
                     scanned_files += 1
                     text = raw.decode("utf-8", errors="replace")
                     lines = text.splitlines()
                     for line_no, line in enumerate(lines, start=1):
                         if not _matches(line):
                             continue
+                        if len(matches) >= max_matches:
+                            truncated = True
+                            break
                         matches.append(
                             SearchMatch(
                                 path=str(candidate),
@@ -360,9 +390,9 @@ class LocalStorageBackend:
                                 ),
                             )
                         )
-                        if len(matches) >= max_matches:
-                            break
-                if len(matches) >= max_matches or truncated:
+                    if truncated:
+                        break
+                if truncated:
                     break
         except PermissionError as exc:
             raise ToolRuntimeError("POLICY_DENIED", "permission denied") from exc
@@ -389,37 +419,13 @@ class LocalStorageBackend:
             raise ToolRuntimeError("INVALID_ARGUMENT", "path is not a file")
 
         try:
-            content = target.read_text(encoding="utf-8")
+            with target.open(encoding="utf-8", newline="") as handle:
+                content = handle.read()
         except (OSError, UnicodeError) as exc:
             raise ToolRuntimeError("EXEC_ERROR", str(exc)) from exc
 
-        operations_applied = 0
-        for operation in operations:
-            old_text = operation.old_text
-            new_text = operation.new_text
-            count = content.count(old_text)
-            if count == 0:
-                raise ToolRuntimeError(
-                    "NOT_FOUND",
-                    f"anchor not found: {old_text[:60]!r}",
-                )
-            if count > 1:
-                raise ToolRuntimeError(
-                    _LEGACY_AMBIGUOUS_CODE,
-                    f"anchor matches {count} times: {old_text[:60]!r}",
-                )
-            if operation.op == "replace":
-                content = content.replace(old_text, new_text, 1)
-            elif operation.op == "insert_before":
-                content = content.replace(old_text, new_text + "\n" + old_text, 1)
-            elif operation.op == "insert_after":
-                content = content.replace(old_text, old_text + "\n" + new_text, 1)
-            else:
-                raise ToolRuntimeError(
-                    "INVALID_ARGUMENT",
-                    f"unknown edit operation: {operation.op}",
-                )
-            operations_applied += 1
+        content = edit_content(content, operations)
+        operations_applied = len(operations)
 
         if dry_run:
             return EditResult(
@@ -430,7 +436,7 @@ class LocalStorageBackend:
             )
 
         try:
-            target.write_text(content, encoding="utf-8")
+            self.write(path, content, create_dirs=False)
         except (OSError, UnicodeError) as exc:
             raise ToolRuntimeError("EXEC_ERROR", str(exc)) from exc
 
@@ -447,15 +453,9 @@ class LocalStorageBackend:
             raise ToolRuntimeError("NOT_FOUND", f"path does not exist: {path}")
 
         try:
-            if target.is_dir():
-                trash_path = Path.home() / ".Trash" / target.name
-                counter = 1
-                while trash_path.exists():
-                    trash_path = Path.home() / ".Trash" / f"{target.name}_{counter}"
-                    counter += 1
-                shutil.move(str(target), str(trash_path))
-            else:
-                target.unlink()
+            from send2trash import send2trash
+
+            send2trash(str(target))
         except PermissionError as exc:
             raise ToolRuntimeError("POLICY_DENIED", "permission denied") from exc
         except Exception as exc:

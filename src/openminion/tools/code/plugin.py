@@ -1,5 +1,5 @@
 import ast
-import re
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,7 @@ from openminion.tools.config import workspace_retry_path
 
 from .cache import invalidate_repo_map_cache, repo_map_cache_get, repo_map_cache_put
 from .interfaces import RepoIndex, RepoIndexFile, RepoIndexImport, RepoIndexSymbol
+from .search import can_read_path, grep_matches
 
 _REPO_MAP_SKIP_DIRS = frozenset(
     {
@@ -281,11 +282,6 @@ def _code_error_result_from_exception(
     }
 
 
-def _definition_pattern(symbol: str) -> re.Pattern[str]:
-    escaped = re.escape(symbol)
-    return re.compile(rf"^\s*(?:class|def|async\s+def)\s+{escaped}\b")
-
-
 def _h_patch(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     validated = CodePatchArgs.model_validate(args)
     try:
@@ -304,14 +300,24 @@ def _h_patch(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
         )
 
     workspace_root = _workspace_root_from_context(ctx)
+    command = ["patch", "--batch", "--forward", "--silent", str(resolved)]
     completed = subprocess.run(
-        ["patch", "--forward", "--silent", str(resolved)],
+        [*command, "--dry-run"],
         input=validated.patch,
         text=True,
         capture_output=True,
         cwd=str(workspace_root),
         check=False,
     )
+    if completed.returncode == 0:
+        completed = subprocess.run(
+            command,
+            input=validated.patch,
+            text=True,
+            capture_output=True,
+            cwd=str(workspace_root),
+            check=False,
+        )
     if completed.returncode != 0:
         details = {
             "returncode": completed.returncode,
@@ -346,53 +352,18 @@ def _h_grep(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
             matches=[],
         )
 
-    command = [
-        "rg",
-        "--line-number",
-        "--no-heading",
-        "--color",
-        "never",
-        "--glob",
-        validated.file_glob,
-        validated.pattern,
-        str(resolved),
-    ]
     try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=str(_workspace_root_from_context(ctx)),
+        matches = grep_matches(
+            resolved,
+            pattern=validated.pattern,
+            file_glob=validated.file_glob,
+            max_results=validated.max_results,
+            ctx=ctx,
         )
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ToolRuntimeError) as exc:
         return _code_error_result_from_exception(
             exc, default_code="EXEC_ERROR", matches=[]
         )
-
-    if completed.returncode not in (0, 1):
-        return _code_error_result(
-            code="EXEC_ERROR",
-            message=(completed.stderr.strip() or "rg search failed"),
-            details={"returncode": completed.returncode},
-            matches=[],
-        )
-
-    matches: list[dict[str, Any]] = []
-    for line in completed.stdout.splitlines():
-        if len(matches) >= validated.max_results:
-            break
-        try:
-            file_path, line_no, text = line.split(":", 2)
-            matches.append(
-                {
-                    "file": file_path,
-                    "line": int(line_no),
-                    "text": text,
-                }
-            )
-        except ValueError:
-            continue
     return {
         "ok": True,
         "path": str(resolved),
@@ -471,10 +442,13 @@ def _render_repo_map(
     root: Path,
     max_tokens: int,
     include_hidden: bool,
+    ctx: RuntimeContext,
 ) -> str:
     budget_chars = max(1, int(max_tokens)) * 4
     lines: list[str] = [f"{root.name or str(root)}"]
     for path in sorted(root.rglob("*")):
+        if not can_read_path(path, ctx):
+            continue
         relative = path.relative_to(root)
         if not include_hidden and any(part.startswith(".") for part in relative.parts):
             continue
@@ -511,6 +485,7 @@ def _h_repo_map(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
         )
 
     session_id = str(getattr(ctx, "telemetry_session_id", "") or "").strip()
+    session_id += json.dumps(ctx.policy.raw.get("paths", {}), sort_keys=True)
     cached = repo_map_cache_get(
         session_id=session_id,
         workspace_root=resolved,
@@ -529,6 +504,7 @@ def _h_repo_map(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
         root=resolved,
         max_tokens=validated.max_tokens,
         include_hidden=validated.include_hidden,
+        ctx=ctx,
     )
     repo_map_cache_put(
         session_id=session_id,
@@ -568,7 +544,7 @@ def _h_repo_index(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     for path in sorted(resolved.rglob("*")):
         if len(files) >= validated.max_files:
             break
-        if not path.is_file():
+        if not path.is_file() or not can_read_path(path, ctx):
             continue
         relative = path.relative_to(resolved)
         if _should_skip_repo_index_path(relative):
@@ -605,73 +581,13 @@ def _h_repo_index(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
 
 
 def _collect_symbol_matches(
-    root: Path, symbol: str, max_results: int
+    root: Path, symbol: str, max_results: int, ctx: RuntimeContext
 ) -> list[dict[str, Any]]:
-    pattern = _definition_pattern(symbol)
     matches: list[dict[str, Any]] = []
-    try:
-        completed = subprocess.run(
-            [
-                "rg",
-                "--line-number",
-                "--no-heading",
-                "--color",
-                "never",
-                "--type",
-                "py",
-                pattern.pattern,
-                str(root),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=str(root),
-        )
-    except FileNotFoundError:
-        completed = None
-    if completed is not None and completed.returncode in (0, 1):
-        for line in completed.stdout.splitlines():
-            if len(matches) >= max_results:
-                break
-            try:
-                file_path, line_no, _ = line.split(":", 2)
-                start_line = int(line_no)
-            except ValueError:
-                continue
-            path = Path(file_path)
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except (OSError, SyntaxError, UnicodeError):
-                continue
-            definition = next(
-                (
-                    candidate
-                    for candidate in ast.walk(tree)
-                    if isinstance(
-                        candidate,
-                        (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
-                    )
-                    and candidate.name == symbol
-                    and int(getattr(candidate, "lineno", 0) or 0) == start_line
-                ),
-                None,
-            )
-            if definition is None:
-                continue
-            matches.append(
-                {
-                    "file": file_path,
-                    "start_line": start_line,
-                    "end_line": int(getattr(definition, "end_lineno", start_line)),
-                    "kind": "class"
-                    if isinstance(definition, ast.ClassDef)
-                    else "function",
-                }
-            )
-        if matches:
-            return matches[:max_results]
-
-    for path in sorted(root.rglob("*.py")):
+    candidates = [root] if root.is_file() else sorted(root.rglob("*.py"))
+    for path in candidates:
+        if not can_read_path(path, ctx):
+            continue
         if len(matches) >= max_results:
             break
         if any(part in _REPO_MAP_SKIP_DIRS for part in path.relative_to(root).parts):
@@ -720,6 +636,7 @@ def _h_symbol_find(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
         resolved,
         validated.symbol,
         validated.max_results,
+        ctx,
     )
     if not matches:
         return _code_error_result(

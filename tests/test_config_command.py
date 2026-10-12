@@ -1293,3 +1293,47 @@ def test_setup_focus_handoff_preserves_interactive_options(tmp_path: Path) -> No
         "no_interactive": False,
         "onboarding_checked": True,
     }
+
+
+def test_portable_export_preserves_settings_and_redacts_header_credentials():
+    from openminion.cli.commands.config import _sanitized_config_payload
+
+    config = OpenMinionConfig()
+    config.runtime.session_context_token_budget = 12345
+    config.providers.anthropic.max_tokens = 777
+    config.providers.openai.api_key_env = "MY_CUSTOM_OPENAI_KEY"
+    config.providers.openai.api_key = "synthetic-provider-secret"
+    config.runtime.ipc_token = "synthetic-ipc-secret"
+    config.runtime.telemetry_exporter.headers = {
+        "Authorization": "Bearer synthetic-header-secret",
+        "Accept": "application/json",
+    }
+    config.runtime.env = {"CUSTOM_PASSWORD": "synthetic-env-secret", "SAFE_VAR": "kept"}
+    exported = _sanitized_config_payload(config)
+    serialized = json.dumps(exported)
+    assert "synthetic-" not in serialized
+    restored = OpenMinionConfig.from_dict(exported)
+    assert restored.runtime.session_context_token_budget == 12345
+    assert restored.providers.anthropic.max_tokens == 777
+    assert restored.providers.openai.api_key_env == "MY_CUSTOM_OPENAI_KEY"
+    assert restored.runtime.telemetry_exporter.headers == {"Accept": "application/json"}
+    assert restored.runtime.env == {"SAFE_VAR": "kept"}
+    assert "synthetic-provider-secret" in json.dumps(
+        _sanitized_config_payload(config, include_secrets=True)
+    )
+
+
+def test_portable_export_nested_channel_secrets():
+    from openminion.cli.commands.config import _strip_secrets_in_place
+
+    payload = {
+        "channels": [
+            {
+                "botToken": "synthetic-channel-secret",
+                "token_budget": 42,
+                "api_key_env": "CUSTOM_KEY",
+            }
+        ]
+    }
+    _strip_secrets_in_place(payload, comments=[], path=())
+    assert payload == {"channels": [{"token_budget": 42, "api_key_env": "CUSTOM_KEY"}]}

@@ -99,10 +99,38 @@ def _strip_secrets_in_place(
     for key in keys:
         value = payload.get(key)
         current_path = path + (str(key),)
+        if key in {"env_secret_refs", "secret_env_by_channel"}:
+            continue
         if isinstance(value, dict):
             _strip_secrets_in_place(value, comments=comments, path=current_path)
             continue
-        if not _is_sensitive_env_key(str(key)):
+        if isinstance(value, list):
+            for index, entry in enumerate(value):
+                if isinstance(entry, dict):
+                    _strip_secrets_in_place(
+                        entry, comments=comments, path=current_path + (str(index),)
+                    )
+            continue
+        credential_field = str(key).replace("_", "").lower() in {
+            "apikey",
+            "ipctoken",
+            "token",
+            "password",
+            "clientsecret",
+            "signingsecret",
+            "bottoken",
+            "apptoken",
+            "accesstoken",
+            "bearertoken",
+            "refreshtoken",
+            "webhooksecret",
+            "authorization",
+            "cookie",
+        }
+        secret_map_entry = bool(
+            path and path[-1] in {"env", "headers"}
+        ) and _is_sensitive_env_key(str(key))
+        if not credential_field and not secret_map_entry:
             continue
         env_name = _secret_env_name_for_path(payload, key=str(key), path=current_path)
         comments.append(f"# {'.'.join(current_path)}: <stripped — set {env_name}>")

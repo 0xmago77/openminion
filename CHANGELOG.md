@@ -7,6 +7,18 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Make file trash recoverable through Send2Trash; fail without deletion when
+  recovery is unavailable, including the memory backend.
+- Preserve original bytes on invalid UTF-8 writes and edits, and retain newline
+  sequences outside edited spans.
+- Return accurate large-file line ranges and search completeness, and honor
+  search-root-relative globs. A range starting beyond EOF now fails explicitly.
+- Preserve non-secret configuration settings during export while removing
+  credential headers and nested channel secrets.
+- Preflight patch hunks before mutation, handle grep patterns beginning with a
+  dash and filenames containing colons, and enforce descendant read policies
+  across code search, maps, indexes and symbol discovery.
+
 ## Current package line - 2026-10-08
 
 - Compose commerce order care through authored skills and the existing task and

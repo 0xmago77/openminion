@@ -40,6 +40,7 @@ dependencies = [
   "prompt-toolkit>=3,<4",
   "pyyaml",
   "rich>=13.0",
+  "send2trash>=1.8.3,<3",
   "typer>=0.12",
 ]
 

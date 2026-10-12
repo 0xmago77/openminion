@@ -466,41 +466,21 @@ def _h_read_range(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
             message="path is not a file",
         )
     try:
-        result = backend.read(
+        result = backend.read_range(
             resolved,
+            start_line=validated.start_line,
+            end_line=validated.end_line,
             max_chars=FILE_MAX_READ_CHARS,
-            offset=0,
         )
     except ToolRuntimeError as exc:
         return _tool_error_result_from_exception(exc)
-
-    lines = result.content.splitlines()
-    total_lines = len(lines)
-    if total_lines == 0:
-        return {
-            "ok": True,
-            "path": resolved,
-            "start_line": 1,
-            "end_line": 0,
-            "total_lines": 0,
-            "content": "",
-            "truncated": result.truncated,
-            "source": _FILE_TOOL_SOURCE,
-        }
-
-    start_line = min(validated.start_line, total_lines)
-    end_line = min(validated.end_line, total_lines)
-    selected = lines[start_line - 1 : end_line]
-    numbered = "\n".join(
-        f"{line_no}: {line}" for line_no, line in enumerate(selected, start=start_line)
-    )
     return {
         "ok": True,
         "path": resolved,
-        "start_line": start_line,
-        "end_line": end_line,
-        "total_lines": total_lines,
-        "content": numbered,
+        "start_line": result.start_line,
+        "end_line": result.end_line,
+        "total_lines": result.total_lines,
+        "content": result.content,
         "truncated": result.truncated,
         "source": _FILE_TOOL_SOURCE,
     }

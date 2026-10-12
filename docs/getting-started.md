@@ -250,6 +250,17 @@ openminion config import openminion-config.yaml
 Add `--force` only when the imported file should replace, rather than merge
 with, an existing config. Credentials are not included in a normal export, so
 set the referenced provider environment variables on the destination machine.
+Token limits, context budgets and credential environment-variable names remain
+in the export; credential values, including authentication headers, do not.
+
+File tools preserve newline bytes outside edited spans and reject invalid UTF-8
+content before modifying a file. `file.read_range` counts the actual file and
+rejects a start beyond EOF. `file.search` supports search-root-relative globs
+and marks incomplete results as truncated. `file.trash` uses the native trash
+facility through Send2Trash and never substitutes permanent deletion. Native
+file/directory recovery is verified on macOS; Windows and Linux recovery still
+require platform-specific qualification. The memory backend rejects trash
+without removing content because it has no recoverable trash facility.
 
 Automation can use the same setup path without prompts:
 
