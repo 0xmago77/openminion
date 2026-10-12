@@ -478,10 +478,14 @@ def test_find_files_rejects_non_directory(tmp_path: Path):
     }
 
 
-def test_trash_file_removes_target(tmp_path: Path):
+def test_trash_file_uses_recoverable_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     ctx = _ctx(tmp_path)
     target = ctx.workspace / "alpha.txt"
     target.write_text("alpha", encoding="utf-8")
+    recovered = tmp_path / "recovered.txt"
+    monkeypatch.setattr("send2trash.send2trash", lambda path: Path(path).rename(recovered))
 
     result = _h_trash({"path": "alpha.txt"}, ctx)
 
@@ -492,6 +496,7 @@ def test_trash_file_removes_target(tmp_path: Path):
         "source": "file_module",
     }
     assert not target.exists()
+    assert recovered.read_text() == "alpha"
 
 
 def test_trash_directory_uses_recoverable_adapter(
