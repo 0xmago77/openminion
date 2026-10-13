@@ -51,16 +51,8 @@ def dispatch(*, runner: Any, state: Any, logger: CanonicalEventLogger, request: 
             request=request,
             user_input=effective_user_input,
         )
-    except ProviderError as exc:
-        if exc.code == "EMPTY_PROVIDER_RESPONSE":
-            raise
-        return _dispatch_runtime_error(
-            runner=runner,
-            state=state,
-            logger=logger,
-            user_input=effective_user_input,
-            exc=exc,
-        )
+    except ProviderError:
+        raise
     except Exception as exc:  # noqa: BLE001
         return _dispatch_runtime_error(
             runner=runner,
