@@ -190,6 +190,7 @@ class Agent(Generic[InputT, OutputT]):
         registered: list[str] = []
         try:
             for family in families:
+                registry.exposure_service.register_profiles(family.exposure_profiles)
                 for spec in derive_tool_specs(family):
                     spec.prompt_visible_runtime_name = True
                     registry.add(spec)

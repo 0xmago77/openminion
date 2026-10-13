@@ -104,6 +104,16 @@ def test_decorator_tool_family_spec_wraps_decl() -> None:
     assert spec.tools[0] is ping.tool_decl
 
 
+def test_decorator_tool_family_spec_exposes_tool_by_default() -> None:
+    @tool
+    def ping() -> str:
+        return "pong"
+
+    (profile,) = ping.tool_family_spec().exposure_profiles
+    assert profile.tool_names == frozenset({"ping"})
+    assert profile.default_active is True
+
+
 def test_decorator_description_reaches_provider_schema() -> None:
     @tool
     def ping() -> str:

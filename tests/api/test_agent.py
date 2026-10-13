@@ -243,6 +243,39 @@ def test_agent_registers_decorated_tool_only_for_the_run() -> None:
     assert "add" not in registry.list()
 
 
+def test_agent_decorated_tool_is_model_visible_during_the_run() -> None:
+    """Regression for openminion#248: decorated tools must reach the model."""
+    from openminion.modules.tool.schema_service import ToolSchemaService
+
+    registry = ToolRegistry()
+    seen: dict[str, Any] = {}
+
+    class _InspectingRuntime(_FakeRuntime):
+        def run_turn(self, *, payload, progress_callback=None, **kwargs):
+            seen["decision"] = registry.exposure_service.decide("lookup_code")
+            seen["schema_names"] = [
+                item["name"]
+                for item in ToolSchemaService().collect_execution_tool_schemas(
+                    registry=registry
+                )
+            ]
+            return super().run_turn(
+                payload=payload, progress_callback=progress_callback, **kwargs
+            )
+
+    @tool
+    def lookup_code(left: int, right: int) -> int:
+        """Combine two integers into a code."""
+
+        return left * 10 + right
+
+    Agent(tools=[lookup_code], runtime=_InspectingRuntime(tools=registry)).run("go")
+
+    assert seen["decision"].state == "visible"
+    assert "lookup_code" in seen["schema_names"]
+    assert "lookup_code" not in registry.list()
+
+
 def test_agent_rejects_temporary_tools_without_runtime_registry() -> None:
     runtime = _FakeRuntime()
 

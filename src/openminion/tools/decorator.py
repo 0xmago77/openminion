@@ -75,6 +75,13 @@ def _infer_description(func: Callable[..., Any]) -> str:
     return f"{subject}."
 
 
+def _user_tool_exposure_profile_id(tool_name: str) -> str:
+    normalized = "".join(
+        char if char.isalnum() else "_" for char in tool_name.strip()
+    ).strip("_")
+    return f"user_tool_{normalized or 'tool'}"
+
+
 def _decorate(
     func: Callable[..., Any],
     *,
@@ -86,6 +93,7 @@ def _decorate(
     tags: tuple[str, ...],
     capabilities: tuple[str, ...],
 ) -> Callable[..., Any]:
+    from openminion.modules.tool.exposure import ToolExposureProfile
     from openminion.modules.tool.framework import ToolDecl, ToolFamilySpec
 
     resolved_name = (name or func.__name__).strip()
@@ -123,6 +131,18 @@ def _decorate(
             module_id=module_id or f"openminion.tools.user.{resolved_name}",
             tools=(decl,),
             min_scope_default=min_scope_default,
+            # User-decorated tools are not in the built-in default-visible
+            # catalog, so without an active exposure profile the exposure
+            # service hides them from the model and denies their execution.
+            exposure_profiles=(
+                ToolExposureProfile(
+                    profile_id=_user_tool_exposure_profile_id(resolved_name),
+                    title=f"User tool: {resolved_name}",
+                    summary="Tool explicitly supplied by the caller via @openminion.tool.",
+                    tool_names=frozenset({resolved_name}),
+                    default_active=True,
+                ),
+            ),
         )
 
     func.tool_decl = decl  # type: ignore[attr-defined]
