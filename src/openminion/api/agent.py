@@ -177,7 +177,15 @@ class Agent(Generic[InputT, OutputT]):
             payload["timeout_seconds"] = self.subagent_context.timeout_seconds
         return payload
 
-    def _register_tools_for_run(self, registry: ToolRegistry) -> list[str]:
+    def _register_tools_for_run(
+        self, registry: ToolRegistry
+    ) -> tuple[list[str], list[str]]:
+        """Register run-scoped tools and exposure profiles.
+
+        Returns ``(tool_names, profile_ids)`` that this call newly added, so
+        cleanup never touches tools or profiles that existed beforehand. On
+        failure everything added so far is rolled back before re-raising.
+        """
         from openminion.api.handoff import build_delegate_family_spec
         from openminion.modules.tool.errors import ToolRuntimeError
         from openminion.modules.tool.framework import derive_tool_specs
@@ -188,28 +196,36 @@ class Agent(Generic[InputT, OutputT]):
             families.append(handoff_family)
 
         registered: list[str] = []
+        added_profiles: list[str] = []
         try:
             for family in families:
-                registry.exposure_service.register_profiles(family.exposure_profiles)
+                added_profiles.extend(
+                    registry.exposure_service.register_profiles(
+                        family.exposure_profiles
+                    )
+                    or ()
+                )
                 for spec in derive_tool_specs(family):
                     spec.prompt_visible_runtime_name = True
                     registry.add(spec)
                     registered.append(spec.name)
         except (ToolRuntimeError, TypeError, ValueError, AttributeError):
-            for name in reversed(registered):
-                registry.unregister(name)
+            self._unregister_tools(registry, registered, added_profiles)
             raise
-        return registered
+        return registered, added_profiles
 
     @staticmethod
     def _unregister_tools(
         registry: ToolRegistry | None,
         tool_names: list[str],
+        profile_ids: list[str] | None = None,
     ) -> None:
         if registry is None:
             return
         for name in reversed(tool_names):
             registry.unregister(name)
+        if profile_ids:
+            registry.exposure_service.unregister_profiles(profile_ids)
 
     def _coerce_output(self, text: str) -> OutputT:
         if self.output_type is None or self.output_type is str:
@@ -286,10 +302,10 @@ class Agent(Generic[InputT, OutputT]):
         )
         with registration_scope:
             try:
-                registered_tools = (
+                registered_tools, registered_profiles = (
                     self._register_tools_for_run(registry)
                     if registry is not None
-                    else []
+                    else ([], [])
                 )
                 try:
                     internal_approval_callback = None
@@ -311,7 +327,9 @@ class Agent(Generic[InputT, OutputT]):
                         trusted_subagent_context=run_context,
                     )
                 finally:
-                    self._unregister_tools(registry, registered_tools)
+                    self._unregister_tools(
+                        registry, registered_tools, registered_profiles
+                    )
             finally:
                 if delegated_grant_id is not None:
                     runtime.action_policy.revoke_grant(delegated_grant_id)

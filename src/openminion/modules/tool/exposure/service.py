@@ -49,7 +49,15 @@ class ToolExposureService:
         self._lock = RLock()
         self.register_profiles(profiles)
 
-    def register_profiles(self, profiles: Iterable[ToolExposureProfile]) -> None:
+    def register_profiles(
+        self, profiles: Iterable[ToolExposureProfile]
+    ) -> tuple[str, ...]:
+        """Register profiles; return the ids that were newly added.
+
+        Profiles identical to an already-registered one are accepted as a
+        no-op and are not reported, so callers can release exactly what they
+        added via :meth:`unregister_profiles`.
+        """
         incoming: dict[str, ToolExposureProfile] = {}
         for profile in profiles:
             if profile.profile_id in incoming:
@@ -70,7 +78,19 @@ class ToolExposureService:
                     "profile_id values already own different exposure profiles",
                     {"profile_ids": sorted(conflicts)},
                 )
+            added = tuple(
+                profile_id
+                for profile_id in incoming
+                if profile_id not in self._profiles
+            )
             self._profiles.update(incoming)
+            return added
+
+    def unregister_profiles(self, profile_ids: Iterable[str]) -> None:
+        """Remove profiles by id; unknown ids are ignored."""
+        with self._lock:
+            for profile_id in profile_ids:
+                self._profiles.pop(str(profile_id or "").strip(), None)
 
     def bind_event_sink(
         self,
