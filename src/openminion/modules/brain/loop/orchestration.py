@@ -70,7 +70,7 @@ from .entry import (
     build_entry_tool_specs,
     detect_entry_path,
 )
-from .failures import _internal_failure_answer, _provider_failure_payload
+from .failures import _internal_failure_answer, _provider_failure_error
 from .providers.retry import (
     build_provider_retry_policy,
     classify_retryable,
@@ -733,9 +733,9 @@ def decide(
                 status="error",
                 error={"code": "LLM_CALL_FAILED", "message": str(exc)},
             )
-            provider_payload = _provider_failure_payload(exc, confidence=0.5)
-            if provider_payload is not None:
-                return RespondDecision.model_validate(provider_payload)
+            provider_error = _provider_failure_error(exc)
+            if provider_error is not None:
+                raise provider_error from exc
             raise
         last_detection = detect_entry_path(response)
         if (
