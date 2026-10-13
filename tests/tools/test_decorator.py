@@ -114,6 +114,30 @@ def test_decorator_tool_family_spec_exposes_tool_by_default() -> None:
     assert profile.default_active is True
 
 
+def test_decorator_profile_ids_keep_hyphen_and_underscore_names_distinct() -> None:
+    from openminion.modules.tool.exposure import ToolExposureService
+
+    @tool(name="lookup-order")
+    def lookup_hyphen() -> str:
+        return "a"
+
+    @tool(name="lookup_order")
+    def lookup_underscore() -> str:
+        return "b"
+
+    (hyphen,) = lookup_hyphen.tool_family_spec().exposure_profiles
+    (underscore,) = lookup_underscore.tool_family_spec().exposure_profiles
+    assert hyphen.profile_id != underscore.profile_id
+
+    service = ToolExposureService()
+    service.register_profiles((hyphen,))
+    service.register_profiles((underscore,))
+    assert {p.profile_id for p in service.profiles} >= {
+        hyphen.profile_id,
+        underscore.profile_id,
+    }
+
+
 def test_decorator_description_reaches_provider_schema() -> None:
     @tool
     def ping() -> str:

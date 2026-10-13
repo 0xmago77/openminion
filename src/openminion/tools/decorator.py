@@ -76,10 +76,22 @@ def _infer_description(func: Callable[..., Any]) -> str:
 
 
 def _user_tool_exposure_profile_id(tool_name: str) -> str:
-    normalized = "".join(
-        char if char.isalnum() else "_" for char in tool_name.strip()
-    ).strip("_")
-    return f"user_tool_{normalized or 'tool'}"
+    """Map a tool name to a profile id injectively.
+
+    Profile ids only allow alphanumerics, ``_`` and ``-``. Alphanumerics and
+    ``-`` pass through, ``_`` is escaped as ``__`` and any other character as
+    ``_x<hex>_``, so distinct tool names (e.g. ``lookup-order`` and
+    ``lookup_order``) never share a profile id.
+    """
+    encoded: list[str] = []
+    for char in tool_name.strip():
+        if char == "_":
+            encoded.append("__")
+        elif char == "-" or char.isalnum():
+            encoded.append(char)
+        else:
+            encoded.append(f"_x{ord(char):x}_")
+    return f"user_tool_{''.join(encoded) or 'tool'}"
 
 
 def _decorate(
