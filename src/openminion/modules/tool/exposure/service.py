@@ -87,10 +87,20 @@ class ToolExposureService:
             return added
 
     def unregister_profiles(self, profile_ids: Iterable[str]) -> None:
-        """Remove profiles by id; unknown ids are ignored."""
+        """Remove profiles and revoke their activations; ignore unknown ids."""
+        removed_ids = {str(profile_id or "").strip() for profile_id in profile_ids}
         with self._lock:
-            for profile_id in profile_ids:
-                self._profiles.pop(str(profile_id or "").strip(), None)
+            for profile_id in removed_ids:
+                self._profiles.pop(profile_id, None)
+            deactivated = [
+                activation
+                for activation in self._activations.values()
+                if activation.profile_id in removed_ids
+            ]
+            for activation in deactivated:
+                self._activations.pop(self._activation_key(activation))
+        for activation in deactivated:
+            self._record("deactivated", activation=activation)
 
     def bind_event_sink(
         self,
@@ -197,6 +207,8 @@ class ToolExposureService:
         )
         key = self._activation_key(activation)
         with self._lock:
+            if self._profiles.get(profile.profile_id) != profile:
+                raise KeyError(profile.profile_id)
             if profile.profile_id == "security_lab" and any(
                 active.profile_id == profile.profile_id
                 and active.session_id == session_id
