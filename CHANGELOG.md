@@ -7,6 +7,8 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Roll back failed tool-family registrations without changing existing tools or
+  exposure profiles; revoke removed profiles' session activations before reuse.
 - Preserve string and other non-mapping tool return values in model-visible
   results instead of discarding them during result normalization (#249).
 - Raise the existing typed provider error after entry-call retry exhaustion,
