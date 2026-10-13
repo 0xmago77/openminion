@@ -204,10 +204,10 @@ def run_tool_spec(
     )
     status = _tool_result_status(inner_status, handoff_required=handoff_required)
     summary = _derive_toolspec_summary(data, status=status, tool_name=spec.name)
-    result = {
+    result: dict[str, Any] = {
         "status": status,
         "summary": summary,
-        "outputs": data,
+        "outputs": dict(data) if isinstance(data, Mapping) else {"data": data},
         "artifact_refs": _normalized_artifact_refs(context.artifacts),
         "memory_refs": [],
         "metrics": {

@@ -1,11 +1,17 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-12
+Last updated: 2026-10-13
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+- Preserve string and other non-mapping tool return values in model-visible
+  results instead of discarding them during result normalization (#249).
+- Raise the existing typed provider error after entry-call retry exhaustion,
+  preserving friendly guidance and error details instead of returning a
+  successful answer; keep failed run lifecycle reporting intact (#251).
 
 ## Current package line - 2026-10-12
 

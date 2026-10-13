@@ -105,15 +105,25 @@ def test_recursive_runtime_error_does_not_retransition_done_state() -> None:
     )
 
 
-def test_dispatch_propagates_only_empty_provider_response_error() -> None:
-    exhausted = ProviderError(
-        "empty after retry",
-        code="EMPTY_PROVIDER_RESPONSE",
+@pytest.mark.parametrize(
+    "code",
+    [
+        "EMPTY_PROVIDER_RESPONSE",
+        "PROVIDER_ERROR",
+        "TIMEOUT",
+        "AUTH_ERROR",
+        "RATE_LIMITED",
+        "INVALID_ARGUMENT",
+    ],
+)
+def test_dispatch_propagates_provider_failure_to_run_lifecycle(code) -> None:
+    failure = ProviderError(
+        "provider failed", code=code, details={"request_id": "local-1"}
     )
     with (
         patch(
             "openminion.modules.brain.execution.runtime.turn.dispatch._disabled_handoff_wait_response",
-            side_effect=exhausted,
+            side_effect=failure,
         ),
         pytest.raises(ProviderError) as raised,
     ):
@@ -127,30 +137,4 @@ def test_dispatch_propagates_only_empty_provider_response_error() -> None:
             ),
         )
 
-    assert raised.value is exhausted
-
-
-def test_dispatch_keeps_other_provider_errors_on_existing_runtime_error_path() -> None:
-    converted = SimpleNamespace(status="error")
-    with (
-        patch(
-            "openminion.modules.brain.execution.runtime.turn.dispatch._disabled_handoff_wait_response",
-            side_effect=ProviderError("ordinary failure", code="PROVIDER_ERROR"),
-        ),
-        patch(
-            "openminion.modules.brain.execution.runtime.turn.dispatch._dispatch_runtime_error",
-            return_value=converted,
-        ) as runtime_error,
-    ):
-        result = dispatch(
-            runner=SimpleNamespace(profile=None),
-            state=_state(),
-            logger=MagicMock(),
-            request=SimpleNamespace(
-                consume_user_input_for_command=False,
-                user_input="hello",
-            ),
-        )
-
-    assert result is converted
-    runtime_error.assert_called_once()
+    assert raised.value is failure

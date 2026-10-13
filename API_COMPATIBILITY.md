@@ -1,7 +1,7 @@
 # OpenMinion API Compatibility
 
 Status: active
-Last updated: 2026-10-06
+Last updated: 2026-10-13
 
 Purpose: record the supported public import roots and entrypoint compatibility
 posture for `openminion`.
@@ -63,6 +63,27 @@ approval-callback, and cancellation inputs. `AgentRunResult` includes the
 canonical result ID plus copied metadata and stats. Structured Pydantic output
 should be exact JSON; during `0.1.x`, one schema-valid JSON object wrapped in
 provider prose remains accepted for compatibility.
+
+### Provider failures
+
+After the configured retry budget is exhausted, `Agent.run()` and
+`Agent.run_stream()` raise the public `ProviderError` for recognized provider
+failures, including connection errors, authentication failures, rate limits,
+and provider request timeouts. The exception retains `code`, `message`, and
+`details`; provider request correlation is retained when available. This corrects
+0.1.4 behavior that could return an error message as a completed answer.
+Provider failure is reported before structured-output validation. Successful
+`AgentRunResult` values are unchanged. Submitted-turn streaming and HTTP callers
+continue to use their existing runtime error envelopes.
+
+```python
+from openminion import ProviderError
+
+try:
+    result = agent.run("Hello")
+except ProviderError as error:
+    print(error.code, error.message)
+```
 
 ## Public CLI/operator entrypoints
 
