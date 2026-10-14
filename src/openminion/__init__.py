@@ -8,6 +8,7 @@ from .base.version import OPENMINION_VERSION, PROVIDER_ERROR_PUBLIC_VERSION
 if TYPE_CHECKING:
     from .api import APIRuntime as APIRuntime, Agent as Agent
     from .api import AgentOutputValidationError as AgentOutputValidationError
+    from .api import TurnTimeoutError as TurnTimeoutError
     from .api import AgentRunResult as AgentRunResult, Handoff as Handoff
     from .api import ProviderError as ProviderError, subagent as subagent
     from .base.config import OpenMinionConfig as OpenMinionConfig
@@ -24,17 +25,14 @@ _LAZY_EXPORTS = {
     "MemoryBundle": ("openminion.modules.memory.portability", "MemoryBundle"),
     "OpenMinionConfig": ("openminion.base.config", "OpenMinionConfig"),
     "ProviderError": ("openminion.modules.llm", "ProviderError"),
+    "TurnTimeoutError": ("openminion.api.turns", "TurnTimeoutError"),
     "subagent": ("openminion.api", "subagent"),
     "tool": ("openminion.tools", "tool"),
 }
 __all__ = [*_LAZY_EXPORTS, "__version__"]
-_INITIAL_PUBLIC_EXPORTS = (
-    ("APIRuntime", "Agent", "AgentOutputValidationError", "AgentRunResult")
-    + ("Handoff", "MemoryBundle", "OpenMinionConfig", "__version__")
-    + ("subagent", "tool")
-)
-__since__ = dict.fromkeys(_INITIAL_PUBLIC_EXPORTS, "0.0.1")
+__since__ = dict.fromkeys(_LAZY_EXPORTS.keys() | {"__version__"}, "0.0.1")
 __since__["ProviderError"] = PROVIDER_ERROR_PUBLIC_VERSION
+__since__["TurnTimeoutError"] = f"{OPENMINION_VERSION}+unreleased"
 
 
 def __getattr__(name: str) -> Any:

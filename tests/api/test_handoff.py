@@ -19,6 +19,7 @@ from openminion.api.handoff import (
 from openminion.modules.policy.models import PolicyConfig
 from openminion.modules.policy.runtime.service import PolicyCtl
 from openminion.modules.tool.registry import ToolRegistry
+from openminion.modules.tool.schema_service import ToolSchemaService
 from sophiagraph.models import MemoryNamespace
 
 
@@ -60,9 +61,10 @@ class _FakeRuntime:
         if self.tools is not None:
             self.seen_tool_names_during_run = sorted(self.tools.list())
             self.prompt_visible_tools_during_run = sorted(
-                name
-                for name, tool in self.tools.list().items()
-                if bool(getattr(tool, "prompt_visible_runtime_name", False))
+                schema["name"]
+                for schema in ToolSchemaService().collect_execution_tool_schemas(
+                    registry=self.tools
+                )
             )
             for name in payload.get("allowed_tools", ()):
                 if name in self.tools.list():
@@ -490,3 +492,39 @@ def test_subagent_lazy_runtime_construction_only_happens_once() -> None:
         assert factory.call_count == 1
         child.run("hello")
         assert factory.call_count == 1
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_handoff_profile_lifetime_and_distinct_names(fail):
+    registry = ToolRegistry()
+    child_runtime = _FakeRuntime()
+    child = Agent(runtime=child_runtime, name="child")
+    handoffs = [
+        Handoff(target=child, name=name) for name in ("transfer-a", "transfer_a")
+    ]
+    family = build_delegate_family_spec(handoffs)
+    assert len({p.profile_id for p in family.exposure_profiles}) == 2
+    profiles = registry.exposure_service.profiles
+
+    class Runtime(_FakeRuntime):
+        def run_turn(self, **kwargs):
+            names = {
+                schema["name"]
+                for schema in ToolSchemaService().collect_execution_tool_schemas(
+                    registry=self.tools
+                )
+            }
+            assert {"transfer-a", "transfer_a"} <= names
+            if fail:
+                raise RuntimeError("turn failed")
+            return super().run_turn(**kwargs)
+
+    agent = Agent(runtime=Runtime(tools=registry), handoffs=handoffs)
+    if fail:
+        with pytest.raises(RuntimeError, match="turn failed"):
+            agent.run("delegate")
+    else:
+        agent.run("delegate")
+    assert registry.exposure_service.profiles == profiles
+    assert "transfer-a" not in registry.list()
+    assert "transfer_a" not in registry.list()

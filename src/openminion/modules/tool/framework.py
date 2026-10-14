@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -165,11 +166,19 @@ class GeneratedRegistrar:
         ctx: ToolRegisterContext | None = None,
     ) -> None:
         del ctx
-        registry.exposure_service.register_profiles(self._family.exposure_profiles)
-        for spec in derive_tool_specs(self._family):
-            registry.add(spec)
-        if self._family.provider_registration is not None:
-            self._family.provider_registration()
+        with registry.temporary_registration_lock, ExitStack() as rollback:
+            added_profiles = registry.exposure_service.register_profiles(
+                self._family.exposure_profiles
+            )
+            rollback.callback(
+                registry.exposure_service.unregister_profiles, added_profiles
+            )
+            for spec in derive_tool_specs(self._family):
+                registry.add(spec)
+                rollback.callback(registry.unregister, spec.name)
+            if self._family.provider_registration is not None:
+                self._family.provider_registration()
+            rollback.pop_all()
 
     def get_manifest(self, ctx: ToolRegisterContext | None) -> Any | None:
         del ctx

@@ -34,7 +34,7 @@ python examples/sdk/tool_agent.py
 | `delegation.py` | Peer handoffs and bounded subagents |
 | `application_runtime.py` | Application-owned `APIRuntime` lifecycle |
 | `provider_switching.py` | Selecting configured agents without changing code |
-| `error_handling.py` | Provider and output-validation failures |
+| `error_handling.py` | Provider, turn-deadline and output-validation failures |
 
 Use `python <file> --help` to see each program's options. Provider setup and
 switching commands live in `examples/providers/README.md`.

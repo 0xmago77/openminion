@@ -36,6 +36,7 @@ from openminion.modules.brain.loop.tools import (
     resolve_loop_model,
     run_adaptive_tool_loop,
 )
+from openminion.modules.brain.loop.tools.transcript import replay_tool_messages
 from openminion.modules.brain.loop.tools.prompts import (
     build_seeded_original_task_context_message,
 )
@@ -163,7 +164,14 @@ class ActLoopSeededMixin:
     def _seeded_replay_initial_state(
         self, ctx: ExecutionContext
     ) -> AdaptiveToolLoopState:
-        loop_state = AdaptiveToolLoopState(messages=[], scratchpad={})
+        runner = runner_from_context(ctx)
+        loop_state = AdaptiveToolLoopState(
+            messages=replay_tool_messages(
+                getattr(runner, "session_api", None),
+                str(ctx.state.session_id or ""),
+            ),
+            scratchpad={},
+        )
         module_state = dict(getattr(ctx.state, STATE_KEY_MODULE_STATE, {}) or {})
         raw_snapshot = module_state.pop("adaptive_loop", None)
         if module_state != dict(getattr(ctx.state, STATE_KEY_MODULE_STATE, {}) or {}):
@@ -176,17 +184,16 @@ class ActLoopSeededMixin:
             except Exception:  # noqa: BLE001
                 snapshot = None
             if snapshot is not None:
-                loop_state.messages = [
+                loop_state.messages.extend(
                     Message(
-                        role=cast(
-                            Any,
-                            str(item.get("role", "") or "").strip() or "system",
-                        ),
+                        role=cast(Any, str(item.get("role", "") or "system")),
                         content=str(item.get("content", "") or ""),
                     )
                     for item in list(snapshot.message_transcript or [])
                     if isinstance(item, dict)
-                ]
+                    and str(item.get("role", "") or "").strip() != "tool"
+                    and str(item.get("content", "") or "").strip()
+                )
                 tool_results = [
                     item
                     for item in list(snapshot.tool_results or [])

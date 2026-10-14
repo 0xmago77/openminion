@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Callable, Optional
 
 from openminion.base.types import Message
@@ -213,7 +214,7 @@ class GatewayTurnRunner(GatewayTurnRunnerFlowMixin):
 
         except RuntimeSessionTurnFenceError:
             raise
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError) as exc:
             self._finish_run_record(run_id, status="failed")
             with active_chat_phase("terminal_event"):
                 self._lifecycle_ops.emit_terminal_run_state(

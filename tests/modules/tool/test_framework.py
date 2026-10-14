@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -24,6 +25,7 @@ from openminion.modules.tool.framework import (
 )
 from openminion.modules.tool.registry import ToolRegistry
 from openminion.modules.tool.runtime.registrar import ToolModuleRegistrar
+from openminion.tools import tool
 
 
 class _StrictArgs(BaseModel):
@@ -265,6 +267,82 @@ class BuildRegistrarTests(unittest.TestCase):
                 tools=(FIXTURE_FAMILY.tools[0],),
                 exposure_profiles=(profile,),
             )
+
+
+class RegistrationRollbackTests(unittest.TestCase):
+    def test_duplicate_registration_preserves_existing_exposure(self) -> None:
+        @tool
+        def guarded_action() -> str:
+            return "existing"
+
+        @tool
+        def temporary_action() -> str:
+            return "temporary"
+
+        guarded = guarded_action.tool_family_spec()
+        temporary = temporary_action.tool_family_spec()
+        gate = ToolExposureProfile(
+            profile_id="manual_gate",
+            title="Manual gate",
+            summary="Requires explicit activation.",
+            tool_names=frozenset({"guarded_action"}),
+        )
+        for partial in (False, True):
+            with self.subTest(partial=partial):
+                registry = ToolRegistry()
+                registry.add(derive_tool_specs(guarded)[0])
+                registry.exposure_service.register_profiles(
+                    (gate, *temporary.exposure_profiles)
+                )
+                before_tools = registry.list()
+                before_profiles = registry.exposure_service.profiles
+                family = (
+                    replace(
+                        guarded,
+                        tools=(*temporary.tools, *guarded.tools),
+                        exposure_profiles=(
+                            *temporary.exposure_profiles,
+                            *guarded.exposure_profiles,
+                        ),
+                    )
+                    if partial
+                    else guarded
+                )
+
+                with self.assertRaisesRegex(ToolRuntimeError, "already registered"):
+                    build_registrar(family).register(registry)
+
+                self.assertEqual(registry.list(), before_tools)
+                self.assertEqual(registry.exposure_service.profiles, before_profiles)
+                self.assertEqual(
+                    registry.exposure_service.decide("guarded_action").state,
+                    "hidden",
+                )
+
+    def test_provider_callback_failure_rolls_back_registration(self) -> None:
+        @tool
+        def temporary_action() -> str:
+            return "temporary"
+
+        for failure_type in (RuntimeError, KeyboardInterrupt):
+            with self.subTest(failure_type=failure_type):
+                registry = ToolRegistry()
+                failure = failure_type("provider registration failed")
+
+                def register_provider() -> None:
+                    self.assertIn("temporary_action", registry.list())
+                    raise failure
+
+                family = replace(
+                    temporary_action.tool_family_spec(),
+                    provider_registration=register_provider,
+                )
+                with self.assertRaises(failure_type) as caught:
+                    build_registrar(family).register(registry)
+
+                self.assertIs(caught.exception, failure)
+                self.assertEqual(registry.list(), {})
+                self.assertEqual(registry.exposure_service.profiles, ())
 
 
 class ProviderOnlyFamilyTests(unittest.TestCase):

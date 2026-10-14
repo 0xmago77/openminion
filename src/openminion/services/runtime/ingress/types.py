@@ -94,6 +94,10 @@ class RuntimeTurnHandle:
         return bool(self.handle.cancel())
 
     def resolve_approval(self, *, approval_id: str, decision: str) -> bool:
+        """Apply allow_once or deny; invalid decisions raise ValueError.
+
+        False means the approval ID is stale or unknown.
+        """
         return bool(
             self.handle.resolve_approval(
                 approval_id=approval_id,

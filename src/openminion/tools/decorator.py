@@ -75,6 +75,25 @@ def _infer_description(func: Callable[..., Any]) -> str:
     return f"{subject}."
 
 
+def _user_tool_exposure_profile_id(tool_name: str) -> str:
+    """Map a tool name to a profile id injectively.
+
+    Profile ids only allow alphanumerics, ``_`` and ``-``. Alphanumerics and
+    ``-`` pass through, ``_`` is escaped as ``__`` and any other character as
+    ``_x<hex>_``, so distinct tool names (e.g. ``lookup-order`` and
+    ``lookup_order``) never share a profile id.
+    """
+    encoded: list[str] = []
+    for char in tool_name.strip():
+        if char == "_":
+            encoded.append("__")
+        elif char == "-" or char.isalnum():
+            encoded.append(char)
+        else:
+            encoded.append(f"_x{ord(char):x}_")
+    return f"user_tool_{''.join(encoded) or 'tool'}"
+
+
 def _decorate(
     func: Callable[..., Any],
     *,
@@ -86,6 +105,7 @@ def _decorate(
     tags: tuple[str, ...],
     capabilities: tuple[str, ...],
 ) -> Callable[..., Any]:
+    from openminion.modules.tool.exposure import ToolExposureProfile
     from openminion.modules.tool.framework import ToolDecl, ToolFamilySpec
 
     resolved_name = (name or func.__name__).strip()
@@ -123,6 +143,18 @@ def _decorate(
             module_id=module_id or f"openminion.tools.user.{resolved_name}",
             tools=(decl,),
             min_scope_default=min_scope_default,
+            # User-decorated tools are not in the built-in default-visible
+            # catalog, so without an active exposure profile the exposure
+            # service hides them from the model and denies their execution.
+            exposure_profiles=(
+                ToolExposureProfile(
+                    profile_id=_user_tool_exposure_profile_id(resolved_name),
+                    title=f"User tool: {resolved_name}",
+                    summary="Tool explicitly supplied by the caller via @openminion.tool.",
+                    tool_names=frozenset({resolved_name}),
+                    default_active=True,
+                ),
+            ),
         )
 
     func.tool_decl = decl  # type: ignore[attr-defined]
@@ -132,7 +164,17 @@ def _decorate(
 
 
 @overload
-def tool(func: Callable[..., Any]) -> Callable[..., Any]: ...
+def tool(
+    func: Callable[..., Any],
+    *,
+    name: Optional[str] = ...,
+    description: Optional[str] = ...,
+    min_scope: Optional[str] = ...,
+    dangerous: bool = ...,
+    idempotent: bool = ...,
+    tags: tuple[str, ...] = ...,
+    capabilities: tuple[str, ...] = ...,
+) -> Callable[..., Any]: ...
 
 
 @overload
@@ -161,18 +203,6 @@ def tool(
 ) -> Any:
     """Decorate a Python function as an OpenMinion tool."""
 
-    if func is not None and callable(func) and name is None and description is None:
-        return _decorate(
-            func,
-            name=None,
-            description=None,
-            min_scope=None,
-            dangerous=False,
-            idempotent=False,
-            tags=(),
-            capabilities=(),
-        )
-
     def _wrap(actual: Callable[..., Any]) -> Callable[..., Any]:
         return _decorate(
             actual,
@@ -185,4 +215,4 @@ def tool(
             capabilities=capabilities,
         )
 
-    return _wrap
+    return _wrap(func) if func is not None else _wrap

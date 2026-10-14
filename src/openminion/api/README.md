@@ -8,7 +8,7 @@ Canonical top-level entry points:
 
 The supported `openminion.api` facade exports `APIRuntime`, `Agent`,
 `AgentOutputValidationError`, `AgentRunResult`, `Handoff`, `dispatch_request`,
-`ProviderError`, `RuntimeTurnHandle`, `ToolCallSummary`, `TurnChunk`,
+`ProviderError`, `TurnTimeoutError`, `RuntimeTurnHandle`, `ToolCallSummary`, `TurnChunk`,
 `TurnError`, `TurnResponse`, `TurnTelemetry`, and `subagent`. Deeper imports
 remain owner-specific unless documented here or in `API_COMPATIBILITY.md`.
 

@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 from typing import Any, cast
 
+from openminion.modules.runtime.sync import raise_if_cancelled
 from openminion.modules.brain.interfaces import BRAIN_ADAPTER_INTERFACE_VERSION
 from openminion.modules.session.diagnostics.events import (
     emit_session_operation,
@@ -131,6 +132,7 @@ class SessctlAdapter:
         attachments: list[str] | None = None,
         meta: dict[str, Any] | None = None,
     ) -> str:
+        raise_if_cancelled()
         self._ensure_session_exists(session_id)
         turn_id = self.store.append_turn(
             session_id=session_id,

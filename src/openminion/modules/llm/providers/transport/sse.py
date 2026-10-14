@@ -6,6 +6,7 @@ from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from openminion.modules.runtime.sync import raise_if_cancelled, remaining_turn_timeout
 from openminion.base.config.env import EnvironmentConfig
 from ...errors import LLMCtlError
 from .client import ProviderHTTPClient
@@ -143,8 +144,7 @@ def iter_sse_post_lines(
     response_metadata: dict[str, str] | None = None,
     telemetryctl: Any | None = None,
 ) -> Iterator[str]:
-    total_started = time.perf_counter()
-    request_build_started = time.perf_counter()
+    total_started = request_build_started = time.perf_counter()
     serialized_payload = serialize_json_payload(payload)
     request_headers = with_default_user_agent(headers)
     transport_name = http_client.transport_name if http_client else transport
@@ -175,13 +175,15 @@ def iter_sse_post_lines(
     request_started = time.perf_counter()
     try:
         open_url = http_client.urlopen if http_client else urllib_request.urlopen
-        with open_url(req_obj, timeout=float(timeout_seconds)) as response:
+        timeout = remaining_turn_timeout(timeout_seconds)
+        with open_url(req_obj, timeout=timeout) as response:
             response_open_ms = _elapsed_ms(request_started)
             status_code = int(getattr(response, "status", 200) or 200)
             request_id = response_request_id(getattr(response, "headers", None))
             if response_metadata is not None and request_id:
                 response_metadata["request_id"] = request_id
             for raw_line in response:
+                raise_if_cancelled()
                 if first_event_ms is None:
                     first_event_ms = _elapsed_ms(request_started)
                 response_bytes += len(raw_line)
@@ -191,9 +193,8 @@ def iter_sse_post_lines(
             complete = True
     except urllib_error.HTTPError as exc:
         status_code = int(exc.code)
-        detail = _safe_http_error_body(exc)
         facts = openai_error_facts(
-            detail,
+            _safe_http_error_body(exc),
             status_code=int(exc.code),
             request_id=response_header(exc.headers, "X-Request-ID"),
             retry_after=response_header(exc.headers, "Retry-After"),

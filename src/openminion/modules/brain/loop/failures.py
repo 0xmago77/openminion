@@ -1,6 +1,10 @@
+"""Render recognized provider failures while preserving typed error facts."""
+
 import json
 from typing import Any
 
+from openminion.base.errors import error_info_from_exception
+from openminion.modules.llm import ProviderError
 from openminion.modules.llm.providers.diagnostics import (
     classify_provider_error_category,
 )
@@ -12,14 +16,10 @@ def _internal_failure_answer() -> str:
     )
 
 
-def _provider_failure_payload(
-    exc: Exception,
-    *,
-    confidence: float,
-) -> dict[str, Any] | None:
+def _provider_failure_error(exc: Exception) -> ProviderError | None:
+    facts = error_info_from_exception(exc)
+    details = dict(facts.details)
     code = str(getattr(exc, "code", "") or "").strip().upper()
-    message = str(getattr(exc, "message", "") or exc or "").strip()
-    details = dict(getattr(exc, "details", {}) or {})
     if not code:
         code = classify_provider_error_category(
             error=exc,
@@ -27,19 +27,13 @@ def _provider_failure_payload(
                 details.get("response_text") or details.get("body_text") or ""
             ),
         )
-    answer = _provider_failure_answer(code=code, message=message, details=details)
+    answer = _provider_failure_answer(code=code, message=facts.message, details=details)
     reason_code = _provider_failure_reason_code(code)
     if not answer or not reason_code:
         return None
-    return {
-        "route": "respond",
-        "confidence": float(confidence),
-        "reason_code": reason_code,
-        "respond_kind": "answer",
-        "sub_intents": [],
-        "rationale": "",
-        "answer": answer,
-    }
+    return ProviderError(
+        answer, code=code, details={**details, "reason_code": reason_code}
+    )
 
 
 def _provider_failure_reason_code(code: str) -> str:

@@ -104,6 +104,40 @@ def test_decorator_tool_family_spec_wraps_decl() -> None:
     assert spec.tools[0] is ping.tool_decl
 
 
+def test_decorator_tool_family_spec_exposes_tool_by_default() -> None:
+    @tool
+    def ping() -> str:
+        return "pong"
+
+    (profile,) = ping.tool_family_spec().exposure_profiles
+    assert profile.tool_names == frozenset({"ping"})
+    assert profile.default_active is True
+
+
+def test_decorator_profile_ids_keep_hyphen_and_underscore_names_distinct() -> None:
+    from openminion.modules.tool.exposure import ToolExposureService
+
+    @tool(name="lookup-order")
+    def lookup_hyphen() -> str:
+        return "a"
+
+    @tool(name="lookup_order")
+    def lookup_underscore() -> str:
+        return "b"
+
+    (hyphen,) = lookup_hyphen.tool_family_spec().exposure_profiles
+    (underscore,) = lookup_underscore.tool_family_spec().exposure_profiles
+    assert hyphen.profile_id != underscore.profile_id
+
+    service = ToolExposureService()
+    service.register_profiles((hyphen,))
+    service.register_profiles((underscore,))
+    assert {p.profile_id for p in service.profiles} >= {
+        hyphen.profile_id,
+        underscore.profile_id,
+    }
+
+
 def test_decorator_description_reaches_provider_schema() -> None:
     @tool
     def ping() -> str:
@@ -146,3 +180,31 @@ def test_openminion_tool_is_reexported_at_package_root() -> None:
         return None
 
     assert noop.tool_decl.name == "noop"
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_functional_decorator_preserves_options_and_identity(named) -> None:
+    def lookup(value: str) -> str:
+        return value
+
+    options = dict(
+        min_scope="POWER_USER",
+        dangerous=True,
+        idempotent=True,
+        tags=("external",),
+        capabilities=("lookup",),
+    )
+    if named:
+        options.update(name="custom.lookup", description="Lookup value.")
+    decorated = tool(lookup, **options)
+    assert decorated is lookup
+    assert decorated("marker") == "marker"
+    spec = derive_tool_specs(decorated.tool_family_spec())[0]
+    assert spec.min_scope == "POWER_USER"
+    assert spec.dangerous is True
+    assert spec.idempotent is True
+    assert "external" in spec.tags
+    assert "lookup" in spec.capabilities
+    if named:
+        assert spec.name == "custom.lookup"
+        assert spec.description == "Lookup value."

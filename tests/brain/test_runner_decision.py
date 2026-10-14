@@ -480,11 +480,6 @@ class RunnerDecisionTests(unittest.TestCase):
             ),
         )
 
-        # AR-04 (2026-06-18): RATE_LIMITED is now a retryable category, so
-        # the entry call retries with backoff before surfacing the typed
-        # provider-failure decision. Patch the backoff sleep to keep the
-        # test fast; the final decision is unchanged (a persistent
-        # rate-limit still surfaces `provider_rate_limited` after retries).
         with (
             patch.object(runner, "_estimate_tokens", return_value=1),
             patch.object(runner, "_debit_tokens", return_value=None),
@@ -492,19 +487,22 @@ class RunnerDecisionTests(unittest.TestCase):
                 "openminion.modules.brain.loop.orchestration._BACKOFF_SLEEP",
                 lambda *_a, **_k: None,
             ),
+            self.assertRaises(ProviderError) as raised,
         ):
-            decision = runner._decide(
+            runner._decide(
                 state=state,
                 user_input="hi",
                 logger=fake_logger(),
             )
 
-        self.assertEqual(decision.mode, "respond")
-        self.assertEqual(decision.reason_code, "provider_rate_limited")
-        self.assertIn("quota", str(decision.answer or "").lower())
-        self.assertIn("insufficient balance", str(decision.answer or "").lower())
-        # AR-04: the entry call is attempted 3 times (1 + 2 retries) before
-        # the persistent rate-limit is surfaced.
+        self.assertEqual(raised.exception.code, "RATE_LIMITED")
+        self.assertEqual(raised.exception.details["status_code"], 429)
+        self.assertEqual(
+            raised.exception.details["reason_code"], "provider_rate_limited"
+        )
+        self.assertIn("quota", raised.exception.message.lower())
+        self.assertIn("insufficient balance", raised.exception.message.lower())
+        self.assertIsInstance(raised.exception.__cause__, LLMCtlError)
         self.assertEqual(llm_api.call_count, 3)
 
     def test_decide_retries_transient_provider_error_then_succeeds(self) -> None:
@@ -603,17 +601,18 @@ class RunnerDecisionTests(unittest.TestCase):
         with (
             patch.object(runner, "_estimate_tokens", return_value=1),
             patch.object(runner, "_debit_tokens", return_value=None),
+            self.assertRaises(ProviderError) as raised,
         ):
-            decision = runner._decide(
+            runner._decide(
                 state=state,
                 user_input="hi",
                 logger=logger,
             )
 
-        self.assertEqual(decision.reason_code, "provider_error")
+        self.assertEqual(raised.exception.code, "PROVIDER_ERROR")
         self.assertIn(
             "Provider request ID: portal-request-1.",
-            decision.answer,
+            raised.exception.message,
         )
         self.assertEqual(llm_api.call_count, 1)
         retry_events = [
@@ -657,10 +656,11 @@ class RunnerDecisionTests(unittest.TestCase):
         with (
             patch.object(runner, "_estimate_tokens", return_value=1),
             patch.object(runner, "_debit_tokens", return_value=None),
+            self.assertRaises(ProviderError) as raised,
         ):
-            decision = runner._decide(state=state, user_input="hi", logger=logger)
+            runner._decide(state=state, user_input="hi", logger=logger)
 
-        self.assertEqual(decision.reason_code, "provider_error")
+        self.assertEqual(raised.exception.code, "PROVIDER_ERROR")
         self.assertEqual(llm_api.call_count, 1)
         self.assertFalse(
             any(
@@ -715,7 +715,7 @@ class RunnerDecisionTests(unittest.TestCase):
     def test_decide_does_not_retry_invalid_argument(self) -> None:
         """AR-04 (2026-06-18): a deterministic 400 / INVALID_ARGUMENT fault
         is NOT retried — retrying a malformed request just burns budget.
-        The typed provider-failure decision surfaces on the first attempt."""
+        The provider error surfaces on the first attempt."""
         llm_api = _StaticEntryLLM(
             LLMCtlError(
                 "INVALID_ARGUMENT",
@@ -746,15 +746,15 @@ class RunnerDecisionTests(unittest.TestCase):
                 "openminion.modules.brain.loop.orchestration._BACKOFF_SLEEP",
                 side_effect=lambda seconds: sleep_calls.append(seconds),
             ),
+            self.assertRaises(ProviderError) as raised,
         ):
-            decision = runner._decide(
+            runner._decide(
                 state=state,
                 user_input="hi",
                 logger=fake_logger(),
             )
 
-        self.assertEqual(decision.mode, "respond")
-        self.assertEqual(decision.reason_code, "provider_invalid_request")
+        self.assertEqual(raised.exception.code, "INVALID_ARGUMENT")
         # Fail-fast: exactly one attempt, no backoff sleep.
         self.assertEqual(llm_api.call_count, 1)
         self.assertEqual(sleep_calls, [])

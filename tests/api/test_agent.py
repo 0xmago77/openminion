@@ -243,6 +243,120 @@ def test_agent_registers_decorated_tool_only_for_the_run() -> None:
     assert "add" not in registry.list()
 
 
+def test_agent_decorated_tool_is_model_visible_during_the_run() -> None:
+    """Regression for openminion#248: decorated tools must reach the model."""
+    from openminion.modules.tool.schema_service import ToolSchemaService
+
+    registry = ToolRegistry()
+    seen: dict[str, Any] = {}
+
+    class _InspectingRuntime(_FakeRuntime):
+        def run_turn(self, *, payload, progress_callback=None, **kwargs):
+            seen["decision"] = registry.exposure_service.decide("lookup_code")
+            seen["schema_names"] = [
+                item["name"]
+                for item in ToolSchemaService().collect_execution_tool_schemas(
+                    registry=registry
+                )
+            ]
+            return super().run_turn(
+                payload=payload, progress_callback=progress_callback, **kwargs
+            )
+
+    @tool
+    def lookup_code(left: int, right: int) -> int:
+        """Combine two integers into a code."""
+
+        return left * 10 + right
+
+    Agent(tools=[lookup_code], runtime=_InspectingRuntime(tools=registry)).run("go")
+
+    assert seen["decision"].state == "visible"
+    assert "lookup_code" in seen["schema_names"]
+    assert "lookup_code" not in registry.list()
+
+
+def _profile_ids(registry: ToolRegistry) -> set[str]:
+    return {p.profile_id for p in registry.exposure_service.profiles}
+
+
+def test_agent_releases_temporary_exposure_profiles_after_run() -> None:
+    registry = ToolRegistry()
+    before = _profile_ids(registry)
+
+    @tool
+    def add(left: int, right: int) -> int:
+        """Add two integers."""
+
+        return left + right
+
+    agent = Agent(tools=[add], runtime=_FakeRuntime(tools=registry))
+    for _ in range(2):  # repeated runs register and release cleanly
+        agent.run("go")
+        assert _profile_ids(registry) == before
+        assert registry.exposure_service.decide("add").state != "visible"
+
+
+def test_agent_shared_runtime_reuse_keeps_pre_existing_profiles() -> None:
+    registry = ToolRegistry()
+
+    @tool
+    def add(left: int, right: int) -> int:
+        """Add two integers."""
+
+        return left + right
+
+    (profile,) = add.tool_family_spec().exposure_profiles
+    registry.exposure_service.register_profiles((profile,))
+    before = _profile_ids(registry)
+    runtime = _FakeRuntime(tools=registry)
+
+    Agent(tools=[add], runtime=runtime).run("go")
+    Agent(tools=[add], runtime=runtime).run("again")
+
+    assert _profile_ids(registry) == before
+    assert registry.exposure_service.profile(profile.profile_id) == profile
+
+
+def test_agent_rolls_back_profiles_when_registration_fails() -> None:
+    from openminion.modules.tool.errors import ToolRuntimeError
+
+    registry = ToolRegistry()
+
+    @tool
+    def first(left: int, right: int) -> int:
+        """First tool."""
+
+        return left
+
+    @tool(name="add")
+    def clashing(left: int, right: int) -> int:
+        """Clashes with a pre-registered tool."""
+
+        return right
+
+    @tool(name="add")
+    def pre_existing(left: int, right: int) -> int:
+        """Already registered."""
+
+        return left + right
+
+    from openminion.modules.tool.framework import derive_tool_specs
+
+    for spec in derive_tool_specs(pre_existing.tool_family_spec()):
+        registry.add(spec)
+    tools_before = set(registry.list())
+    profiles_before = _profile_ids(registry)
+    runtime = _FakeRuntime(tools=registry)
+
+    with pytest.raises((ToolRuntimeError, ValueError)):
+        Agent(tools=[first, clashing], runtime=runtime).run("go")
+
+    assert runtime.run_count == 0
+    assert set(registry.list()) == tools_before
+    assert _profile_ids(registry) == profiles_before
+
+
 def test_agent_rejects_temporary_tools_without_runtime_registry() -> None:
     runtime = _FakeRuntime()
 

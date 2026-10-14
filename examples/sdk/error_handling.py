@@ -1,4 +1,4 @@
-"""Handle provider and structured-output failures explicitly."""
+"""Handle provider, turn deadline and structured-output failures explicitly."""
 
 from __future__ import annotations
 
@@ -6,7 +6,12 @@ import argparse
 
 from pydantic import BaseModel
 
-from openminion import Agent, AgentOutputValidationError, ProviderError
+from openminion import (
+    Agent,
+    AgentOutputValidationError,
+    ProviderError,
+    TurnTimeoutError,
+)
 
 
 class Answer(BaseModel):
@@ -34,6 +39,9 @@ def main() -> int:
         if exc.details:
             print(f"details: {exc.details}")
         return 1
+    except TurnTimeoutError as exc:
+        print(f"turn timed out: {exc}")
+        return 3
     except AgentOutputValidationError as exc:
         print(f"invalid output: {exc.raw_text}")
         return 2

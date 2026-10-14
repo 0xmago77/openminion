@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, replace
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -318,6 +320,91 @@ def test_profile_registration_is_idempotent_but_rejects_conflicts() -> None:
                 ),
             )
         )
+
+
+def test_profile_removal_revokes_only_its_activations() -> None:
+    profile = ToolExposureProfile(
+        profile_id="temporary",
+        title="Temporary",
+        summary="Temporary inspection.",
+        tool_names=frozenset({"temporary.inspect"}),
+    )
+    unrelated = replace(profile, profile_id="unrelated")
+    service = ToolExposureService((profile, unrelated))
+    scopes = [
+        {"session_id": "s1"},
+        {"session_id": "s1", "task_id": "task", "target_id": "target"},
+        {"session_id": "s2"},
+    ]
+    activations = [service.activate(profile.profile_id, **scope) for scope in scopes]
+    retained = service.activate(unrelated.profile_id, session_id="s1")
+    events = []
+    service.bind_event_sink(events.append)
+
+    service.unregister_profiles(iter((" temporary ", "temporary", "missing")))
+    replacement = replace(
+        profile,
+        tool_names=frozenset({"temporary.apply"}),
+        risk=ToolRiskAnnotations(tier="apply", requires_approval=True),
+    )
+    service.register_profiles((replacement,))
+
+    for scope in scopes:
+        assert service.decide("temporary.apply", **scope).state == "hidden"
+    assert service.decide("temporary.inspect", session_id="s1").activation_id == (
+        retained.audit_id
+    )
+    assert {event["audit_id"] for event in events} == {
+        activation.audit_id for activation in activations
+    }
+    assert all(event["event"] == "deactivated" for event in events)
+    with pytest.raises(ToolRuntimeError, match="approval_required"):
+        service.activate(profile.profile_id, session_id="s1")
+    service.activate(profile.profile_id, session_id="s1", approved=True)
+    assert service.decide("temporary.apply", session_id="s1").state == "visible"
+
+
+@pytest.mark.parametrize("replace_profile", (False, True))
+def test_activation_cannot_commit_after_profile_removal(
+    monkeypatch, replace_profile: bool
+) -> None:
+    profile = ToolExposureProfile(
+        profile_id="temporary",
+        title="Temporary",
+        summary="Temporary inspection.",
+        tool_names=frozenset({"temporary.inspect"}),
+    )
+    service = ToolExposureService((profile,))
+    validated = Event()
+    release = Event()
+    validate = service._validate_activation
+
+    def pause_after_validation(*args, **kwargs):
+        validate(*args, **kwargs)
+        validated.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(service, "_validate_activation", pause_after_validation)
+    with ThreadPoolExecutor(1) as pool:
+        pending = pool.submit(service.activate, profile.profile_id, session_id="s1")
+        try:
+            assert validated.wait(5)
+            service.unregister_profiles((profile.profile_id,))
+            if replace_profile:
+                service.register_profiles(
+                    (
+                        replace(
+                            profile, risk=ToolRiskAnnotations(requires_approval=True)
+                        ),
+                    )
+                )
+        finally:
+            release.set()
+        with pytest.raises(KeyError):
+            pending.result(timeout=5)
+
+    assert not service.deactivate(profile.profile_id, session_id="s1")
+    assert service.decide("temporary.inspect", session_id="s1").state == "hidden"
 
 
 def test_activation_enforces_prerequisites_and_scope() -> None:
