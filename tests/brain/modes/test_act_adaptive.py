@@ -49,7 +49,8 @@ from openminion.modules.brain.schemas import (
 from openminion.modules.brain.schemas.closure import ClosureJudgment
 from openminion.modules.brain.schemas.plan import Plan
 from openminion.modules.brain.tools.executor import CommandExecutionOutcome
-from openminion.modules.llm.schemas import LLMResponse, ToolCall, UsageInfo
+from openminion.modules.llm.schemas import LLMRequest, LLMResponse, ToolCall, UsageInfo
+from openminion.modules.llm.transcript import validate_tool_transcript
 from openminion.modules.brain.execution.advance import advance_after_action
 from openminion.modules.brain.constants import (
     BRAIN_INTERNAL_MODE_ACT_ADAPTIVE,
@@ -3312,6 +3313,21 @@ def test_act_adaptive_seeded_confirmation_replay_exec_failure_reopens_autonomous
     )
     ctx, _ = _ctx(llm_client, executor)
     ctx.state.goal = "build and verify the task-summary package"
+    ctx.state.module_state = {
+        "adaptive_loop": LoopSnapshot(
+            turn_scope_id="prior-turn",
+            iteration_index=2,
+            message_transcript=[
+                {"role": "assistant", "content": ""},
+                {"role": "tool", "content": "prior command requires approval"},
+            ],
+            tool_call_history=[],
+            budgets_consumed={"llm_calls": 1, "tool_calls": 1},
+            profile_name="general_adaptive_v1",
+            model="fake-model",
+            allowed_tools=frozenset(ACT_ADAPTIVE_ALLOWED_TOOLS),
+        ).to_dict()
+    }
     ctx.decision.reason_code = "confirmation_replay"
     ctx.decision._seeded_commands = [
         ToolCommand(
@@ -3328,6 +3344,10 @@ def test_act_adaptive_seeded_confirmation_replay_exec_failure_reopens_autonomous
     assert len(executor.calls) == 2
     assert getattr(executor.calls[1], "tool_name", "") == "exec.run"
     assert llm_client.calls
+    assert (
+        validate_tool_transcript(LLMRequest(messages=llm_client.calls[0]["messages"]))
+        == "canonical_events"
+    )
     assert any(
         "confirmed seeded tool command failed" in message.content
         and "Usage: task-summary" in message.content
