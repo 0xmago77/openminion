@@ -327,3 +327,53 @@ def test_mcp_approval_config_parses_from_runtime_payload() -> None:
         tool_patterns=["mcp.fixture.delete_*"],
         risk_levels=["high"],
     )
+
+
+@pytest.mark.parametrize("level", ["critical", "hgh", "HIGHH"])
+def test_mcp_approval_rejects_unreachable_risk_levels(level) -> None:
+    with pytest.raises(ConfigError, match="risk_levels.*low.*medium.*high"):
+        coerce_mcp_server_configs(
+            [
+                {
+                    "name": "test",
+                    "command": ["python", "server.py"],
+                    "approval": {"mode": "matching", "risk_levels": [level]},
+                }
+            ]
+        )
+
+
+def test_mcp_approval_normalizes_supported_risk_levels() -> None:
+    config = MCPApprovalConfig(mode="matching", risk_levels=["LOW", " Medium ", "high"])
+    assert config.risk_levels == ["low", "medium", "high"]
+
+
+@pytest.mark.parametrize(
+    "level,scope,dangerous",
+    [
+        ("low", "READ_ONLY", False),
+        ("medium", "WRITE_SAFE", False),
+        ("high", "POWER_USER", True),
+    ],
+)
+def test_matching_risk_levels_require_approval_before_remote_execution(
+    level, scope, dangerous
+):
+    manager = _StubMCPManager(
+        _server(approval=MCPApprovalConfig(mode="matching", risk_levels=[level]))
+    )
+    spec = build_mcp_tool_spec(
+        manager=manager,
+        tool=_tool(MCPToolPosture(min_scope=scope, dangerous=dangerous)),
+    )
+    registry = ToolRegistry()
+    registry.add(spec)
+    result = registry.execute_calls(
+        [ProviderToolCall(name=spec.name, arguments={}, source="native")],
+        context=ToolExecutionContext(
+            channel="console", target="test", session_id="risk-test"
+        ),
+    ).results[0]
+    assert result.ok is False
+    assert result.data["error_code"] == "CONFIRM_REQUIRED"
+    assert manager.calls == []

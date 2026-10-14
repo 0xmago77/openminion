@@ -164,7 +164,17 @@ def _decorate(
 
 
 @overload
-def tool(func: Callable[..., Any]) -> Callable[..., Any]: ...
+def tool(
+    func: Callable[..., Any],
+    *,
+    name: Optional[str] = ...,
+    description: Optional[str] = ...,
+    min_scope: Optional[str] = ...,
+    dangerous: bool = ...,
+    idempotent: bool = ...,
+    tags: tuple[str, ...] = ...,
+    capabilities: tuple[str, ...] = ...,
+) -> Callable[..., Any]: ...
 
 
 @overload
@@ -193,18 +203,6 @@ def tool(
 ) -> Any:
     """Decorate a Python function as an OpenMinion tool."""
 
-    if func is not None and callable(func) and name is None and description is None:
-        return _decorate(
-            func,
-            name=None,
-            description=None,
-            min_scope=None,
-            dangerous=False,
-            idempotent=False,
-            tags=(),
-            capabilities=(),
-        )
-
     def _wrap(actual: Callable[..., Any]) -> Callable[..., Any]:
         return _decorate(
             actual,
@@ -217,4 +215,4 @@ def tool(
             capabilities=capabilities,
         )
 
-    return _wrap
+    return _wrap(func) if func is not None else _wrap

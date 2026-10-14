@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from pydantic import ValidationError
 
+from openminion.modules.runtime.sync import raise_if_cancelled
 from openminion.modules.telemetry.trace.phase_timing import (
     active_chat_phase,
     record_active_chat_provider_attempt,
@@ -401,8 +402,10 @@ def _complete_provider_attempt(
     model_name: str,
 ) -> LLMResponse:
     try:
+        raise_if_cancelled()
         with active_chat_phase("provider_round_trip"):
             raw_resp = provider.complete(call_request, cfg)
+        raise_if_cancelled()
         with active_chat_phase("response_normalization"):
             return client._normalize_response(
                 raw_resp,

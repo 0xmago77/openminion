@@ -120,13 +120,14 @@ class TurnHandle:
         return approved
 
     def resolve_approval(self, *, approval_id: str, decision: str) -> bool:
+        """Apply allow_once or deny; return False for an inactive approval ID."""
         normalized_decision = str(decision or "").strip().lower()
         outcome = {
             "allow_once": "applied",
             "deny": "denied",
         }.get(normalized_decision)
         if outcome is None:
-            return False
+            raise ValueError("decision must be allow_once or deny")
         return self._settle_pending_approval(
             outcome=outcome,
             decision=normalized_decision,

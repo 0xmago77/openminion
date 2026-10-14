@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 
-from openminion.base.version import PROVIDER_ERROR_PUBLIC_VERSION
+from openminion.base.version import OPENMINION_VERSION, PROVIDER_ERROR_PUBLIC_VERSION
 
 
 EXPECTED_OPENMINION_PUBLIC = {
@@ -14,6 +14,7 @@ EXPECTED_OPENMINION_PUBLIC = {
     "MemoryBundle",
     "OpenMinionConfig",
     "ProviderError",
+    "TurnTimeoutError",
     "__version__",
     "subagent",  # ISAP-15
     "tool",  # ISAP-11
@@ -26,6 +27,7 @@ EXPECTED_OPENMINION_API_PUBLIC = {
     "AgentRunResult",
     "Handoff",
     "ProviderError",
+    "TurnTimeoutError",
     "RuntimeTurnHandle",
     "ToolCallSummary",
     "TurnChunk",
@@ -41,6 +43,7 @@ EXPECTED_OPENMINION_SINCE = dict.fromkeys(
     "0.0.1",
 )
 EXPECTED_OPENMINION_SINCE["ProviderError"] = PROVIDER_ERROR_PUBLIC_VERSION
+EXPECTED_OPENMINION_SINCE["TurnTimeoutError"] = f"{OPENMINION_VERSION}+unreleased"
 
 
 def _public_names(module_name: str) -> set[str]:
@@ -104,3 +107,11 @@ def test_openminion_since_versions_look_like_semver() -> None:
         assert len(parts) >= 2 and parts[0].isdigit(), (
             f"openminion.__since__[{symbol!r}]={version!r} is not semver-ish."
         )
+
+
+def test_timeout_export_preserves_existing_exception_identity():
+    from openminion import TurnTimeoutError
+    from openminion.api import TurnTimeoutError as ApiTimeout
+    from openminion.api.turns import TurnTimeoutError as ExistingTimeout
+
+    assert TurnTimeoutError is ApiTimeout is ExistingTimeout

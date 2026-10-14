@@ -217,7 +217,7 @@ def _mcp_approval_required(
         return True
     risk = _mcp_tool_risk(tool)
     if mode == "dangerous":
-        return risk in {"high", "critical"}
+        return risk == "high"
     if mode == "matching":
         patterns = tuple(approval.tool_patterns)
         risk_levels = set(approval.risk_levels)

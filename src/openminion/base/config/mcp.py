@@ -286,24 +286,24 @@ class MCPApprovalConfig:
     risk_levels: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        mode = str(self.mode or "never").strip().lower() or "never"
-        if mode not in _VALID_MCP_APPROVAL_MODES:
+        self.mode = str(self.mode or "never").strip().lower() or "never"
+        if self.mode not in _VALID_MCP_APPROVAL_MODES:
             raise ConfigError(
-                "runtime.mcp_servers[].approval.mode must be one of "
-                "'never', 'always', 'dangerous', or 'matching'."
+                "MCP approval.mode must be 'never', 'always', 'dangerous', or 'matching'."
             )
-        self.mode = mode
         self.tool_patterns = _normalize_pattern_list(
             self.tool_patterns,
             field_path="runtime.mcp_servers[].approval.tool_patterns",
         )
-        self.risk_levels = [
-            str(item or "").strip().lower()
-            for item in _normalize_pattern_list(
-                self.risk_levels,
-                field_path="runtime.mcp_servers[].approval.risk_levels",
+        levels = _normalize_pattern_list(
+            self.risk_levels,
+            field_path="runtime.mcp_servers[].approval.risk_levels",
+        )
+        self.risk_levels = [level.lower() for level in levels]
+        if any(level not in {"low", "medium", "high"} for level in self.risk_levels):
+            raise ConfigError(
+                "MCP approval.risk_levels must contain only 'low', 'medium', or 'high'."
             )
-        ]
 
 
 def _coerce_mcp_approval_config(value: object) -> MCPApprovalConfig:

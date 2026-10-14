@@ -11,6 +11,7 @@ from openminion.modules.policy.constants import (
     POLICY_GRANT_EFFECT_ALLOW,
 )
 from openminion.modules.policy.models import PolicyGrantInput
+from openminion.modules.tool.exposure import ToolExposureProfile
 from openminion.modules.tool.framework import ToolDecl, ToolFamilySpec
 from openminion.tools.decorator import _build_args_model
 from sophiagraph.models import MemoryNamespace
@@ -206,6 +207,16 @@ def build_delegate_family_spec(handoffs: list[Handoff]) -> ToolFamilySpec | None
         tools=decls,
         min_scope_default="WRITE_SAFE",
         common_tags=("handoff",),
+        exposure_profiles=tuple(
+            ToolExposureProfile(
+                profile_id=f"handoff_{decl.name.encode('utf-8').hex()}",
+                title=f"Handoff: {decl.name}",
+                summary="Handoff explicitly supplied by the SDK caller.",
+                tool_names=frozenset({decl.name}),
+                default_active=True,
+            )
+            for decl in decls
+        ),
     )
 
 
