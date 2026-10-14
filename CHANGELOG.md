@@ -7,22 +7,26 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+## Current package line - 2026-10-14
+
+- Expose decorated tools passed through `Agent(tools=...)` to the model while
+  keeping temporary exposure profiles scoped to each run and collision-free.
+- Preserve complete string and falsey tool results, and surface typed provider
+  failures after retry exhaustion instead of reporting successful completion.
+- Roll back partial tool-family registrations and revoke removed exposure
+  profiles without disturbing pre-existing tools or permissions.
+- Restore approval-replay tool history from the canonical session transcript
+  so failed-command recovery keeps the original tool context.
 - Propagate turn cancellation into worker calls and bound provider I/O by the
   remaining deadline; stop subsequent work and late assistant persistence (#258).
+- Settle pending asynchronous work when a turn exits so cancelled or timed-out
+  operations cannot leak into later runtime work.
 - Preserve functional tool-decorator options and expose explicitly supplied
   handoff tools through the existing temporary profile lifecycle (#259, #257).
 - Export the existing `TurnTimeoutError` and handle it in the SDK error example
   (#260). Invalid streamed approval decisions now raise `ValueError`; valid
   decisions remain `allow_once` and `deny` (#261).
 - Reject MCP approval risk levels outside `low`, `medium`, and `high` (#262).
-
-- Roll back failed tool-family registrations without changing existing tools or
-  exposure profiles; revoke removed profiles' session activations before reuse.
-- Preserve string and other non-mapping tool return values in model-visible
-  results instead of discarding them during result normalization (#249).
-- Raise the existing typed provider error after entry-call retry exhaustion,
-  preserving friendly guidance and error details instead of returning a
-  successful answer; keep failed run lifecycle reporting intact (#251).
 
 ## Current package line - 2026-10-12
 
