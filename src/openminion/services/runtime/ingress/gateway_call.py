@@ -65,6 +65,10 @@ def _run_coro_sync(
         except BaseException as inner_exc:  # noqa: BLE001
             error["exc"] = inner_exc
         finally:
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.run_until_complete(loop.shutdown_asyncgens())
             asyncio.set_event_loop(None)
             # In-flight sync tools may finish, but must not delay the turn deadline.

@@ -136,3 +136,21 @@ def test_concurrent_turns_do_not_share_cancellation():
         assert results[1] == "completed"
 
     asyncio.run(scenario())
+
+
+def test_gateway_loop_settles_background_tasks_on_exit():
+    stopped = Event()
+
+    async def background():
+        try:
+            await asyncio.sleep(10)
+        finally:
+            stopped.set()
+
+    async def gateway():
+        asyncio.create_task(background())
+        await asyncio.sleep(0)
+        return "done"
+
+    assert _run_coro_sync(gateway, timeout=1) == "done"
+    assert stopped.is_set()
