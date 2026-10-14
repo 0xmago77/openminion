@@ -8,6 +8,7 @@ from collections.abc import Callable
 from functools import partial
 from typing import Any, Mapping
 
+from openminion.modules.runtime.sync import remaining_turn_timeout
 from openminion.base.config.env import EnvironmentConfig, resolve_environment_config
 
 from ...errors import LLMCtlError
@@ -222,7 +223,8 @@ def _curl_args(
     serialized_body: str,
     timeout_seconds: int,
 ) -> list[str]:
-    args = ["curl", "-sS", "-X", "POST", url, "--max-time", str(timeout_seconds)]
+    timeout = remaining_turn_timeout(timeout_seconds)
+    args = ["curl", "-sS", "-X", "POST", url, "--max-time", str(timeout)]
     for key, value in request_headers.items():
         args.extend(["-H", f"{key}: {value}"])
     args.extend(["-d", serialized_body, "-w", "\n%{http_code}"])

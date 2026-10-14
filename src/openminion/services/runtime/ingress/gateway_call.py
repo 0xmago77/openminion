@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import threading
+from contextvars import copy_context
 from typing import Any, Callable, Coroutine
 
 
@@ -53,11 +54,6 @@ def _run_coro_sync(
     timeout: float,
 ) -> Any:
     del timeout
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(build_coro())
-
     result: dict[str, Any] = {}
     error: dict[str, BaseException] = {}
 
@@ -69,12 +65,20 @@ def _run_coro_sync(
         except BaseException as inner_exc:  # noqa: BLE001
             error["exc"] = inner_exc
         finally:
+            loop.run_until_complete(loop.shutdown_asyncgens())
             asyncio.set_event_loop(None)
+            # In-flight sync tools may finish, but must not delay the turn deadline.
             loop.close()
 
-    thread = threading.Thread(target=_runner, daemon=True)
-    thread.start()
-    thread.join()
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        _runner()
+    else:
+        context = copy_context()
+        thread = threading.Thread(target=context.run, args=(_runner,), daemon=True)
+        thread.start()
+        thread.join()
 
     if "exc" in error:
         raise error["exc"]

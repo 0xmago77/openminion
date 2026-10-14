@@ -399,3 +399,23 @@ def test_daemon_without_negotiation_passes_no_approval_callback() -> None:
 
     assert response.final_text == "final"
     assert captured["approval_callback"] is None
+
+
+@pytest.mark.parametrize("decision", ["allow_session", "allow_forever", "approve", ""])
+def test_invalid_approval_decision_is_explicit_and_request_remains_pending(decision):
+    handle = _handle()
+    results = []
+    thread, request = _start_approval(handle, results)
+    try:
+        with pytest.raises(ValueError, match="allow_once.*deny"):
+            handle.resolve_approval(
+                approval_id=request.data["approval_id"], decision=decision
+            )
+        assert not results
+        assert handle.resolve_approval(
+            approval_id=request.data["approval_id"], decision=" ALLOW_ONCE "
+        )
+    finally:
+        handle.cancel()
+        thread.join(timeout=1)
+    assert results == [True]

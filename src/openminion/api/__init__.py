@@ -9,6 +9,7 @@ from openminion.api.agent import (
 )
 from openminion.api.handoff import Handoff, subagent
 from openminion.api.runtime import APIRuntime
+from openminion.api.turns import TurnTimeoutError
 from openminion.modules.llm import ProviderError
 from openminion.modules.runtime.contracts import (
     ToolCallSummary,
@@ -41,6 +42,7 @@ __all__ = [
     "TurnError",
     "TurnResponse",
     "TurnTelemetry",
+    "TurnTimeoutError",
     "dispatch_request",
     "subagent",
 ]

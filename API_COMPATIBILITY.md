@@ -1,7 +1,7 @@
 # OpenMinion API Compatibility
 
 Status: active
-Last updated: 2026-10-13
+Last updated: 2026-10-14
 
 Purpose: record the supported public import roots and entrypoint compatibility
 posture for `openminion`.
@@ -25,6 +25,7 @@ Current documented root exports:
 9. `subagent`
 10. `tool`
 11. `__version__`
+12. `TurnTimeoutError`
 
 These are defined in `src/openminion/__init__.py`.
 
@@ -48,6 +49,7 @@ Current documented exports:
 12. `TurnTelemetry`
 13. `dispatch_request`
 14. `subagent`
+15. `TurnTimeoutError`
 
 These are defined in `src/openminion/api/__init__.py`.
 
@@ -84,6 +86,32 @@ try:
 except ProviderError as error:
     print(error.code, error.message)
 ```
+
+### Turn deadlines and approval decisions (unreleased)
+
+`TurnTimeoutError` is the existing turn-deadline exception, now exported from
+`openminion` and `openminion.api` as well as `openminion.api.turns`. It is distinct
+from a provider request timeout reported by `ProviderError`. Its `__since__`
+entry is marked `0.1.4+unreleased` until release verification assigns the shipped
+version. The SDK error-handling example catches both errors.
+
+Turn cancellation propagates through nested worker calls. After cancellation,
+the runtime starts no further provider or tool work and does not append a late
+assistant answer. Provider connect/read timeouts use the remaining turn budget.
+A synchronous tool already executing cannot be forcibly stopped or its external
+side effects undone; its late result cannot continue the cancelled turn.
+
+`RuntimeTurnHandle.resolve_approval()` accepts `allow_once` and `deny`, with the
+existing case/whitespace normalization. Invalid decisions now raise `ValueError`
+listing those choices and leave the request pending for correction. A stale or
+unknown approval ID still returns `False`. This API does not accept session or
+permanent grants.
+
+Functional `tool(fn, **options)` now preserves the same options as
+`@tool(**options)`. Explicit SDK handoffs are exposed through temporary family
+profiles; exposure does not waive policy confirmation. MCP approval risk levels
+must be `low`, `medium`, or `high`; invalid values now raise `ConfigError` during
+configuration loading instead of silently never matching.
 
 ## Public CLI/operator entrypoints
 

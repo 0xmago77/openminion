@@ -4,9 +4,11 @@ import json
 import logging
 import sys
 import time
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from openminion.modules.runtime.sync import raise_if_cancelled
 from openminion.modules.tool.base import ToolExecutionContext, ToolExecutionResult
 from openminion.modules.tool.contracts import ProviderToolCall
 from openminion.modules.tool.constants import OPENMINION_CONFIG_PATH_ENV
@@ -623,11 +625,7 @@ def execute_single_call(
             continue
 
         effective_runtime_binding_id = resolution.runtime_binding_id
-        if (
-            not effective_runtime_binding_id
-            and isinstance(tool, ToolSpec)
-            and str(getattr(tool, "runtime_binding_id", "") or "").strip()
-        ):
+        if not effective_runtime_binding_id and isinstance(tool, ToolSpec):
             effective_runtime_binding_id = str(
                 getattr(tool, "runtime_binding_id", "") or ""
             ).strip()
@@ -653,6 +651,7 @@ def execute_single_call(
         if boundary_adapter is not None and isinstance(tool, ToolSpec):
             boundary_adapter.step(tool)
 
+        raise_if_cancelled()
         if isinstance(tool, ToolSpec):
             executed = execute_tool_spec_call_registry_toolspec_runtime(
                 tool=tool,
@@ -662,6 +661,7 @@ def execute_single_call(
         else:
             executed = tool.execute(arguments=arguments, context=context)
 
+        raise_if_cancelled()
         enriched_data = dict(executed.data or {})
         enriched_data.update(
             _runtime_resolution_data(

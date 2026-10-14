@@ -180,3 +180,31 @@ def test_openminion_tool_is_reexported_at_package_root() -> None:
         return None
 
     assert noop.tool_decl.name == "noop"
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_functional_decorator_preserves_options_and_identity(named) -> None:
+    def lookup(value: str) -> str:
+        return value
+
+    options = dict(
+        min_scope="POWER_USER",
+        dangerous=True,
+        idempotent=True,
+        tags=("external",),
+        capabilities=("lookup",),
+    )
+    if named:
+        options.update(name="custom.lookup", description="Lookup value.")
+    decorated = tool(lookup, **options)
+    assert decorated is lookup
+    assert decorated("marker") == "marker"
+    spec = derive_tool_specs(decorated.tool_family_spec())[0]
+    assert spec.min_scope == "POWER_USER"
+    assert spec.dangerous is True
+    assert spec.idempotent is True
+    assert "external" in spec.tags
+    assert "lookup" in spec.capabilities
+    if named:
+        assert spec.name == "custom.lookup"
+        assert spec.description == "Lookup value."

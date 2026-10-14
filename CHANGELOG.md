@@ -1,11 +1,20 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-13
+Last updated: 2026-10-14
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+- Propagate turn cancellation into worker calls and bound provider I/O by the
+  remaining deadline; stop subsequent work and late assistant persistence (#258).
+- Preserve functional tool-decorator options and expose explicitly supplied
+  handoff tools through the existing temporary profile lifecycle (#259, #257).
+- Export the existing `TurnTimeoutError` and handle it in the SDK error example
+  (#260). Invalid streamed approval decisions now raise `ValueError`; valid
+  decisions remain `allow_once` and `deny` (#261).
+- Reject MCP approval risk levels outside `low`, `medium`, and `high` (#262).
 
 - Roll back failed tool-family registrations without changing existing tools or
   exposure profiles; revoke removed profiles' session activations before reuse.

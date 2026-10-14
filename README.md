@@ -299,7 +299,7 @@ complete runnable example and
 
 The root package exports the supported Python facade: `APIRuntime`, `Agent`,
 `AgentOutputValidationError`, `AgentRunResult`, `Handoff`, `MemoryBundle`,
-`OpenMinionConfig`, `ProviderError`, `subagent`, `tool`, and `__version__`. See
+`OpenMinionConfig`, `ProviderError`, `TurnTimeoutError`, `subagent`, `tool`, and `__version__`. See
 [`API_COMPATIBILITY.md`](API_COMPATIBILITY.md) before depending on deeper
 package internals.
 

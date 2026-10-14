@@ -158,3 +158,22 @@ def test_sdk_tool_example_uses_public_decorator_contract() -> None:
 
     assert tool_decl.name == "lookup_order"
     assert "order" in tool_decl.description.lower()
+
+
+def test_sdk_error_example_handles_existing_turn_timeout(monkeypatch, capsys):
+    from openminion import Agent, TurnTimeoutError
+
+    class TimedOutRuntime:
+        def run_turn(self, **kwargs):
+            raise TurnTimeoutError("Turn execution timed out.")
+
+    module = run_path(str(SDK_EXAMPLES / "error_handling.py"))
+    main = module["main"]
+    monkeypatch.setitem(
+        main.__globals__,
+        "Agent",
+        lambda **kwargs: Agent(runtime=TimedOutRuntime(), **kwargs),
+    )
+    monkeypatch.setattr(sys, "argv", ["error_handling.py"])
+    assert main() == 3
+    assert "turn timed out: Turn execution timed out." in capsys.readouterr().out

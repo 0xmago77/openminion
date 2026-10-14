@@ -7,6 +7,7 @@ from typing import Any, Dict, Mapping
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from openminion.modules.runtime.sync import remaining_turn_timeout
 from openminion.base.config.env import EnvironmentConfig, resolve_environment_config
 from openminion.modules.llm.constants import DEFAULT_HTTP_USER_AGENT
 from ...errors import LLMCtlError
@@ -141,7 +142,9 @@ def _read_http_response(
 ) -> tuple[int, str, str, int]:
     open_url = http_client.urlopen if http_client else urllib_request.urlopen
     response_open_started = time.perf_counter()
-    with open_url(request, timeout=float(timeout_seconds)) as response:
+    with open_url(
+        request, timeout=remaining_turn_timeout(float(timeout_seconds))
+    ) as response:
         response_open_ms = _elapsed_ms(response_open_started)
         status_code = int(getattr(response, "status", 200) or 200)
         request_id = response_request_id(getattr(response, "headers", None))
