@@ -30,12 +30,9 @@ _LAZY_EXPORTS = {
     "tool": ("openminion.tools", "tool"),
 }
 __all__ = [*_LAZY_EXPORTS, "__version__"]
-__since__ = dict.fromkeys(
-    _LAZY_EXPORTS.keys() - {"ProviderError", "TurnTimeoutError"}, "0.0.1"
-)
-__since__["__version__"] = "0.0.1"
+__since__ = dict.fromkeys(_LAZY_EXPORTS.keys() | {"__version__"}, "0.0.1")
 __since__["ProviderError"] = PROVIDER_ERROR_PUBLIC_VERSION
-__since__["TurnTimeoutError"] = "0.1.4+unreleased"
+__since__["TurnTimeoutError"] = f"{OPENMINION_VERSION}+unreleased"
 
 
 def __getattr__(name: str) -> Any:
