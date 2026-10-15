@@ -137,6 +137,7 @@ class BrainRunner:
         self._trace_id = trace_id or new_uuid()
         self._call_order_tracker: dict[str, dict[str, Any]] = {}
         self._progress_callback: Callable[[PhaseStatus], None] | None = None
+        self._approval_callback: Any | None = None
         self._telemetry_turn_active = False
         configure_runtime_controls_runner_lifecycle(
             self,
@@ -520,6 +521,8 @@ class BrainRunner:
     ) -> StepOutput:
         previous_callback = self._progress_callback
         previous_telemetry_turn_active = self._telemetry_turn_active
+        previous_policy_callback = self._approval_callback
+        self._approval_callback = approval_callback
         approval_setter = getattr(self.tool_api, "set_approval_callback", None)
         previous_approval_callback = (
             approval_setter(approval_callback) if callable(approval_setter) else None
@@ -534,8 +537,7 @@ class BrainRunner:
         )
         self._trace_id = effective_trace_id
         self._hydrate_goal_session(session_id)
-        if progress_callback is not None:
-            self._progress_callback = progress_callback
+        self._progress_callback = progress_callback or previous_callback
         self._telemetry_turn_active = True
         self._emit_brain_operation(
             session_id=session_id,
@@ -561,15 +563,14 @@ class BrainRunner:
                 capture_identity=identity,
                 runtime_conversation_id=runtime_conversation_id,
             )
-            result_status = str(result.status).strip().lower()
             self._emit_brain_operation(
                 session_id=session_id,
                 turn_id=_result_trace_id(result, effective_trace_id),
                 operation="turn_finish",
-                status="error" if result_status in {"error", "failed"} else "ok",
+                status="error" if result.status in {"error", "failed"} else "ok",
                 extra={
                     "entrypoint": "run",
-                    "brain_status": result_status,
+                    "brain_status": result.status,
                 },
             )
             self._emit_turn_outcome(
@@ -597,8 +598,8 @@ class BrainRunner:
             raise
         finally:
             self._telemetry_turn_active = previous_telemetry_turn_active
-            if progress_callback is not None:
-                self._progress_callback = previous_callback
+            self._progress_callback = previous_callback
+            self._approval_callback = previous_policy_callback
             if callable(approval_setter):
                 approval_setter(previous_approval_callback)
 

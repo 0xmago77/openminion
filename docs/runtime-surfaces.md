@@ -52,6 +52,11 @@ Pass `config_path` for a project-owned config and `agent_id` to select a
 configured profile. Agent calls return their result to Python without console
 delivery, and `AgentRunResult.session_id` exposes the resolved continuity key.
 `Agent` also supports `with Agent(...) as agent:` for deterministic cleanup.
+`tools=None` keeps the configured default tool exposure; `tools=[]` disables
+application and orchestration tools for the turn. Explicit `handoffs` add their
+transfer tools to the list. Forced tool requests do not override an empty
+allowlist. Internal structured-output schemas may still be used for runtime
+reasoning; they cannot dispatch application tools.
 Its `run_stream()` method is a synchronous turn with a progress callback. For
 iterator streaming, cancellation, or explicit approval resolution, call
 `APIRuntime.submit_turn()` and use the returned `RuntimeTurnHandle`.
@@ -61,6 +66,10 @@ iterator streaming, cancellation, or explicit approval resolution, call
 `timeout_seconds`, `approval_callback`, and `cancel_event` controls already
 owned by runtime ingress. Their results expose the canonical result ID,
 metadata, and stats alongside the existing output and continuity fields.
+Action-policy confirmations reach `approval_callback` before tool execution.
+Returning true grants that invocation once; false or a callback failure prevents
+execution. Without a callback, the interactive confirmation flow remains in
+place. Submitted turns deliver the same request through approval stream events.
 
 Stable exported root symbols are recorded in `API_COMPATIBILITY.md`.
 Advanced turn lifecycle types are exported from `openminion.api` rather than

@@ -1,0 +1,273 @@
+"""SDK tool boundaries through real runtime and local provider requests."""
+
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Event, Thread
+
+import pytest
+from pydantic import BaseModel
+
+from openminion import Agent, APIRuntime, Handoff, tool
+from openminion.modules.tool.framework import build_registrar
+from openminion.base.config import OpenMinionConfig, save_config
+from openminion.base.config.core import ActionPolicyRuleConfig, ActionPolicyMatchConfig
+from tests._csc_fixtures import _csc_install_default_agent
+
+
+@pytest.fixture
+def sdk_tools(tmp_path, monkeypatch):
+    requests = []
+    state = {"tool_sent": False, "unsolicited": False}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append(request)
+            names = [item["function"]["name"] for item in request.get("tools", [])]
+            name = next(
+                (
+                    name
+                    for name in names
+                    if name in {"lookup_order", "transfer_to_child"}
+                ),
+                None,
+            )
+            if state["unsolicited"] and not names:
+                name = "lookup_order"
+            message = {"role": "assistant", "content": '{"answer":"LOCAL_MARKER"}'}
+            finish = "stop"
+            if name and not state["tool_sent"]:
+                state["tool_sent"] = True
+                arguments = (
+                    {"order_id": "A-104"}
+                    if name == "lookup_order"
+                    else {"message": "Return LOCAL_MARKER."}
+                )
+                message = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "local-call",
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": json.dumps(arguments),
+                            },
+                        }
+                    ],
+                }
+                finish = "tool_calls"
+            body = json.dumps(
+                {
+                    "id": "local-response",
+                    "object": "chat.completion",
+                    "model": "local",
+                    "choices": [
+                        {"index": 0, "message": message, "finish_reason": finish}
+                    ],
+                    "usage": {
+                        "prompt_tokens": 5,
+                        "completion_tokens": 5,
+                        "total_tokens": 10,
+                    },
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("LOCAL_SDK_KEY", "dummy-local")
+    config = OpenMinionConfig()
+    _csc_install_default_agent(config, provider="openai")
+    config.providers.openai.api_key_env = "LOCAL_SDK_KEY"
+    config.providers.openai.base_url = f"http://127.0.0.1:{server.server_port}/v1"
+    config.action_policy.rules = [
+        ActionPolicyRuleConfig(
+            match=ActionPolicyMatchConfig(tool_name="lookup_order"), mode="ask"
+        )
+    ]
+    config.runtime.process_mode = "single-process"
+    config.runtime.daemon_auto_start = False
+    config.storage.path = str(tmp_path / "state.db")
+    config_path = tmp_path / "agents.json"
+    save_config(config, str(config_path))
+    runtime = APIRuntime.from_config_path(
+        str(config_path), home_root=tmp_path, data_root=tmp_path / "data"
+    )
+    try:
+        yield runtime, requests, state
+    finally:
+        runtime.close()
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+class Answer(BaseModel):
+    answer: str
+
+
+@pytest.mark.parametrize("tools", [None, []])
+def test_empty_tools_differs_from_defaults(sdk_tools, tools):
+    runtime, requests, _state = sdk_tools
+    result = Agent(runtime=runtime, tools=tools, output_type=Answer).run("Say hello.")
+    assert result.output.answer == "LOCAL_MARKER"
+    execution_schemas = [
+        t["function"]["name"]
+        for request in requests
+        for t in request.get("tools", [])
+        if t["function"]["name"] != "submit_output"
+    ]
+    assert bool(execution_schemas) is (tools is None)
+
+
+@pytest.mark.parametrize(
+    "decision", ["allow", "async", "deny", "error", "cancel", "interactive"]
+)
+def test_action_policy_callback_controls_execution(sdk_tools, decision):
+    runtime, _requests, _state = sdk_tools
+    calls, approvals = [], []
+    cancelled = Event()
+
+    @tool(dangerous=True)
+    def lookup_order(order_id: str) -> str:
+        calls.append(order_id)
+        return "ready"
+
+    def approve(name, args, approval_id):
+        approvals.append((name, args, approval_id))
+        if decision == "error":
+            raise RuntimeError("fixture callback failed")
+        if decision == "cancel":
+            cancelled.set()
+        return decision in {"allow", "async", "cancel"}
+
+    async def approve_async(*args):
+        return approve(*args)
+
+    callback = approve_async if decision == "async" else approve
+    agent = Agent(
+        runtime=runtime,
+        tools=[lookup_order],
+        forced_tools=["lookup_order"],
+        output_type=Answer if decision in {"allow", "async"} else str,
+    )
+    if decision == "cancel":
+        with pytest.raises(RuntimeError, match="cancelled"):
+            agent.run("Check A-104", approval_callback=approve, cancel_event=cancelled)
+    else:
+        result = agent.run(
+            "Check A-104",
+            approval_callback=None if decision == "interactive" else callback,
+        )
+        if decision in {"allow", "async"}:
+            assert result.output.answer == "LOCAL_MARKER"
+        if decision == "error":
+            assert result.metadata["brain_status"] == "error"
+            assert result.metadata["error_message"] == "fixture callback failed"
+        if decision == "interactive":
+            assert "CONFIG_RULE_ASK" in result.text
+    assert len(approvals) == (0 if decision == "interactive" else 1)
+    if approvals:
+        assert approvals[0][0] == "lookup_order"
+        assert approvals[0][1] == {"order_id": "A-104"}
+        assert approvals[0][2]
+    assert calls == (["A-104"] if decision in {"allow", "async"} else [])
+    if decision in {"allow", "async"}:
+        _state["tool_sent"] = False
+        followup = Agent(
+            runtime=runtime,
+            tools=[lookup_order],
+            forced_tools=["lookup_order"],
+        )
+        result = followup.run("Check A-104 again.")
+        assert "CONFIG_RULE_ASK" in result.text
+        assert len(approvals) == 1
+        assert calls == ["A-104"]
+
+
+@pytest.mark.parametrize("decision", ["allow_once", "deny", "cancel"])
+def test_submitted_turn_delivers_policy_approval(sdk_tools, decision):
+    runtime, _requests, _state = sdk_tools
+    calls = []
+
+    @tool(dangerous=True)
+    def lookup_order(order_id: str) -> str:
+        calls.append(order_id)
+        return "ready"
+
+    build_registrar(lookup_order.tool_family_spec()).register(runtime.tools)
+    runtime.tools.get("lookup_order").prompt_visible_runtime_name = True
+    handle = runtime.submit_turn(
+        payload={
+            "message": "Check A-104",
+            "session_id": "stream-policy",
+            "allowed_tools": ["lookup_order"],
+            "forced_tools": ["lookup_order"],
+            "timeout_seconds": 10,
+        }
+    )
+    requested = []
+    for chunk in handle.stream(timeout_s=15):
+        if chunk.kind != "approval" or chunk.data["phase"] != "requested":
+            continue
+        requested.append(chunk.data)
+        assert calls == []
+        assert chunk.data["tool_name"] == "lookup_order"
+        if decision == "cancel":
+            handle.cancel()
+        else:
+            assert handle.resolve_approval(
+                approval_id=chunk.data["approval_id"], decision=decision
+            )
+    handle.result(timeout_s=2)
+    assert len(requested) == 1
+    assert calls == (["A-104"] if decision == "allow_once" else [])
+    assert not handle.resolve_approval(
+        approval_id=requested[0]["approval_id"], decision="allow_once"
+    )
+
+
+@pytest.mark.parametrize("forced", [False, True])
+def test_empty_tools_blocks_unsolicited_provider_calls(sdk_tools, forced):
+    runtime, requests, state = sdk_tools
+    calls = []
+
+    @tool
+    def lookup_order(order_id: str) -> str:
+        calls.append(order_id)
+        return "ready"
+
+    build_registrar(lookup_order.tool_family_spec()).register(runtime.tools)
+    runtime.tools.get("lookup_order").prompt_visible_runtime_name = True
+    state["unsolicited"] = True
+    Agent(
+        runtime=runtime, tools=[], forced_tools=["lookup_order"] if forced else []
+    ).run("Check A-104")
+    assert calls == []
+    assert all(
+        t["function"]["name"] == "submit_output"
+        for request in requests
+        for t in request.get("tools", [])
+    )
+
+
+def test_explicit_handoff_remains_available_with_empty_tools(sdk_tools):
+    runtime, requests, _state = sdk_tools
+    child = Agent(runtime=runtime, name="child", tools=[])
+    parent = Agent(runtime=runtime, tools=[], handoffs=[Handoff(target=child)])
+    parent.run("Say hello.", approval_callback=lambda *_args: True)
+    assert any(
+        t["function"]["name"] == "transfer_to_child"
+        for request in requests
+        for t in request.get("tools", [])
+    )

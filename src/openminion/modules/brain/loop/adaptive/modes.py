@@ -481,7 +481,7 @@ class ActLoopMode(ActLoopSeededMixin, ActLoopFinalizationMixin):
             max_macro_corrections=2,
             macro_correction_cooldown=1,
             allow_llm_recovery_after_tool_failure=True,
-            tool_choice="none" if consolidation_overrides is not None else "auto",
+            tool_choice="auto" if effective_allowed_tools else "none",
             llm_request_overrides={
                 "metadata": _adaptive_loop_metadata(ctx, purpose="act")
             },

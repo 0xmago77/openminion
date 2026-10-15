@@ -92,6 +92,13 @@ def turn_tool_allowlist(
     requested = tuple(
         item.strip() for item in str(raw or "").split(",") if item.strip()
     )
+    if str(metadata.get("turn_tool_allowlist_supplied", "")).lower() == "true":
+        turn_allowed = {
+            item.strip()
+            for item in str(metadata.get("turn_tool_allowlist", "")).split(",")
+            if item.strip()
+        }
+        requested = tuple(item for item in requested if item in turn_allowed)
     identity_filter = identity_tool_filter or {}
     identity_items = identity_filter.get("allowed_tools")
     identity_allowed = (

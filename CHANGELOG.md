@@ -7,6 +7,11 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Honor explicit empty SDK tool lists while preserving default tools and explicit
+  handoffs; delegated turns retain the narrower caller allowlist (#269).
+- Deliver action-policy confirmations through SDK callbacks and submitted-turn
+  approval events, retaining one-shot grants and cancellation checks (#270).
+
 - Keep MCP CLI configuration aligned with the SDK's project-scoped default,
   enable approval events for submitted SDK turns, and pin the public
   `TurnTimeoutError` introduction to 0.1.5.
