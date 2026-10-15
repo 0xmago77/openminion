@@ -105,6 +105,7 @@ def submit_turn_payload(
     runtime: "RuntimeFacade",
     payload: dict[str, Any],
 ) -> RuntimeTurnHandle:
+    payload = {"approval_transport": "turn_stream", **payload}
     manager = getattr(runtime, "runtime_manager", None)
     if manager is None:
         raise RuntimeError("runtime manager is unavailable")

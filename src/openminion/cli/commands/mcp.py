@@ -44,11 +44,11 @@ def run_mcp(args: argparse.Namespace) -> int:
 
 
 def _mcp_add(args: argparse.Namespace) -> int:
-    from openminion.base.config.io import load_config, save_config
+    from openminion.base.config.io import save_config
     from openminion.base.config.mcp import MCPServerConfig
 
-    config_path = getattr(args, "config", None)
-    config = load_config(config_path)
+    manager = _load_writable_config_manager(args)
+    config = manager.base_config
     command = list(getattr(args, "command", []) or [])
     if command[:1] == ["--"]:
         command = command[1:]
@@ -69,7 +69,7 @@ def _mcp_add(args: argparse.Namespace) -> int:
     if any(item.name == server.name for item in config.runtime.mcp_servers):
         raise RuntimeError(f"MCP server already exists: {server.name}")
     config.runtime.mcp_servers.append(server)
-    save_config(config, config_path)
+    save_config(config, str(manager.config_path), home_root=manager.home_root)
     print_json_payload(
         {
             "ok": True,
@@ -81,24 +81,25 @@ def _mcp_add(args: argparse.Namespace) -> int:
 
 
 def _mcp_get(args: argparse.Namespace) -> int:
-    from openminion.base.config.io import load_config
+    from openminion.cli.config import load_cli_manager_from_args
 
-    config = load_config(getattr(args, "config", None))
+    config = load_cli_manager_from_args(args).base_config
     server = _require_server(config.runtime.mcp_servers, args.name)
     print_json_payload({"ok": True, "server": _redacted_server_payload(server)})
     return 0
 
 
 def _mcp_remove(args: argparse.Namespace) -> int:
-    from openminion.base.config.io import load_config, save_config
+    from openminion.base.config.io import save_config
+    from openminion.cli.config import load_cli_manager_from_args
 
-    config_path = getattr(args, "config", None)
-    config = load_config(config_path)
+    manager = load_cli_manager_from_args(args)
+    config = manager.base_config
     server = _require_server(config.runtime.mcp_servers, args.name)
     config.runtime.mcp_servers = [
         item for item in config.runtime.mcp_servers if item.name != server.name
     ]
-    save_config(config, config_path)
+    save_config(config, str(manager.config_path), home_root=manager.home_root)
     print_json_payload({"ok": True, "removed": server.name, "applies": "next_startup"})
     return 0
 
@@ -120,17 +121,18 @@ def _mcp_untrust(args: argparse.Namespace) -> int:
 
 
 def _mcp_set_enabled(args: argparse.Namespace, *, enabled: bool) -> int:
-    from openminion.base.config.io import load_config, save_config
+    from openminion.base.config.io import save_config
+    from openminion.cli.config import load_cli_manager_from_args
 
-    config_path = getattr(args, "config", None)
-    config = load_config(config_path)
+    manager = load_cli_manager_from_args(args)
+    config = manager.base_config
     server = _require_server(config.runtime.mcp_servers, args.name)
     updated = replace(server, enabled=enabled)
     config.runtime.mcp_servers = [
         updated if item.name == server.name else item
         for item in config.runtime.mcp_servers
     ]
-    save_config(config, config_path)
+    save_config(config, str(manager.config_path), home_root=manager.home_root)
     print_json_payload(
         {
             "ok": True,
@@ -142,10 +144,11 @@ def _mcp_set_enabled(args: argparse.Namespace, *, enabled: bool) -> int:
 
 
 def _mcp_set_trusted(args: argparse.Namespace, *, trusted: bool) -> int:
-    from openminion.base.config.io import load_config, save_config
+    from openminion.base.config.io import save_config
+    from openminion.cli.config import load_cli_manager_from_args
 
-    config_path = getattr(args, "config", None)
-    config = load_config(config_path)
+    manager = load_cli_manager_from_args(args)
+    config = manager.base_config
     server = _require_server(config.runtime.mcp_servers, args.name)
     if server.transport != "stdio":
         raise RuntimeError("mcp trust/untrust applies only to stdio servers")
@@ -154,7 +157,7 @@ def _mcp_set_trusted(args: argparse.Namespace, *, trusted: bool) -> int:
         updated if item.name == server.name else item
         for item in config.runtime.mcp_servers
     ]
-    save_config(config, config_path)
+    save_config(config, str(manager.config_path), home_root=manager.home_root)
     print_json_payload(
         {
             "ok": True,
@@ -166,19 +169,19 @@ def _mcp_set_trusted(args: argparse.Namespace, *, trusted: bool) -> int:
 
 
 def _mcp_import(args: argparse.Namespace) -> int:
-    from openminion.base.config.io import load_config, save_config
+    from openminion.base.config.io import save_config
 
     source_path = Path(str(getattr(args, "source", "") or "")).expanduser()
     payload = json.loads(source_path.read_text(encoding="utf-8"))
     imported = _servers_from_external_payload(payload)
-    config_path = getattr(args, "config", None)
     if bool(getattr(args, "write", False)):
-        config = load_config(config_path)
+        manager = _load_writable_config_manager(args)
+        config = manager.base_config
         existing = {server.name: server for server in config.runtime.mcp_servers}
         for server in imported:
             existing[server.name] = server
         config.runtime.mcp_servers = list(existing.values())
-        save_config(config, config_path)
+        save_config(config, str(manager.config_path), home_root=manager.home_root)
     print_json_payload(
         {
             "ok": True,
@@ -190,9 +193,9 @@ def _mcp_import(args: argparse.Namespace) -> int:
 
 
 def _mcp_list(args: argparse.Namespace) -> int:
-    from openminion.base.config.io import load_config
+    from openminion.cli.config import load_cli_manager_from_args
 
-    config = load_config(getattr(args, "config", None))
+    config = load_cli_manager_from_args(args).base_config
     print_json_payload(
         {
             "ok": True,
@@ -206,10 +209,10 @@ def _mcp_list(args: argparse.Namespace) -> int:
 
 
 def _mcp_validate(args: argparse.Namespace) -> int:
-    from openminion.base.config.io import load_config
     from openminion.base.config.mcp import coerce_mcp_server_configs
+    from openminion.cli.config import load_cli_manager_from_args
 
-    config = load_config(getattr(args, "config", None))
+    config = load_cli_manager_from_args(args).base_config
     servers = coerce_mcp_server_configs(config.runtime.mcp_servers)
     issues = []
     for server in servers:
@@ -271,7 +274,7 @@ def _mcp_test(args: argparse.Namespace) -> int:
 
 
 def _mcp_login(args: argparse.Namespace) -> int:
-    from openminion.base.config.manager import ConfigManager
+    from openminion.cli.config import load_cli_manager_from_args
     from openminion.modules.secret.factory import build_secret_service
     from openminion.tools.mcp.auth import (
         SecretServiceMCPTokenStore,
@@ -279,7 +282,7 @@ def _mcp_login(args: argparse.Namespace) -> int:
     )
     from openminion.tools.mcp.transport import probe_oauth_challenge
 
-    manager = ConfigManager.load(getattr(args, "config", None))
+    manager = load_cli_manager_from_args(args)
     servers = _filter_servers(manager.base_config.runtime.mcp_servers, args.name)
     if len(servers) != 1 or servers[0].authorization.mode != "oauth_pkce":
         raise RuntimeError("mcp login requires one oauth_pkce server")
@@ -499,11 +502,11 @@ def _mcp_resource(args: argparse.Namespace) -> int:
 
 
 def _configured_manager(args: argparse.Namespace) -> Any:
-    from openminion.base.config.io import load_config
+    from openminion.cli.config import load_cli_manager_from_args
     from openminion.tools.mcp.manager import MCPFleetManager
     from openminion.tools.mcp.auth import build_runtime_mcp_token_store
 
-    config = load_config(getattr(args, "config", None))
+    config = load_cli_manager_from_args(args).base_config
     servers = [
         server
         for server in _filter_servers(config.runtime.mcp_servers, args.name)
@@ -512,6 +515,32 @@ def _configured_manager(args: argparse.Namespace) -> Any:
     return MCPFleetManager(
         servers,
         token_store=build_runtime_mcp_token_store(config.runtime),
+    )
+
+
+def _load_writable_config_manager(args: argparse.Namespace) -> Any:
+    from openminion.base.config import ConfigManager, OpenMinionConfig
+    from openminion.base.config.io import resolve_config_path
+    from openminion.cli.config import (
+        load_cli_manager_from_args,
+        resolve_cli_roots,
+    )
+
+    roots = resolve_cli_roots(
+        config_path=getattr(args, "config", None),
+        home_root=getattr(args, "home_root", None),
+        data_root=getattr(args, "data_root", None),
+    )
+    config_path = resolve_config_path(
+        getattr(args, "config", None), home_root=roots.home_root
+    )
+    if config_path.exists():
+        return load_cli_manager_from_args(args)
+    return ConfigManager(
+        base_config=OpenMinionConfig(),
+        home_root=roots.home_root,
+        data_root=roots.data_root,
+        config_path=config_path,
     )
 
 
@@ -538,12 +567,13 @@ def _mcp_registry_search(args: argparse.Namespace) -> int:
 
 def _mcp_serve(args: argparse.Namespace) -> int:
     from openminion.api.runtime import APIRuntime
+    from openminion.cli.config import load_cli_manager_from_args
     from openminion.tools.mcp.server import (
         build_runtime_published_tools,
         serve_published_stdio,
     )
 
-    runtime = APIRuntime.from_config_path(getattr(args, "config", None))
+    runtime = APIRuntime.from_manager(load_cli_manager_from_args(args))
     try:
         tools = build_runtime_published_tools(runtime)
         if not tools:

@@ -7,6 +7,10 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Keep MCP CLI configuration aligned with the SDK's project-scoped default,
+  enable approval events for submitted SDK turns, and pin the public
+  `TurnTimeoutError` introduction to 0.1.5.
+
 ## Current package line - 2026-10-14
 
 - Expose decorated tools passed through `Agent(tools=...)` to the model while
