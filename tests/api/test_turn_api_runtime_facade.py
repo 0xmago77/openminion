@@ -62,6 +62,26 @@ def test_open_turn_submission_uses_api_runtime_submit_turn() -> None:
     assert submission.timeout_s == 12.0
 
 
+def test_api_runtime_submit_turn_enables_stream_approvals_by_default() -> None:
+    runtime = object.__new__(APIRuntime)
+    runtime.config = OpenMinionConfig.from_dict(
+        {
+            "agents": {"default": {"provider": "echo"}},
+            "default_agent": "default",
+        }
+    )
+    runtime.runtime_manager = mock.Mock()
+    runtime.runtime_manager.submit_turn.return_value = SimpleNamespace(
+        trace_id="trace-1"
+    )
+    payload = {"message": "run it", "session_id": "session-1"}
+
+    result = APIRuntime.submit_turn(runtime, payload=payload)
+
+    assert result.request.meta["approval_transport"] == "turn_stream"
+    assert "approval_transport" not in payload
+
+
 def test_api_runtime_resolve_agent_profile_fails_closed_for_unknown_profile() -> None:
     runtime = object.__new__(APIRuntime)
     runtime.config = OpenMinionConfig.from_dict(

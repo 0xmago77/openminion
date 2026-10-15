@@ -3,7 +3,9 @@
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-from .base.version import OPENMINION_VERSION, PROVIDER_ERROR_PUBLIC_VERSION
+from .base.version import OPENMINION_VERSION
+from .base.version import PROVIDER_ERROR_PUBLIC_VERSION
+from .base.version import TURN_TIMEOUT_ERROR_PUBLIC_VERSION
 
 if TYPE_CHECKING:
     from .api import APIRuntime as APIRuntime, Agent as Agent
@@ -32,7 +34,7 @@ _LAZY_EXPORTS = {
 __all__ = [*_LAZY_EXPORTS, "__version__"]
 __since__ = dict.fromkeys(_LAZY_EXPORTS.keys() | {"__version__"}, "0.0.1")
 __since__["ProviderError"] = PROVIDER_ERROR_PUBLIC_VERSION
-__since__["TurnTimeoutError"] = f"{OPENMINION_VERSION}+unreleased"
+__since__["TurnTimeoutError"] = TURN_TIMEOUT_ERROR_PUBLIC_VERSION
 
 
 def __getattr__(name: str) -> Any:

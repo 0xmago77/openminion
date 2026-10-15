@@ -1,6 +1,5 @@
-"""Canonical package identity for the public openminion distribution."""
-
 OPENMINION_PACKAGE_NAME = "openminion"
 OPENMINION_VERSION = "0.1.5"
 PROVIDER_ERROR_PUBLIC_VERSION = "0.1.1"
+TURN_TIMEOUT_ERROR_PUBLIC_VERSION = "0.1.5"
 __all__ = ["OPENMINION_PACKAGE_NAME", "OPENMINION_VERSION"]
