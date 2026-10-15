@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 from openminion.modules.brain.adapters.tool.runtime import ToolAdapter
 from openminion.modules.brain.tool_catalog.runtime import RunnerToolCatalog
+from openminion.modules.brain.loop.services import turn_tool_allowlist
+import pytest
 from openminion.modules.brain.tools.schema import collect_runtime_tool_names
 from openminion.modules.tool import ToolRegistry, ToolSpec
 
@@ -100,3 +102,20 @@ def test_turn_tool_allowlist_is_isolated_between_concurrent_children(
         frozenset({"safe.read"}),
         frozenset({"danger.write"}),
     }
+
+
+@pytest.mark.parametrize(
+    "requested, expected", [("", ()), ("safe.read,danger.write", ("safe.read",))]
+)
+def test_sdk_allowlist_cannot_expand_delegated_scope(requested, expected):
+    assert (
+        turn_tool_allowlist(
+            {
+                "subagent_context_id": "child",
+                "subagent_tool_allowlist": "safe.read",
+                "turn_tool_allowlist_supplied": "true",
+                "turn_tool_allowlist": requested,
+            }
+        )
+        == expected
+    )

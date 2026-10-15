@@ -85,6 +85,7 @@ class Agent(Generic[InputT, OutputT]):
         self.output_type = output_type
         self.agent_id = (agent_id or "").strip() or None
         self.model = model
+        self._tools_supplied = tools is not None
         self.tools: list[str] = []
         self._tool_family_builders: list[Callable[[], Any]] = []
         for configured_tool in tools or []:
@@ -164,7 +165,7 @@ class Agent(Generic[InputT, OutputT]):
             payload["override_system_prompt"] = self.instructions
         if self.model:
             payload["override_model"] = self.model
-        if self.tools:
+        if self.tools or self._tools_supplied:
             payload["allowed_tools"] = list(self.tools)
         if self.forced_tools:
             payload["forced_tools"] = list(self.forced_tools)

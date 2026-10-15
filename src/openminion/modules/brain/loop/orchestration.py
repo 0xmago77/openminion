@@ -693,7 +693,7 @@ def decide(
                 messages=messages,
                 tools=tool_specs,
                 model=model,
-                tool_choice="auto",
+                tool_choice="auto" if tool_specs else "none",
                 max_output_tokens=budget_max_tokens,
                 metadata=entry_metadata,
             )

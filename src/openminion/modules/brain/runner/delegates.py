@@ -67,6 +67,14 @@ from .turn import (
 )
 from ..schemas import AskUserCommand, Command, PolicyDecision, WorkingState
 from ..constants import BRAIN_COMMAND_KIND_ASK_USER
+from ..schemas.commands import ToolCommand
+from openminion.modules.runtime.sync import raise_if_cancelled
+from openminion.modules.telemetry.trace.phase_timing import active_chat_phase
+from .tick.context import (
+    _clear_pending_confirmation_metadata,
+    _deny_pending_confirmation,
+    _grant_once_from_confirmation,
+)
 from ..tools.executor import execute_action
 from openminion.modules.tool.contracts.model_ids import (  # noqa: PLC0415
     MODEL_TASK_CANCEL,
@@ -223,6 +231,48 @@ def _evaluate_policy_decision(
     return decision
 
 
+def _resolve_callback_confirmation(
+    runner: Any,
+    *,
+    state: WorkingState,
+    command: ToolCommand,
+    decision: PolicyDecision,
+    logger: Any,
+) -> PolicyDecision:
+    state.pending_policy_approval_id = decision.approval_id
+    state.pending_policy_confirmation_preview = decision.confirmation_preview
+    state.pending_policy_facts = dict(decision.policy_facts)
+    grant_id = None
+    try:
+        raise_if_cancelled()
+        with active_chat_phase("approval_wait"):
+            approved = runner._approval_callback(
+                command.tool_name,
+                dict(command.args),
+                decision.approval_id or command.command_id,
+                dict(decision.policy_facts),
+            )
+        raise_if_cancelled()
+        if not approved:
+            return PolicyDecision(
+                outcome="DENY", explanation="Tool execution denied by operator."
+            )
+        grant_id, _supported = _grant_once_from_confirmation(
+            runner, state=state, command=command, logger=logger
+        )
+        if not grant_id:
+            return PolicyDecision(
+                outcome="DENY", explanation="Tool approval could not be resolved."
+            )
+        return _evaluate_policy_decision(
+            runner, state=state, command=command, logger=logger
+        )
+    finally:
+        if not grant_id:
+            _deny_pending_confirmation(runner, state=state)
+        _clear_pending_confirmation_metadata(state)
+
+
 def _approve_delegate(
     runner: Any,
     *,
@@ -233,6 +283,14 @@ def _approve_delegate(
     decision = _evaluate_policy_decision(
         runner, state=state, command=command, logger=logger
     )
+    if (
+        decision.outcome == "REQUIRE_CONFIRMATION"
+        and command.kind == "tool"
+        and getattr(runner, "_approval_callback", None) is not None
+    ):
+        decision = _resolve_callback_confirmation(
+            runner, state=state, command=command, decision=decision, logger=logger
+        )
     inputs = dict(command.inputs)
     local_replay = (
         inputs.get("confirmation_source") == "policy_replay"
