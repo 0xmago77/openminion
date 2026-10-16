@@ -132,6 +132,7 @@ def test_tag_spelling_must_match_source_version_exactly(tmp_path, tag):
         ".".join(("0", "1", "3")),
         ".".join(("0", "1", "4")),
         ".".join(("0", "1", "5")),
+        ".".join(("0", "1", "6")),
         "0.2.0",
     ],
 )

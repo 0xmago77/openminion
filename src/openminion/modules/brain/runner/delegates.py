@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Callable
 
+from openminion.modules.tool.plugin_api import confirmation_preview_payload
+
 from ..runtime.context import build_context as build_context_pack
 from ..bootstrap.skill.hints import resolve_skill_hints as resolve_skill_hints_events
 from ..execution.failure_response import (
@@ -34,7 +36,10 @@ from ..loop.clarify import (
     process_clarification_response as process_clarification_response_flow,
 )
 from ..loop.orchestration import decide as decide_flow
-from ..loop.tools.confirmation import confirmation_required_user_message
+from ..loop.tools.confirmation import (
+    confirmation_required_user_message,
+    requires_individual_confirmation,
+)
 from ..bootstrap.recovery import heuristic_decision as heuristic_decision_flow
 from ..bootstrap.payloads import (
     normalize_decision_payload as normalize_decision_payload_flow,
@@ -67,6 +72,14 @@ from .turn import (
 )
 from ..schemas import AskUserCommand, Command, PolicyDecision, WorkingState
 from ..constants import BRAIN_COMMAND_KIND_ASK_USER
+from ..schemas.commands import ToolCommand
+from openminion.modules.runtime.sync import raise_if_cancelled
+from openminion.modules.telemetry.trace.phase_timing import active_chat_phase
+from .tick.context import (
+    _clear_pending_confirmation_metadata,
+    _deny_pending_confirmation,
+    _grant_once_from_confirmation,
+)
 from ..tools.executor import execute_action
 from openminion.modules.tool.contracts.model_ids import (  # noqa: PLC0415
     MODEL_TASK_CANCEL,
@@ -223,6 +236,54 @@ def _evaluate_policy_decision(
     return decision
 
 
+def _resolve_callback_confirmation(
+    runner: Any,
+    *,
+    state: WorkingState,
+    command: ToolCommand,
+    decision: PolicyDecision,
+    logger: Any,
+) -> PolicyDecision:
+    state.pending_policy_approval_id = decision.approval_id
+    state.pending_policy_confirmation_preview = decision.confirmation_preview
+    state.pending_policy_facts = dict(decision.policy_facts)
+    facts = dict(decision.policy_facts)
+    if decision.confirmation_preview is not None:
+        facts["confirmation_preview"] = confirmation_preview_payload(
+            decision.confirmation_preview
+        )
+    grant_id = None
+    try:
+        raise_if_cancelled()
+        with active_chat_phase("approval_wait"):
+            approved = runner._approval_callback(
+                command.tool_name,
+                dict(command.args),
+                decision.approval_id or command.command_id,
+                facts,
+            )
+        raise_if_cancelled()
+        if not approved:
+            return PolicyDecision(
+                outcome="DENY",
+                explanation="Confirmation denied. The action was not run.",
+            )
+        grant_id, _supported = _grant_once_from_confirmation(
+            runner, state=state, command=command, logger=logger
+        )
+        if not grant_id:
+            return PolicyDecision(
+                outcome="DENY", explanation="Tool approval could not be resolved."
+            )
+        return _evaluate_policy_decision(
+            runner, state=state, command=command, logger=logger
+        )
+    finally:
+        if not grant_id:
+            _deny_pending_confirmation(runner, state=state)
+        _clear_pending_confirmation_metadata(state)
+
+
 def _approve_delegate(
     runner: Any,
     *,
@@ -233,6 +294,19 @@ def _approve_delegate(
     decision = _evaluate_policy_decision(
         runner, state=state, command=command, logger=logger
     )
+    if (
+        decision.outcome == "REQUIRE_CONFIRMATION"
+        and command.kind == "tool"
+        and getattr(runner, "_approval_callback", None) is not None
+    ):
+        if not requires_individual_confirmation(command) and callable(
+            getattr(runner.tool_api, "set_approval_callback", None)
+        ):
+            # Tool runtime owns inline approval and returns denials as tool results.
+            return command
+        decision = _resolve_callback_confirmation(
+            runner, state=state, command=command, decision=decision, logger=logger
+        )
     inputs = dict(command.inputs)
     local_replay = (
         inputs.get("confirmation_source") == "policy_replay"

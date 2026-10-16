@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import importlib
 
-from openminion.base.version import OPENMINION_VERSION, PROVIDER_ERROR_PUBLIC_VERSION
+from openminion.base.version import (
+    PROVIDER_ERROR_PUBLIC_VERSION,
+    TURN_TIMEOUT_ERROR_PUBLIC_VERSION,
+)
 
 
 EXPECTED_OPENMINION_PUBLIC = {
@@ -43,7 +46,7 @@ EXPECTED_OPENMINION_SINCE = dict.fromkeys(
     "0.0.1",
 )
 EXPECTED_OPENMINION_SINCE["ProviderError"] = PROVIDER_ERROR_PUBLIC_VERSION
-EXPECTED_OPENMINION_SINCE["TurnTimeoutError"] = f"{OPENMINION_VERSION}+unreleased"
+EXPECTED_OPENMINION_SINCE["TurnTimeoutError"] = TURN_TIMEOUT_ERROR_PUBLIC_VERSION
 
 
 def _public_names(module_name: str) -> set[str]:

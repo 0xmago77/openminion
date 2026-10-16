@@ -29,6 +29,7 @@ def _args(mcp_command: str, **kwargs):
 
 
 def _write_json(path: Path, payload: dict) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
@@ -72,6 +73,7 @@ def test_mcp_import_redacts_secret_stdout(tmp_path: Path, capsys) -> None:
     output = capsys.readouterr().out
     assert "raw-secret" not in output
     payload = json.loads(output)
+    assert payload["config_path"] == str(config.resolve())
     assert payload["imported"][0]["enabled"] is False
     assert payload["imported"][0]["env"]["API_TOKEN"] == "<redacted>"
     assert payload["imported"][0]["env"]["SAFE_FLAG"] == "<redacted>"
@@ -103,6 +105,97 @@ def test_mcp_list_and_validate_config(tmp_path: Path, capsys) -> None:
     assert run_mcp(_args("validate", config=str(config))) == 0
     validated = json.loads(capsys.readouterr().out)
     assert validated == {"issues": [], "ok": True, "server_count": 1}
+
+
+def test_mcp_default_config_matches_sdk_project_scope(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    project = tmp_path / "project"
+    fake_home = tmp_path / "home"
+    _write_json(
+        project / ".openminion" / "agents.json",
+        _runtime_config(
+            {
+                "name": "Project Marker",
+                "transport": "stdio",
+                "command": ["python", "project.py"],
+                "trusted": True,
+            }
+        ),
+    )
+    _write_json(
+        fake_home / ".openminion" / "agents.json",
+        _runtime_config(
+            {
+                "name": "Home Marker",
+                "transport": "stdio",
+                "command": ["python", "home.py"],
+                "trusted": True,
+            }
+        ),
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.delenv("OPENMINION_HOME", raising=False)
+    monkeypatch.delenv("OPENMINION_CONFIG_ROOT", raising=False)
+    monkeypatch.delenv("OPENMINION_DATA_ROOT", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+    assert run_mcp(_args("list")) == 0
+
+    listed = json.loads(capsys.readouterr().out)
+    assert [server["name"] for server in listed["servers"]] == ["project_marker"]
+
+
+def test_mcp_explicit_config_write_does_not_mutate_default_config(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    project = tmp_path / "project"
+    default_path = _write_json(
+        project / ".openminion" / "agents.json",
+        _runtime_config(
+            {
+                "name": "Default Marker",
+                "transport": "stdio",
+                "command": ["python", "default.py"],
+                "trusted": True,
+            }
+        ),
+    )
+    explicit_path = _write_json(
+        tmp_path / "explicit.json",
+        {
+            "runtime": {"mcp_servers": []},
+            "agents": {"default": {"provider": "echo"}},
+            "default_agent": "default",
+        },
+    )
+    before = default_path.read_bytes()
+    monkeypatch.chdir(project)
+    monkeypatch.delenv("OPENMINION_HOME", raising=False)
+    monkeypatch.delenv("OPENMINION_CONFIG_ROOT", raising=False)
+    monkeypatch.delenv("OPENMINION_DATA_ROOT", raising=False)
+
+    assert (
+        run_mcp(
+            _args(
+                "add",
+                config=str(explicit_path),
+                name="Explicit Marker",
+                command=["python", "explicit.py"],
+                url="",
+                cwd="",
+                trusted=True,
+                disabled=False,
+            )
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert default_path.read_bytes() == before
+    assert [
+        server.name for server in load_config(str(explicit_path)).runtime.mcp_servers
+    ] == ["explicit_marker"]
 
 
 def test_mcp_validate_reports_untrusted_stdio(tmp_path: Path, capsys) -> None:
@@ -174,6 +267,7 @@ def test_mcp_config_lifecycle_preserves_unrelated_config(
     )
     added = json.loads(capsys.readouterr().out)
     assert added["applies"] == "next_startup"
+    assert added["config_path"] == str(config.resolve())
     assert added["server"]["name"] == "local_fixture"
     persisted = load_config(str(config))
     assert persisted.runtime.env["KEEP"] == "yes"
@@ -184,24 +278,33 @@ def test_mcp_config_lifecycle_preserves_unrelated_config(
     assert shown["server"]["command"] == ["python", "server.py"]
 
     assert run_mcp(_args("disable", config=str(config), name="local_fixture")) == 0
-    assert json.loads(capsys.readouterr().out)["server"]["enabled"] is False
+    disabled = json.loads(capsys.readouterr().out)
+    assert disabled["server"]["enabled"] is False
+    assert disabled["config_path"] == str(config.resolve())
     assert load_config(str(config)).runtime.mcp_servers[0].enabled is False
 
     assert run_mcp(_args("enable", config=str(config), name="local_fixture")) == 0
-    assert json.loads(capsys.readouterr().out)["server"]["enabled"] is True
+    enabled = json.loads(capsys.readouterr().out)
+    assert enabled["server"]["enabled"] is True
+    assert enabled["config_path"] == str(config.resolve())
     assert load_config(str(config)).runtime.mcp_servers[0].enabled is True
 
     assert run_mcp(_args("untrust", config=str(config), name="local_fixture")) == 0
-    assert json.loads(capsys.readouterr().out)["server"]["trusted"] is False
+    untrusted = json.loads(capsys.readouterr().out)
+    assert untrusted["server"]["trusted"] is False
+    assert untrusted["config_path"] == str(config.resolve())
     assert load_config(str(config)).runtime.mcp_servers[0].trusted is False
 
     assert run_mcp(_args("trust", config=str(config), name="local_fixture")) == 0
-    assert json.loads(capsys.readouterr().out)["server"]["trusted"] is True
+    trusted = json.loads(capsys.readouterr().out)
+    assert trusted["server"]["trusted"] is True
+    assert trusted["config_path"] == str(config.resolve())
     assert load_config(str(config)).runtime.mcp_servers[0].trusted is True
 
     assert run_mcp(_args("remove", config=str(config), name="local_fixture")) == 0
     assert json.loads(capsys.readouterr().out) == {
         "applies": "next_startup",
+        "config_path": str(config.resolve()),
         "ok": True,
         "removed": "local_fixture",
     }
@@ -480,8 +583,8 @@ def test_mcp_login_starts_cimd_pkce_flow(monkeypatch, capsys) -> None:
         env=object(),
     )
     monkeypatch.setattr(
-        "openminion.base.config.manager.ConfigManager.load",
-        lambda _path: config_manager,
+        "openminion.cli.config.load_cli_manager_from_args",
+        lambda _args: config_manager,
     )
     monkeypatch.setattr(
         "openminion.tools.mcp.auth.discover_oauth_metadata",
@@ -561,8 +664,8 @@ def test_mcp_login_exchanges_and_redacts_tokens(monkeypatch, capsys) -> None:
     discovery: list[dict[str, object]] = []
     exchange: list[dict[str, object]] = []
     monkeypatch.setattr(
-        "openminion.base.config.manager.ConfigManager.load",
-        lambda _path: config_manager,
+        "openminion.cli.config.load_cli_manager_from_args",
+        lambda _args: config_manager,
     )
 
     def discover(_config, **kwargs):
@@ -644,8 +747,8 @@ def test_mcp_login_rejects_metadata_drift_before_token_exchange(monkeypatch) -> 
     secrets = _FakeSecretService()
     exchanged = {"called": False}
     monkeypatch.setattr(
-        "openminion.base.config.manager.ConfigManager.load",
-        lambda _path: config_manager,
+        "openminion.cli.config.load_cli_manager_from_args",
+        lambda _args: config_manager,
     )
     monkeypatch.setattr(
         "openminion.tools.mcp.auth.discover_oauth_metadata",
@@ -709,8 +812,8 @@ def test_mcp_login_consumes_state_when_metadata_discovery_fails(monkeypatch) -> 
         env=object(),
     )
     monkeypatch.setattr(
-        "openminion.base.config.manager.ConfigManager.load",
-        lambda _path: config_manager,
+        "openminion.cli.config.load_cli_manager_from_args",
+        lambda _args: config_manager,
     )
     monkeypatch.setattr(
         "openminion.modules.secret.factory.build_secret_service",

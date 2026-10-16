@@ -1,11 +1,28 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-14
+Last updated: 2026-10-15
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+## Current package line - 2026-10-15
+
+- Preserve exact-action details in terminal and streamed approval previews,
+  including transaction recipient, value, fees and preparation digest (#270).
+
+- Honor explicit empty SDK tool lists while preserving default tools and explicit
+  handoffs; delegated turns retain the narrower caller allowlist (#269).
+- Deliver action-policy confirmations through SDK callbacks and submitted-turn
+  approval events, retaining one-shot grants and cancellation checks (#270).
+- Keep queued Focus prompts behind ordinary approval-denial tool results while
+  preserving terminal denials for one-time actions.
+
+- Keep MCP CLI configuration aligned with the SDK's project-scoped default,
+  enable approval events for submitted SDK turns, and pin the public
+  `TurnTimeoutError` introduction to 0.1.5.
+- Report the resolved configuration path after MCP commands write changes.
 
 ## Current package line - 2026-10-14
 

@@ -74,6 +74,12 @@ List this workspace using the file tools.
 
 A later bare launch reuses the same config and opens the terminal directly.
 
+Direct `openminion mcp ...` commands use `./.openminion/agents.json` when
+`--config` is omitted, matching the Python SDK's project-scoped default. Pass
+`--config ~/.openminion/agents.json` to manage the interactive setup config
+instead. Configuration-changing MCP commands report the exact `config_path`
+they wrote.
+
 An explicit `--dir` trusts that workspace for the current process. Without it,
 an ordinary Git worktree is trusted, another directory starts Read only, and a
 launch from your home directory or a filesystem root stops with `--dir PATH`
