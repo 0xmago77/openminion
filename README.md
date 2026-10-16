@@ -187,6 +187,12 @@ When setup finishes and the interactive CLI opens, ask: `List this workspace
 using the file tools.` The default config is saved at
 `~/.openminion/agents.json`, so the next bare launch reuses it.
 
+Direct `openminion mcp ...` commands use `./.openminion/agents.json` when
+`--config` is omitted, matching the Python SDK's project-scoped default. Pass
+`--config ~/.openminion/agents.json` to manage the interactive setup config
+instead. MCP commands that change configuration report the exact `config_path`
+they wrote.
+
 For a credential-free product tour, create an explicit echo/demo config:
 
 ```bash
