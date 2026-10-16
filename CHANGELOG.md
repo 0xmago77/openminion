@@ -1,11 +1,14 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-14
+Last updated: 2026-10-15
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+- Preserve exact-action details in terminal and streamed approval previews,
+  including transaction recipient, value, fees and preparation digest (#270).
 
 - Honor explicit empty SDK tool lists while preserving default tools and explicit
   handoffs; delegated turns retain the narrower caller allowlist (#269).

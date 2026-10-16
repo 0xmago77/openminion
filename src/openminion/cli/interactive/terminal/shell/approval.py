@@ -5,6 +5,7 @@ from typing import Any
 from openminion.cli.status.tool_calls import format_tool_args_preview
 from openminion.base.redaction import redact_mapping, redact_sensitive_text
 from openminion.modules.policy.grants import requires_once_duration
+from openminion.modules.policy.models import confirmation_preview_lines
 from openminion.modules.tool.plugin_api import (
     is_policy_authorization_pair,
 )
@@ -55,6 +56,7 @@ def format_terminal_approval_prompt(
         lines.append(f"Reason: {facts['reason_code']}")
     if facts.get("duration_options"):
         lines.append(f"Choices: {', '.join(facts['duration_options'])}")
+    lines.extend(confirmation_preview_lines(name, facts.get("confirmation_preview")))
     if _requires_one_time_approval(name):
         lines.append("This approval is for this exact action once. Allow once or deny.")
     return "\n".join(str(redact_sensitive_text(line)[0]) for line in lines)

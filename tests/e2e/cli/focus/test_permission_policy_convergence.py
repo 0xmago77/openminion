@@ -564,6 +564,14 @@ def test_provider_free_focus_permission_journey(
                 ),
                 approval_events=exact_events,
             )
+            for detail in (
+                "Chain ID: 31337",
+                "To: 0x" + "22" * 20,
+                "Value (wei): 1",
+                "Maximum total fee (wei): 42000",
+                "Preparation digest: " + preparation_digest_value,
+            ):
+                assert detail in exact_turn
             assert len(exact_events) == 1, exact_turn
             assert exact_events[0]["kind"] == "policy"
             assert exact_events[0]["decision"] == "no"

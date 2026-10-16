@@ -316,7 +316,15 @@ def test_daemon_negotiated_approval_emits_stream_and_session_events() -> None:
                 "exec.run",
                 {"command": "pytest", "api_key": "sk-secret-value-123456789"},
                 "provider-call-1",
-                {},
+                {
+                    "confirmation_preview": {
+                        "display_lines": [
+                            "Recipient: fixture",
+                            "Amount: 42",
+                            "Authorization: Bearer abcdefghijklmnop",
+                        ]
+                    }
+                },
             )
         )
         resolver.join(timeout=1.0)
@@ -359,6 +367,9 @@ def test_daemon_negotiated_approval_emits_stream_and_session_events() -> None:
         "approval.resolved",
     ]
     requested_payload = session_events[0]["payload"]
+    assert "Recipient: fixture" in requested_payload["consent_preview"]
+    assert "Amount: 42" in requested_payload["consent_preview"]
+    assert "abcdefghijklmnop" not in repr(session_events)
     requested_at = datetime.fromisoformat(requested_payload["requested_at"])
     expires_at = datetime.fromisoformat(requested_payload["expires_at"])
     assert 1.34 <= (expires_at - requested_at).total_seconds() <= 1.36
@@ -419,3 +430,12 @@ def test_invalid_approval_decision_is_explicit_and_request_remains_pending(decis
         handle.cancel()
         thread.join(timeout=1)
     assert results == [True]
+
+
+def test_consent_preview_refuses_to_truncate_exact_action():
+    with pytest.raises(ValueError, match="too long to display"):
+        build_consent_preview(
+            "blockchain.send_transaction",
+            {},
+            confirmation_preview={"display_lines": ["Recipient: fixture", "x" * 5000]},
+        )
