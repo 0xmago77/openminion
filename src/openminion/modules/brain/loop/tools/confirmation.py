@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-import json
 from typing import Any
 
 from pydantic import TypeAdapter
 
-from openminion.base.redaction import redact_mapping, redact_sensitive_text
+from openminion.base.redaction import redact_sensitive_text
 from openminion.modules.brain.constants import (
     CONFIRMATION_MESSAGE_ARG_LIMIT,
     CONFIRMATION_MESSAGE_ARG_VALUE_LIMIT,
@@ -17,6 +16,7 @@ from openminion.modules.tool.plugin_api import (
     confirmation_preview_payload,
 )
 from openminion.modules.policy.grants import requires_once_duration
+from openminion.modules.policy.models import confirmation_preview_lines
 
 _COMMAND_ADAPTER = TypeAdapter(Command)
 _CONFIRMATION_REPLAY_QUEUE_KEY = "_confirmation_replay_queue"
@@ -177,22 +177,7 @@ def confirmation_required_user_message(
         lines.append(f"Reason: {facts['reason_code']}")
     if facts.get("duration_options"):
         lines.append(f"Choices: {', '.join(facts['duration_options'])}")
-    if tool_name == "ops.command.run" and preview is not None:
-        redacted_preview, _ = redact_mapping(preview)
-        lines.append(
-            "Effect: "
-            + json.dumps(
-                redacted_preview,
-                separators=(",", ":"),
-                ensure_ascii=True,
-            )
-        )
-    else:
-        display_lines = preview.get("display_lines", []) if preview is not None else []
-        if isinstance(display_lines, list) and all(
-            isinstance(line, str) for line in display_lines
-        ):
-            lines.extend(display_lines)
+    lines.extend(confirmation_preview_lines(tool_name, preview))
     additional_count = max(0, confirmation_replay_batch_size(command) - 1)
     if additional_count:
         noun = "command" if additional_count == 1 else "commands"

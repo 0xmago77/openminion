@@ -1651,3 +1651,27 @@ def test_capability_web_fetch_fallback_requires_canonical_available_tool() -> No
 
         assert tool_name is None
         assert status == "capability_tool_unavailable"
+
+
+def test_policy_callback_receives_preview_without_changing_arguments(tmp_path):
+    preview = {"display_lines": ["Recipient: fixture", "Amount: 42"]}
+    policy = MagicMock()
+    policy.evaluate.return_value = PolicyDecision(
+        outcome="REQUIRE_CONFIRMATION", confirmation_preview=preview
+    )
+    runner, session = _build_runner(tmp_path, policy_api=policy)
+    state = runner._load_or_init_state("preview-denial")
+    logger = CanonicalEventLogger(
+        session_api=session,
+        session_id=state.session_id,
+        agent_id=runner.profile.agent_id,
+    )
+    command = ToolCommand(title="Echo", tool_name="echo", args={"msg": "hello"})
+    runner._approval_callback = MagicMock(return_value=False)
+    denied = runner._approve(state=state, command=command, logger=logger)
+    name, args, _approval_id, facts = runner._approval_callback.call_args.args
+    assert name == "echo"
+    assert args == command.args == {"msg": "hello"}
+    assert facts["confirmation_preview"] == preview
+    assert denied.kind == "ask_user"
+    assert state.pending_policy_confirmation_preview is None

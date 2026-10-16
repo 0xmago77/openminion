@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Callable
 
+from openminion.modules.tool.plugin_api import confirmation_preview_payload
+
 from ..runtime.context import build_context as build_context_pack
 from ..bootstrap.skill.hints import resolve_skill_hints as resolve_skill_hints_events
 from ..execution.failure_response import (
@@ -242,6 +244,11 @@ def _resolve_callback_confirmation(
     state.pending_policy_approval_id = decision.approval_id
     state.pending_policy_confirmation_preview = decision.confirmation_preview
     state.pending_policy_facts = dict(decision.policy_facts)
+    facts = dict(decision.policy_facts)
+    if decision.confirmation_preview is not None:
+        facts["confirmation_preview"] = confirmation_preview_payload(
+            decision.confirmation_preview
+        )
     grant_id = None
     try:
         raise_if_cancelled()
@@ -250,12 +257,13 @@ def _resolve_callback_confirmation(
                 command.tool_name,
                 dict(command.args),
                 decision.approval_id or command.command_id,
-                dict(decision.policy_facts),
+                facts,
             )
         raise_if_cancelled()
         if not approved:
             return PolicyDecision(
-                outcome="DENY", explanation="Tool execution denied by operator."
+                outcome="DENY",
+                explanation="Confirmation denied. The action was not run.",
             )
         grant_id, _supported = _grant_once_from_confirmation(
             runner, state=state, command=command, logger=logger

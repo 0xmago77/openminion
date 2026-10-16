@@ -488,3 +488,26 @@ async def test_terminal_commerce_callback_offers_allow_once_only() -> None:
     assert all("allow once or deny" in prompt.lower() for prompt in prompts)
     assert all("session" not in prompt.lower() for prompt in prompts)
     assert all("always" not in prompt.lower() for prompt in prompts)
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["blockchain.send_transaction", "commerce.place_order", "ops.command.run"],
+)
+def test_terminal_confirmation_preserves_exact_preview(tool_name):
+    preview = {
+        "display_lines": [
+            "Recipient: fixture",
+            "Amount: 42",
+            "Authorization: Bearer abcdefghijklmnop",
+        ],
+        "effect": "apply fixture",
+    }
+    prompt = format_terminal_approval_prompt(
+        tool_name, {}, {"confirmation_preview": preview}
+    )
+    assert "Recipient: fixture" in prompt
+    assert "Amount: 42" in prompt
+    assert "abcdefghijklmnop" not in prompt
+    assert "[REDACTED]" in prompt
+    assert "Allow once or deny" in prompt

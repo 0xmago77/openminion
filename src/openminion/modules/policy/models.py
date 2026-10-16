@@ -4,7 +4,7 @@ from typing import Any, Literal, Optional, cast
 
 from openminion.base.config import ActionPolicyConfig
 from openminion.base.config.action_policy import map_action_policy_mode
-from openminion.base.redaction import redact_mapping
+from openminion.base.redaction import redact_mapping, redact_sensitive_text
 from openminion.base.time import utc_now_iso  # noqa: F401
 from openminion.modules.tool.plugin_api import (
     ToolConfirmationPreview,
@@ -78,9 +78,29 @@ def build_policy_facts(
     return {key: value for key, value in facts.items() if value}
 
 
+def confirmation_preview_lines(
+    tool_name: str, preview: ToolConfirmationPreview | None
+) -> list[str]:
+    if preview is None:
+        return []
+    if tool_name == "ops.command.run":
+        redacted, _ = redact_mapping(preview)
+        lines = [
+            "Effect: " + json.dumps(redacted, separators=(",", ":"), ensure_ascii=True)
+        ]
+    else:
+        lines = preview.get("display_lines", [])
+        if not isinstance(lines, list) or not all(
+            isinstance(line, str) for line in lines
+        ):
+            return []
+    return [str(redact_sensitive_text(line)[0]) for line in lines]
+
+
 def build_consent_preview(
     tool_name: str,
     args: dict[str, Any],
+    confirmation_preview: ToolConfirmationPreview | None = None,
     *,
     max_length: int = 4096,
 ) -> str:
@@ -95,9 +115,14 @@ def build_consent_preview(
         default=str,
     )
     preview = f"{str(tool_name or '').strip()}({rendered})"
+    preview = "\n".join(
+        [preview, *confirmation_preview_lines(tool_name, confirmation_preview)]
+    )
     limit = max(32, int(max_length))
     if len(preview) <= limit:
         return preview
+    if confirmation_preview is not None:
+        raise ValueError("exact action is too long to display for informed approval")
     if "command" in redacted:
         raise ValueError("command is too long to display for informed approval")
     return f"{preview[: limit - 3]}..."
