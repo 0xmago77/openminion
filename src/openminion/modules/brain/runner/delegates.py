@@ -299,7 +299,9 @@ def _approve_delegate(
         and command.kind == "tool"
         and getattr(runner, "_approval_callback", None) is not None
     ):
-        if not requires_individual_confirmation(command):
+        if not requires_individual_confirmation(command) and callable(
+            getattr(runner.tool_api, "set_approval_callback", None)
+        ):
             # Tool runtime owns inline approval and returns denials as tool results.
             return command
         decision = _resolve_callback_confirmation(
