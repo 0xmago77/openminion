@@ -32,6 +32,20 @@ from .entry import (
 from .failures import _internal_failure_answer
 
 
+def _validation_error_facts(exc: ValidationError) -> list[dict[str, str]]:
+    facts = []
+    for item in exc.errors(include_input=False, include_url=False):
+        category = str(item.get("type", ""))
+        location = item.get("loc", ())
+        path = (
+            "$"
+            if category == "extra_forbidden"
+            else ".".join(str(part) for part in location) or "$"
+        )
+        facts.append({"path": path, "category": category})
+    return sorted(facts, key=lambda item: (item["path"], item["category"]))
+
+
 def _response_usage_payload(response: Any) -> dict[str, Any]:
     usage = getattr(response, "usage", None)
     normalized = usage_payload_from_response_usage(usage)
@@ -226,7 +240,7 @@ def _entry_decompose_decision(
             {
                 "llm_call_id": llm_call_id,
                 "reason": "invalid_payload",
-                "error": str(exc),
+                "validation_errors": _validation_error_facts(exc),
             },
             trace_id=state.trace_id,
             status="warning",
@@ -373,10 +387,14 @@ def _entry_research_decision(
                 else None
             ),
         )
-    except ValidationError:
+    except ValidationError as exc:
         logger.emit(
             "brain.entry.research_invalid",
-            {"llm_call_id": llm_call_id, "reason": "invalid_payload"},
+            {
+                "llm_call_id": llm_call_id,
+                "reason": "invalid_payload",
+                "validation_errors": _validation_error_facts(exc),
+            },
             trace_id=state.trace_id,
             status="warning",
         )
@@ -458,10 +476,14 @@ def _entry_coding_decision(
                 else None
             ),
         )
-    except ValidationError:
+    except ValidationError as exc:
         logger.emit(
             "brain.entry.coding_invalid",
-            {"llm_call_id": llm_call_id, "reason": "invalid_payload"},
+            {
+                "llm_call_id": llm_call_id,
+                "reason": "invalid_payload",
+                "validation_errors": _validation_error_facts(exc),
+            },
             trace_id=state.trace_id,
             status="warning",
         )

@@ -15,32 +15,47 @@ _CONTENT_BLOB_FIELD_NAMES = frozenset({"content", "body", "text", "contents"})
 class ProjectHandoff(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    goal: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    goal: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] = (
+        Field(description="Project outcome.")
+    )
     success_criteria: tuple[
         Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)], ...
-    ] = Field(min_length=1)
-    repository: str | None = None
+    ] = Field(
+        min_length=1,
+        description="Completion criteria.",
+    )
+    repository: str | None = Field(
+        default=None,
+        description="Optional repository path within the active workspace.",
+    )
     verification_commands: tuple[
         Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)], ...
-    ] = ()
-    verification_domain: Literal["coding", "research"] = "coding"
-    user_request_quote: str | None = None
-    max_iterations: int | None = Field(default=None, gt=0)
+    ] = Field(
+        default=(),
+        description="Verification commands.",
+    )
+    verification_domain: Literal["coding", "research"] = Field(
+        default="coding",
+        description="Workflow.",
+    )
+    user_request_quote: str | None = Field(
+        default=None,
+        description="Exact request quote.",
+    )
+    max_iterations: int | None = Field(
+        default=None,
+        gt=0,
+        description="Cycle limit.",
+    )
     max_wall_clock_ms: int | None = Field(
         default=None,
         gt=0,
-        description=(
-            "Optional user-requested wall-clock limit in milliseconds. Omit when "
-            "the user did not request a limit so runtime defaults apply."
-        ),
+        description="Optional user wall-clock limit in milliseconds.",
     )
     max_tool_calls: int | None = Field(
         default=None,
         gt=0,
-        description=(
-            "Optional user-requested tool-call limit. Omit when the user did not "
-            "request a limit so runtime defaults apply."
-        ),
+        description="Optional user tool-call limit.",
     )
 
 

@@ -736,8 +736,9 @@ def build_runtime_tool_specs(
         "file.read": "Read file contents.",
         "file.find": "Search for files matching a pattern.",
         "file.write": (
-            "Write or overwrite one complete target file path and create its parent "
-            "directories automatically."
+            "Write a workspace file and create parent directories. Prefer a "
+            "workspace-relative path; never use device, stream, or shell-redirection "
+            "paths."
         ),
         "file.search": "Search file contents and matches in a workspace.",
         "file.edit": "Apply a targeted file edit or patch.",
