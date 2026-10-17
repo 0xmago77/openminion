@@ -1201,10 +1201,63 @@ def test_inline_approval_key_matches_the_visible_menu(
 
 
 def test_inline_approval_fingerprint_distinguishes_consecutive_targets() -> None:
-    readme = "Approval required: file.write(README.md)\n[y]es / [N]o / [a]lways:"
-    module = "Approval required: file.write(module.py)\n[y]es / [N]o / [a]lways:"
+    readme = (
+        "Approval required: file.write(README.md)\n"
+        "Reason: CONFIRM_REQUIRED\n"
+        "Choices: allow_once, allow_session, deny\n"
+        "[y] Allow once / [N] Deny (default) / [a] Always allow this exact "
+        "file.write call for this shell session:"
+    )
+    module = (
+        "Approval required: file.write(module.py)\n"
+        "Reason: CONFIRM_REQUIRED\n"
+        "Choices: allow_once, allow_session, deny\n"
+        "[y] Allow once / [N] Deny (default) / [a] Always allow this exact "
+        "file.write call for this shell session:"
+    )
 
     assert inline_approval_fingerprint(readme) != inline_approval_fingerprint(module)
+
+
+def test_terminal_confirmation_handles_consecutive_prompts(tmp_path: Path) -> None:
+    script = """
+import asyncio
+from prompt_toolkit import PromptSession
+
+async def main():
+    session = PromptSession()
+    first = await session.prompt_async(
+        'Approval required: file.write(README.md)\\n'
+        'Reason: CONFIRM_REQUIRED\\n'
+        'Choices: allow_once, allow_session, deny\\n'
+        '[y] Allow once / [N] Deny (default) / [a] Always allow this exact '
+        'file.write call for this shell session: '
+    )
+    print(f'FIRST:{first}', flush=True)
+    second = await session.prompt_async(
+        'Approval required: file.write(module.py)\\n'
+        'Reason: CONFIRM_REQUIRED\\n'
+        'Choices: allow_once, allow_session, deny\\n'
+        '[y] Allow once / [N] Deny (default) / [a] Always allow this exact '
+        'file.write call for this shell session: '
+    )
+    print(f'SECOND:{second}', flush=True)
+
+asyncio.run(main())
+"""
+    with PtySession(
+        argv=(sys.executable, "-c", script),
+        cwd=tmp_path,
+        rows=20,
+        cols=100,
+    ) as session:
+        session.wait_for_after(r"file\.write\(README\.md\)", offset=0, timeout=5)
+        FocusProbe._submit_terminal_confirmation(session, "yes")
+        session.wait_for_after(r"file\.write\(module\.py\)", offset=0, timeout=5)
+        FocusProbe._submit_terminal_confirmation(session, "yes")
+        transcript = session.wait_for_after(r"SECOND:y", offset=0, timeout=5)
+
+    assert "FIRST:y" in transcript
 
 
 def test_bracketed_paste_payload_wraps_multiline_prompt() -> None:
