@@ -657,6 +657,7 @@ def test_focus_timeout_retains_current_runtime_facts(tmp_path, monkeypatch) -> N
             session_id="brain-session",
             event_type="tool.call.requested",
             data={
+                "call_id": "search-1",
                 "canonical_name": "web.search",
                 "provider_detail": "must-not-be-retained",
             },
@@ -664,7 +665,7 @@ def test_focus_timeout_retains_current_runtime_facts(tmp_path, monkeypatch) -> N
         SimpleNamespace(
             session_id="brain-session",
             event_type="tool.call.completed",
-            data={"canonical_name": "web.search"},
+            data={"call_id": "search-1", "status": "success"},
         ),
     ]
     evidence_root = _prepare_focus_failure_main(

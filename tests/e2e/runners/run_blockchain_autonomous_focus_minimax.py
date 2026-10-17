@@ -324,17 +324,17 @@ def _runtime_observations(
         probe.environment(), probe.session_id
     )
     current_events = [event for event in events if event.session_id == brain_session_id]
-    requested_tools = sorted(
-        {
-            str(event.data.get("canonical_name") or "")
-            for event in current_events
-            if event.event_type == "tool.call.requested"
-        }
-        - {""}
-    )
+    requests = {
+        str(event.data.get("call_id") or ""): str(
+            event.data.get("canonical_name") or ""
+        )
+        for event in current_events
+        if event.event_type == "tool.call.requested" and event.data.get("call_id")
+    }
+    requested_tools = sorted(set(requests.values()) - {""})
     completed_tools = sorted(
         {
-            str(event.data.get("canonical_name") or "")
+            requests.get(str(event.data.get("call_id") or ""), "")
             for event in current_events
             if event.event_type == "tool.call.completed"
         }
