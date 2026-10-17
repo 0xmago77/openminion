@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from openminion.base.logging import get_logger
 from openminion.modules.artifact.errors import ArtifactCtlError
@@ -645,10 +645,19 @@ def _code_bearing_project_inputs(
             "Code-bearing delegation requires an approved project.",
             {"reason_code": "project_context_unavailable"},
         )
-    checkpoint = load_latest_project_checkpoint(
-        task_manager,
-        task_id=project_task_id,
-    )
+    try:
+        checkpoint = load_latest_project_checkpoint(
+            task_manager,
+            task_id=project_task_id,
+        )
+    except ValidationError:
+        raise
+    except ValueError as exc:
+        raise ToolRuntimeError(
+            "DEPENDENCY_MISSING",
+            "Code-bearing delegation requires an approved project checkpoint.",
+            {"reason_code": "project_checkpoint_unavailable"},
+        ) from exc
     if checkpoint is None:
         raise ToolRuntimeError(
             "DEPENDENCY_MISSING",

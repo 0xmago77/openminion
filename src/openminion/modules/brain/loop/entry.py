@@ -38,12 +38,7 @@ class EntryPathDetection:
 def clarify_tool_spec() -> ToolSpec:
     return ToolSpec(
         name=ENTRY_CLARIFY_TOOL_NAME,
-        description=(
-            "Ask only when required information blocks meaningful progress and "
-            "cannot be discovered with an available or inactive tool or a "
-            "documented default. If a tool can investigate, use the visible "
-            "tool control before asking the user."
-        ),
+        description=("Ask only if blocked and no tool or documented default helps."),
         input_schema={
             "type": "object",
             "properties": {
@@ -62,10 +57,8 @@ def decompose_tool_spec() -> ToolSpec:
     return ToolSpec(
         name=ENTRY_DECOMPOSE_TOOL_NAME,
         description=(
-            "Break the current task into explicit independent subtasks when "
-            "orchestration is the right execution shape. Use this for genuinely "
-            "separate deliverables or branches of work, not for a single deep-"
-            "research thread or iterative evidence gathering pass."
+            "Use independent subtasks for separate work, not a "
+            "single deep-research thread or evidence pass."
         ),
         input_schema={
             "type": "object",
@@ -73,46 +66,33 @@ def decompose_tool_spec() -> ToolSpec:
                 "subtasks": {
                     "type": "array",
                     "description": (
-                        "Model-authored subtasks. Use an empty list only when "
-                        "you intentionally decline to decompose after calling "
-                        "this control tool."
+                        "Independent model-authored subtasks; empty only to decline "
+                        "decomposition."
                     ),
                     "items": {
                         "type": "object",
                         "properties": {
                             "id": {
                                 "type": "string",
-                                "description": (
-                                    "Stable model-authored subtask identifier "
-                                    "for lineage."
-                                ),
+                                "description": "Stable subtask id.",
                             },
                             "description": {
                                 "type": "string",
-                                "description": (
-                                    "Model-authored description of the subtask."
-                                ),
+                                "description": "Subtask description.",
                             },
                             "inputs": {
                                 "type": "object",
-                                "description": (
-                                    "Optional structured inputs needed by this subtask."
-                                ),
+                                "description": "Optional structured inputs.",
                                 "additionalProperties": True,
                             },
                             "depends_on": {
                                 "type": "array",
-                                "description": (
-                                    "Optional subtask ids that must complete "
-                                    "before this subtask."
-                                ),
+                                "description": "Prerequisite subtask ids.",
                                 "items": {"type": "string"},
                             },
                             "suggested_mode": {
                                 "type": "string",
-                                "description": (
-                                    "Optional model-authored execution mode hint."
-                                ),
+                                "description": "Optional execution-mode hint.",
                             },
                             "priority": {
                                 "type": "integer",
@@ -140,12 +120,22 @@ def _project_handoff_input_schema() -> dict[str, Any]:
         field_schema.pop("default", None)
     for field_name in ("max_iterations", "max_wall_clock_ms", "max_tool_calls"):
         field_schema = properties[field_name]
+        description = field_schema.get("description")
         choices = field_schema.pop("anyOf")
         integer_schema = next(
             choice for choice in choices if choice.get("type") == "integer"
         )
         field_schema.clear()
         field_schema.update(integer_schema)
+        field_schema["description"] = description
+    properties["user_request_quote"] = {
+        "type": "string",
+        "minLength": 1,
+        "description": (
+            "Exact request words that explicitly ask for durable, background, or "
+            "restart-persistent work."
+        ),
+    }
     properties["verification_commands"]["minItems"] = 1
     properties["max_iterations"].pop("exclusiveMinimum", None)
     properties["max_iterations"]["minimum"] = 2
@@ -167,6 +157,7 @@ def _project_entry_input_schema() -> dict[str, Any]:
             "project_handoff": _project_handoff_input_schema(),
             "sub_intents": {
                 "type": "array",
+                "description": "Required and nonempty with project_handoff.",
                 "items": {"type": "string", "minLength": 1},
                 "minItems": 1,
             },
@@ -179,8 +170,9 @@ def coding_tool_spec() -> ToolSpec:
     return ToolSpec(
         name=ENTRY_CODING_TOOL_NAME,
         description=(
-            "dedicated coding loop: tests, final verification. Use foreground loop; "
-            "project_handoff and sub_intents only when user-requested."
+            "dedicated coding loop; tests; final verification. Use foreground loop; "
+            "project_handoff and sub_intents only for explicit durable, background, "
+            "or restart-persistent requests."
         ),
         input_schema=_project_entry_input_schema(),
     )
@@ -190,9 +182,9 @@ def research_tool_spec() -> ToolSpec:
     return ToolSpec(
         name=ENTRY_RESEARCH_TOOL_NAME,
         description=(
-            "iterative research loop: multiple searches, final synthesis. Use general "
-            "foreground tools to produce code or files; project_handoff only for "
-            "user-requested restart-persistent work."
+            "iterative research loop; multiple searches; final synthesis. Use general "
+            "foreground tools to produce code or files. Use project_handoff only for "
+            "explicit durable, background, or restart-persistent work requests."
         ),
         input_schema=_project_entry_input_schema(),
     )
@@ -202,8 +194,8 @@ def respond_tool_spec() -> ToolSpec:
     return ToolSpec(
         name=ENTRY_RESPOND_TOOL_NAME,
         description=(
-            "Return the complete answer when no execution tool or clarification is "
-            "needed. Include the typed freshness assessment for this request."
+            "Return the complete answer with typed freshness when no tool or "
+            "clarification is needed."
         ),
         input_schema={
             "type": "object",

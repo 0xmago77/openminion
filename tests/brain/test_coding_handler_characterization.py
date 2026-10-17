@@ -610,7 +610,11 @@ class TestCodingHandlerPureHelperBehavior:
         by_name = {spec.name: spec for spec in specs}
 
         assert "parent directories" in by_name["file.write"].description
-        assert "complete target file path" in by_name["file.write"].description
+        assert "workspace file" in by_name["file.write"].description
+        assert "workspace-relative path" in by_name["file.write"].description
+        assert (
+            "device, stream, or shell-redirection" in by_name["file.write"].description
+        )
         assert "structured file tools" in by_name["exec.run"].description
         assert "directories" in by_name["exec.run"].description
 

@@ -858,6 +858,94 @@ def test_code_bearing_delegate_requires_project_artifact_owner_and_verifier(
     )
 
 
+def test_code_bearing_delegate_normalizes_non_project_checkpoint_through_adapter(
+    tmp_path: Path,
+) -> None:
+    manager = TaskManager.for_lifecycle_db(db_path=tmp_path / "task.db")
+    manager.create_task(
+        session_id="session-1",
+        mode_name="foreground",
+        goal="Inspect files",
+        agent_id="parent",
+        task_id="task-1",
+    )
+    manager.save_checkpoint("task-1", "checkpoint-1", {"kind": "foreground"})
+
+    adapter = ToolAdapter(
+        workspace_root=tmp_path,
+        artifactctl=object(),
+        a2a_delegate_api=SimpleNamespace(),
+        task_manager=manager,
+        agent_id="parent",
+    )
+    result = adapter.execute(
+        command={
+            "tool_name": "task.delegate",
+            "command_id": "delegate-code",
+            "args": {
+                "mode": "sync",
+                "agent_id": "implementer",
+                "instruction": "Edit files.",
+                "code_bearing": True,
+            },
+            "inputs": {"permission_mode": "bypass"},
+            "meta": {"orchestration": {"task_backed_task_id": "task-1"}},
+        },
+        session_id="session-1",
+        trace_id="turn-1",
+    )
+
+    manager.close()
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "DEPENDENCY_MISSING"
+    assert result["error"]["details"]["reason_code"] == (
+        "project_checkpoint_unavailable"
+    )
+
+
+def test_code_bearing_delegate_preserves_malformed_project_checkpoint_error(
+    tmp_path: Path,
+) -> None:
+    manager = TaskManager.for_lifecycle_db(db_path=tmp_path / "task.db")
+    manager.create_task(
+        session_id="session-1",
+        mode_name="foreground",
+        goal="Inspect files",
+        agent_id="parent",
+        task_id="task-1",
+    )
+    manager.save_checkpoint("task-1", "checkpoint-1", {"kind": "project_run"})
+    adapter = ToolAdapter(
+        workspace_root=tmp_path,
+        artifactctl=object(),
+        a2a_delegate_api=SimpleNamespace(),
+        task_manager=manager,
+        agent_id="parent",
+    )
+
+    result = adapter.execute(
+        command={
+            "tool_name": "task.delegate",
+            "command_id": "delegate-code",
+            "args": {
+                "mode": "sync",
+                "agent_id": "implementer",
+                "instruction": "Edit files.",
+                "code_bearing": True,
+            },
+            "inputs": {"permission_mode": "bypass"},
+            "meta": {"orchestration": {"task_backed_task_id": "task-1"}},
+        },
+        session_id="session-1",
+        trace_id="turn-1",
+    )
+
+    manager.close()
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "EXEC_ERROR"
+    assert result["error"]["details"]["error_type"] == "ValidationError"
+
+
 def test_code_bearing_delegate_requires_approved_project_launch(
     tmp_path: Path, monkeypatch
 ) -> None:

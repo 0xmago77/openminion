@@ -27,24 +27,15 @@ def build_review_tool_spec() -> ToolSpec:
     return ToolSpec(
         name=REVIEW_TOOL_NAME,
         description=(
-            "Run a structural review pass on a unified diff. Use this "
-            "tool on multi-file edit turns to surface findings like "
-            "missing test coverage, large deletions, and TODO/FIXME "
-            "introductions before declaring the turn done. The tool "
-            "returns a structured findings count and severity; the "
-            "model should address block-severity findings before "
-            "responding."
+            "Review a unified diff for multi-file edits; resolve blocking findings "
+            "before responding."
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "diff": {
                     "type": "string",
-                    "description": (
-                        "Unified-diff text to review. Typically the "
-                        "output of `git diff` or `git diff <ref>..HEAD` "
-                        "for the work the model just produced."
-                    ),
+                    "description": "Unified diff to review.",
                 },
             },
             "required": ["diff"],

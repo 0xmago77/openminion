@@ -159,9 +159,9 @@ def _build_tool_specs(
         "file.read_range": "Read an inclusive line-numbered range from a file.",
         "file.find": "Search for files matching a pattern.",
         "file.write": (
-            "Write or overwrite one complete target file path and create its parent "
-            "directories automatically. Call this tool with path and content; do not "
-            "print JSON path/content payloads as prose."
+            "Write a workspace file and create parent directories. Prefer a "
+            "workspace-relative path; never use device, stream, or shell-redirection "
+            "paths. Call with path and content; do not print JSON payloads as prose."
         ),
         "file.trash": "Move one file or directory to the system trash.",
         "code.patch": "Apply a unified-diff patch to a file.",

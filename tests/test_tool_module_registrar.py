@@ -192,7 +192,9 @@ def test_file_and_exec_manifest_descriptions_encode_scaffolding_boundary() -> No
     )
 
     assert "parent directories" in file_write.description
-    assert "complete target file path" in file_write.description
+    assert "workspace file" in file_write.description
+    assert "workspace-relative path" in file_write.description
+    assert "device, stream, or shell-redirection" in file_write.description
     assert "structured file" in exec_run.description
     assert "scaffolding" in exec_run.description
     assert "current workspace root" in exec_run.description

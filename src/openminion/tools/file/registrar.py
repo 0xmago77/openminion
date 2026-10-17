@@ -52,8 +52,9 @@ FILE_MODEL_TOOLS = (
     ModelToolDef(
         model_tool_id=MODEL_FILE_WRITE,
         description=(
-            "Write or overwrite one complete target file path, creating parent "
-            "directories automatically."
+            "Write a workspace file and create parent directories. Prefer a "
+            "workspace-relative path; never use device, stream, or shell-redirection "
+            "paths."
         ),
         parameters={},
     ),

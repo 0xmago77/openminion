@@ -159,7 +159,11 @@ class FileWriteArgs(BaseModel):
     path: str = Field(
         ...,
         min_length=1,
-        description="Complete target file path, including the filename",
+        description=(
+            "Target file inside the active workspace. Prefer a workspace-relative "
+            "path; absolute paths are allowed only within the workspace. Do not use "
+            "device, stream, or shell-redirection paths."
+        ),
         validation_alias=AliasChoices("path", "filename", "file_path", "destination"),
     )
     content: str = Field(

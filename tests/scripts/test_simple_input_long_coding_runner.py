@@ -14,6 +14,7 @@ from tests.e2e.cli.focus.test_live_simple_input_project import (
     _assert_completed_child_lifecycle,
     _assert_required_completed_tools,
     _fixture,
+    _failure_scenario_evidence,
     _project_owners,
     _unplanned_intervention_count,
 )
@@ -26,6 +27,7 @@ from tests.e2e.runners.run_simple_input_long_coding_e2e import (
     _live_agent_id,
     _mnte_evidence,
     _scenario_evidence,
+    main,
 )
 
 
@@ -101,6 +103,15 @@ def test_configured_artifact_root_is_absolute(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
 
     assert _artifact_root({_ARTIFACT_ENV: "artifacts"}) == tmp_path / "artifacts"
+
+
+def test_runner_rejects_nonempty_artifact_root(tmp_path, monkeypatch) -> None:
+    stale = tmp_path / "plain-multifile-repair-evidence.json"
+    stale.write_text('{"disposition":"pass"}\n', encoding="utf-8")
+    monkeypatch.setenv(_ARTIFACT_ENV, str(tmp_path))
+
+    assert main(["local"]) == 2
+    assert json.loads(stale.read_text(encoding="utf-8"))["disposition"] == "pass"
 
 
 def test_live_agent_contract_requires_frozen_coding_profile() -> None:
@@ -180,6 +191,57 @@ def test_live_summary_reads_each_scenario_disposition(tmp_path) -> None:
         }
         for scenario_id in LIVE_SCENARIOS
     ]
+
+
+def test_silc_failure_evidence_retains_attempt_identity(tmp_path) -> None:
+    config_path = tmp_path / "agents.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    FROZEN_LIVE_AGENT_ID: {
+                        "provider": "minimax",
+                        "default_act_profile": "coding",
+                    }
+                },
+                "providers": {"minimax": {"model": "MiniMax-M2.7"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    transcript_path = tmp_path / "plain-multifile-repair.ansi.txt"
+    transcript_path.write_text("partial transcript", encoding="utf-8")
+    probe = SimpleNamespace(
+        config_path=config_path,
+        agent_id=FROZEN_LIVE_AGENT_ID,
+        session_id="session-1",
+    )
+
+    evidence = _failure_scenario_evidence(
+        probe=probe,
+        workspace=tmp_path / "workspace",
+        scenario_id="plain-multifile-repair",
+        source_revision="abc123",
+        fixture_evidence={"fixture_sha256": "fixture", "oracle_sha256": "oracle"},
+        approval_events=[{"action": "project.start", "decision": "session"}],
+        attempted={
+            "provider_started": True,
+            "terminal_stage": "project_execution",
+            "failure_category": "assertion_failed",
+            "run_id": "run-1",
+            "task_id": "task-1",
+        },
+        transcript_path=transcript_path,
+    )
+
+    assert evidence["disposition"] == "failed"
+    assert evidence["terminal_stage"] == "project_execution"
+    assert evidence["failure_category"] == "assertion_failed"
+    assert evidence["identities"]["run_id"] == "run-1"
+    assert evidence["transcript"] == {
+        "path": transcript_path.name,
+        "available": True,
+    }
 
 
 @pytest.mark.parametrize("event", ["tool.call.requested", "tool.call.blocked"])
