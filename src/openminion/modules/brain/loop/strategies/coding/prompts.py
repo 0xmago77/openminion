@@ -22,7 +22,10 @@ _CODING_PLAN_VERIFIER_GUIDANCE = (
     "success_criteria, deliverables, and optional failure_conditions using the "
     "typed Goal shape. Each check must be concrete and supported by a planned "
     "readback or validation command. Use one criterion for one validation command; "
-    "combine behaviors proven by the same command into that criterion. For "
+    "combine behaviors proven by the same command into that criterion. Treat "
+    "validation-command output as evidence for a success criterion, not as a "
+    "separate deliverable. Declare only user-requested artifacts or actions as "
+    "deliverables. For "
     "read-only work, omit verifier_goal "
     "when no structural verification contract can be stated without guessing."
 )

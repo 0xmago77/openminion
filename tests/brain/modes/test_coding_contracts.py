@@ -172,6 +172,8 @@ def test_coding_plan_prompt_keeps_bounded_read_only_work_in_one_phase() -> None:
     prompt = build_coding_plan_system_prompt()
 
     assert "single implement phase for a bounded read-only task" in prompt
+    assert "validation-command output as evidence" in prompt
+    assert "only user-requested artifacts or actions as deliverables" in prompt
 
 
 def test_v1_allowlist_excludes_pty_tools() -> None:

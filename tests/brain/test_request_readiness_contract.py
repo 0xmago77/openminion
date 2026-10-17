@@ -86,8 +86,24 @@ def test_project_handoff_round_trips_without_permission_overrides() -> None:
 def test_project_handoff_budget_fields_are_explicit_user_limits() -> None:
     properties = ProjectHandoff.model_json_schema()["properties"]
 
-    assert "user-requested" in properties["max_wall_clock_ms"]["description"]
-    assert "user-requested" in properties["max_tool_calls"]["description"]
+    for field_name in (
+        "goal",
+        "success_criteria",
+        "repository",
+        "verification_commands",
+        "verification_domain",
+        "user_request_quote",
+        "max_iterations",
+        "max_wall_clock_ms",
+        "max_tool_calls",
+    ):
+        assert properties[field_name]["description"]
+    assert properties["max_wall_clock_ms"]["description"] == (
+        "Optional user wall-clock limit in milliseconds."
+    )
+    assert properties["max_tool_calls"]["description"] == (
+        "Optional user tool-call limit."
+    )
 
 
 def test_project_handoff_defaults_historical_domain_to_coding() -> None:

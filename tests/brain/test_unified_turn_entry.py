@@ -554,6 +554,36 @@ def test_unified_entry_coding_control_preserves_project_handoff(tmp_path: Path) 
     ]
 
 
+def test_unified_entry_accepts_exact_durable_request_without_keyword(
+    tmp_path: Path,
+) -> None:
+    response = _tool_response(
+        "coding",
+        {
+            "project_handoff": {
+                "goal": "Finish the calculator",
+                "success_criteria": ["Tests pass"],
+                "verification_commands": ["python -m pytest -q"],
+                "verification_domain": "coding",
+                "user_request_quote": "keep working until it is finished",
+                "max_iterations": 3,
+            },
+            "sub_intents": ["Inspect the failure", "Implement and verify the fix"],
+        },
+    )
+    runner = _build_runner(tmp_path, llm_api=_RecordingEntryLLM(response))
+
+    decision = runner._decide(
+        state=_state("entry-coding-durable-request"),
+        user_input="keep working until it is finished and verify the result",
+        logger=fake_logger(),
+    )
+
+    assert decision.request_readiness is not None
+    assert decision.request_readiness.project_handoff is not None
+    assert decision.request_readiness.project_handoff.goal == "Finish the calculator"
+
+
 @pytest.mark.parametrize("sub_intents", [None, [], "Inspect and implement"])
 def test_unified_entry_rejects_project_handoff_without_valid_sub_intents(
     tmp_path: Path, sub_intents
@@ -593,6 +623,17 @@ def test_coding_control_schema_exposes_optional_project_handoff() -> None:
     assert handoff["properties"]["max_iterations"]["minimum"] == 2
     assert "verification_domain" in handoff["required"]
     assert "user_request_quote" in handoff["required"]
+    assert handoff["properties"]["user_request_quote"]["type"] == "string"
+    assert handoff["properties"]["user_request_quote"]["minLength"] == 1
+    assert "anyOf" not in handoff["properties"]["user_request_quote"]
+    quote_description = handoff["properties"]["user_request_quote"]["description"]
+    assert "Exact request words" in quote_description
+    assert "durable, background, or restart-persistent" in quote_description
+    assert schema["properties"]["sub_intents"]["description"] == (
+        "Required and nonempty with project_handoff."
+    )
+    for field_name in ("max_iterations", "max_wall_clock_ms", "max_tool_calls"):
+        assert handoff["properties"][field_name]["description"]
     assert "max_iterations" in handoff["required"]
     assert "required" not in schema
 
@@ -625,7 +666,9 @@ def test_research_control_preserves_durable_project_handoff(tmp_path: Path) -> N
     assert decision.request_readiness.project_handoff.max_iterations == 3
 
 
-def test_research_control_rejects_ungrounded_project_handoff(tmp_path: Path) -> None:
+def test_research_control_rejects_project_handoff_with_fabricated_quote(
+    tmp_path: Path,
+) -> None:
     response = _tool_response(
         "research",
         {
@@ -634,7 +677,7 @@ def test_research_control_rejects_ungrounded_project_handoff(tmp_path: Path) -> 
                 "success_criteria": ["Every route has evidence"],
                 "verification_commands": ["test -f routes_report.md"],
                 "verification_domain": "research",
-                "user_request_quote": "current train routes",
+                "user_request_quote": "keep working on this later",
                 "max_iterations": 3,
             },
             "sub_intents": ["Collect routes", "Reconcile fares"],
@@ -650,6 +693,47 @@ def test_research_control_rejects_ungrounded_project_handoff(tmp_path: Path) -> 
 
     assert decision.act_profile == "research"
     assert decision.request_readiness is None
+
+
+@pytest.mark.parametrize("quote", [None, "", "   "])
+def test_research_control_rejects_missing_project_handoff_quote(
+    tmp_path: Path,
+    quote: str | None,
+) -> None:
+    response = _tool_response(
+        "research",
+        {
+            "project_handoff": {
+                "goal": "Compare train routes",
+                "success_criteria": ["Every route has evidence"],
+                "verification_commands": ["test -f routes_report.md"],
+                "verification_domain": "research",
+                "user_request_quote": quote,
+                "max_iterations": 3,
+            },
+            "sub_intents": ["Collect routes", "Reconcile fares"],
+        },
+    )
+    runner = _build_runner(tmp_path, llm_api=_RecordingEntryLLM(response))
+    events = []
+    logger = SimpleNamespace(
+        emit=lambda event_type, payload, **kwargs: events.append(
+            (event_type, payload, kwargs)
+        )
+    )
+
+    decision = runner._decide(
+        state=_state("entry-research-missing-quote"),
+        user_input="run this as a background project",
+        logger=logger,
+    )
+
+    assert decision.request_readiness is None
+    assert any(
+        event == "brain.entry.project_handoff_rejected"
+        and payload["reason"] == "user_request_quote_missing"
+        for event, payload, _kwargs in events
+    )
 
 
 def test_unified_entry_file_write_seed_keeps_model_selected_general_profile(
@@ -924,15 +1008,108 @@ def test_entry_decompose_malformed_payload_fails_closed_without_routing(
     runner = _build_runner(tmp_path, llm_api=llm)
     state = _state("entry-decompose-malformed")
 
+    events = []
+    logger = SimpleNamespace(
+        emit=lambda event_type, payload, **kwargs: events.append(
+            (event_type, payload, kwargs)
+        )
+    )
     decision = runner._decide(
         state=state,
         user_input="break this down",
-        logger=fake_logger(),
+        logger=logger,
     )
 
     assert decision.mode == "respond"
     assert decision.reason_code == "entry_decompose_invalid_payload"
     assert getattr(decision, "_pre_resolved_act_route", None) is None
+    invalid = next(
+        payload
+        for event, payload, _kwargs in events
+        if event == "brain.entry.decompose_invalid"
+    )
+    assert invalid["validation_errors"] == [
+        {"path": "subtasks.0.description", "category": "missing"}
+    ]
+    assert "error" not in invalid
+
+
+def test_entry_validation_facts_redact_forbidden_property_names(tmp_path: Path) -> None:
+    secret_key = "api_key=sk-secret-value"
+    runner = _build_runner(
+        tmp_path,
+        llm_api=_RecordingEntryLLM(
+            _tool_response(
+                "decompose",
+                {
+                    "subtasks": [
+                        {
+                            "id": "inspect",
+                            "description": "Inspect the issue",
+                            secret_key: "secret",
+                        }
+                    ]
+                },
+            )
+        ),
+    )
+    events = []
+    logger = SimpleNamespace(
+        emit=lambda event_type, payload, **kwargs: events.append(
+            (event_type, payload, kwargs)
+        )
+    )
+
+    runner._decide(
+        state=_state("entry-decompose-extra"),
+        user_input="break this down",
+        logger=logger,
+    )
+
+    invalid = next(
+        payload
+        for event, payload, _kwargs in events
+        if event == "brain.entry.decompose_invalid"
+    )
+    assert invalid["validation_errors"] == [
+        {"path": "$", "category": "extra_forbidden"}
+    ]
+    assert secret_key not in str(invalid)
+
+
+@pytest.mark.parametrize("tool_name", ["coding", "research"])
+def test_project_entry_invalid_payload_records_structured_validation_facts(
+    tmp_path: Path,
+    tool_name: str,
+) -> None:
+    runner = _build_runner(
+        tmp_path,
+        llm_api=_RecordingEntryLLM(
+            _tool_response(tool_name, {"sub_intents": "not-a-list"})
+        ),
+    )
+    events = []
+    logger = SimpleNamespace(
+        emit=lambda event_type, payload, **kwargs: events.append(
+            (event_type, payload, kwargs)
+        )
+    )
+
+    decision = runner._decide(
+        state=_state(f"entry-{tool_name}-invalid"),
+        user_input="work on this",
+        logger=logger,
+    )
+
+    assert decision.reason_code == f"entry_{tool_name}_invalid_payload"
+    invalid = next(
+        payload
+        for event, payload, _kwargs in events
+        if event == f"brain.entry.{tool_name}_invalid"
+    )
+    assert invalid["validation_errors"] == [
+        {"path": "sub_intents", "category": "list_type"}
+    ]
 
 
 def test_entry_decompose_mixed_tool_calls_fail_closed_without_inference(

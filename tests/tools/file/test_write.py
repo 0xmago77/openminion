@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from openminion.tools.file.plugin import _h_write_file, _reset_backend_cache_for_tests
+from openminion.tools.file.plugin import (
+    FileWriteArgs,
+    _h_write_file,
+    _reset_backend_cache_for_tests,
+)
 
 
 class _AllowPolicy:
@@ -34,6 +38,14 @@ class _FakeCtx:
 def workspace(tmp_path: Path) -> Path:
     _reset_backend_cache_for_tests()
     return tmp_path
+
+
+def test_file_write_path_schema_explains_workspace_boundary() -> None:
+    description = FileWriteArgs.model_fields["path"].description or ""
+
+    assert "inside the active workspace" in description
+    assert "workspace-relative" in description
+    assert "device, stream, or shell-redirection" in description
 
 
 def test_file_write_accepts_text_alias(workspace: Path) -> None:

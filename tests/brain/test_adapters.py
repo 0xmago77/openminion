@@ -4056,13 +4056,15 @@ class RealToolAndArtifactAdapterTests(unittest.TestCase):
         from openminion.modules.tool.base import Tool, ToolExecutionResult
 
         confirmations: list[bool] = []
+        executed_args: list[dict[str, object]] = []
+        approval_args: list[dict[str, object]] = []
 
         class _ConfirmingTool(Tool):
             name = "browser"
             description = "browser"
 
             def execute(self, arguments, context):
-                del arguments
+                executed_args.append(dict(arguments))
                 confirmations.append(context.confirm)
                 if not context.confirm:
                     return ToolExecutionResult(
@@ -4072,7 +4074,19 @@ class RealToolAndArtifactAdapterTests(unittest.TestCase):
                         error="approval required",
                         data={
                             "error_code": "CONFIRM_REQUIRED",
-                            "details": {"approval_id": "browser-upload"},
+                            "details": {
+                                "approval_id": "browser-upload",
+                                "preview": {
+                                    "op": "tab.upload",
+                                    "tab_id": "tab-7",
+                                    "origin": "https://example.com",
+                                    "files": ["final.pdf"],
+                                },
+                                "replay_args": {
+                                    "op": "tab.upload",
+                                    "approved_origin": "https://example.com",
+                                },
+                            },
                         },
                     )
                 return ToolExecutionResult(
@@ -4091,7 +4105,9 @@ class RealToolAndArtifactAdapterTests(unittest.TestCase):
                 workspace_root=Path(tmp),
                 runtime_registry=_RuntimeRegistry(),
             )
-            adapter.set_approval_callback(lambda *_args: True)
+            adapter.set_approval_callback(
+                lambda _tool, args, *_rest: approval_args.append(args) or True
+            )
             result = adapter.execute(
                 command={"tool_name": "browser", "args": {"op": "tab.upload"}},
                 session_id="s1",
@@ -4100,6 +4116,27 @@ class RealToolAndArtifactAdapterTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(confirmations, [False, True])
+        self.assertEqual(
+            executed_args,
+            [
+                {"op": "tab.upload"},
+                {
+                    "op": "tab.upload",
+                    "approved_origin": "https://example.com",
+                },
+            ],
+        )
+        self.assertEqual(
+            approval_args,
+            [
+                {
+                    "op": "tab.upload",
+                    "tab_id": "tab-7",
+                    "origin": "https://example.com",
+                    "files": ["final.pdf"],
+                }
+            ],
+        )
 
     def test_os_adapter_runtime_registry_tools_receive_workspace_metadata(
         self,

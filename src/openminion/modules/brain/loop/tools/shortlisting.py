@@ -74,10 +74,7 @@ class ToolSchemaShortlistResult:
 def build_tool_request_spec() -> ToolSpec:
     return ToolSpec(
         name=TOOL_REQUEST_TOOL_NAME,
-        description=(
-            "Activate an inactive tool schema. Use an exact "
-            "tool name from the inactive tool directory."
-        ),
+        description="Activate an exact tool name from the inactive directory.",
         input_schema={
             "type": "object",
             "properties": {

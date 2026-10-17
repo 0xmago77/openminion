@@ -457,10 +457,57 @@ def _scenario_evidence(
     }
 
 
+def _failure_scenario_evidence(
+    *,
+    probe: FocusProbe,
+    workspace: Path,
+    scenario_id: str,
+    source_revision: str,
+    fixture_evidence: dict[str, object],
+    approval_events: list[dict[str, object]],
+    attempted: dict[str, object],
+    transcript_path: Path,
+) -> dict[str, object]:
+    config = json.loads(probe.config_path.read_text(encoding="utf-8"))
+    agent = config["agents"][probe.agent_id]
+    provider = agent["provider"]
+    provider_config = {
+        **config["providers"][provider],
+        **agent.get("provider_config_overrides", {}),
+    }
+    provider_started = bool(attempted.get("provider_started"))
+    return {
+        "scenario_id": scenario_id,
+        "source_revision": source_revision,
+        "config_sha256": sha256(probe.config_path.read_bytes()).hexdigest(),
+        "profile": probe.agent_id,
+        "configured_act_profile": agent.get("default_act_profile"),
+        "provider": provider,
+        "model": provider_config["model"],
+        "prompt_sha256": _digest(LIVE_SCENARIOS[scenario_id]),
+        **fixture_evidence,
+        "approvals": {"source": "focus_harness", "events": approval_events},
+        "identities": {
+            "workspace": str(workspace),
+            "run_id": attempted.get("run_id"),
+            "task_id": attempted.get("task_id"),
+            "session_id": probe.session_id,
+        },
+        "terminal_stage": attempted.get("terminal_stage", "setup"),
+        "failure_category": attempted.get("failure_category", "scenario_failed"),
+        "transcript": {
+            "path": transcript_path.name if transcript_path.is_file() else None,
+            "available": transcript_path.is_file(),
+        },
+        "disposition": "failed" if provider_started else "unavailable",
+    }
+
+
 def _run_live_scenario(
     focus_probe: FocusProbe,
     tmp_path: Path,
     scenario_id: str,
+    request: pytest.FixtureRequest,
 ) -> None:
     require_complex_focus()
     source_revision = _source_revision()
@@ -470,18 +517,41 @@ def _run_live_scenario(
     probe = focus_probe.for_workdir(workspace)
     home_root = probe.data_root.parent / "home-roots" / probe.session_id
     evidence_path = root / f"{scenario_id}-evidence.json"
+    transcript_path = root / f"{scenario_id}.ansi.txt"
     started = time.monotonic()
-    assert (
-        daemon_start(
-            str(probe.config_path), home_root=home_root, data_root=probe.data_root
-        )
-        == 0
-    )
     process_boundary = None
     visible_status: dict[str, str] = {}
     transcript_parts: list[str] = []
     approval_events: list[dict[str, object]] = []
+    attempted: dict[str, object] = {"terminal_stage": "daemon_start"}
+
+    def write_failure_evidence() -> None:
+        if attempted.get("completed"):
+            return
+        evidence = _failure_scenario_evidence(
+            probe=probe,
+            workspace=workspace,
+            scenario_id=scenario_id,
+            source_revision=source_revision,
+            fixture_evidence=fixture_evidence,
+            approval_events=approval_events,
+            attempted=attempted,
+            transcript_path=transcript_path,
+        )
+        evidence_path.write_text(
+            json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    request.addfinalizer(write_failure_evidence)
     try:
+        assert (
+            daemon_start(
+                str(probe.config_path), home_root=home_root, data_root=probe.data_root
+            )
+            == 0
+        )
+        attempted["terminal_stage"] = "focus_turn"
         first_event_id = _telemetry_cursor(probe)
         with probe.session(
             rows=52,
@@ -489,6 +559,7 @@ def _run_live_scenario(
             on_transcript_update=lambda text: write_transcript(root, scenario_id, text),
         ) as session:
             probe.wait_ready(session)
+            attempted["provider_started"] = True
             transcript = probe.run_turn(
                 session,
                 FocusScenario(
@@ -511,6 +582,8 @@ def _run_live_scenario(
             run_match = _RUN_ID_RE.search(transcript)
             assert run_match is not None, "typed project handoff did not queue a run"
             run_id = run_match.group(1)
+            attempted["run_id"] = run_id
+            attempted["terminal_stage"] = "project_execution"
             if scenario_id == "plain-multifile-repair":
                 before_run, before = _wait_for_run(
                     probe,
@@ -521,6 +594,7 @@ def _run_live_scenario(
                         == ProjectVerificationState.FAILED
                     ),
                 )
+                attempted["task_id"] = before_run.task_id
                 failure_status = probe.run_slash_turn(
                     session,
                     f"/project show {run_id}",
@@ -635,6 +709,8 @@ def _run_live_scenario(
             run_id,
             lambda run, checkpoint: run.status == AutonomyRunStatus.COMPLETED,
         )
+        attempted["task_id"] = run.task_id
+        attempted["terminal_stage"] = "verification"
         assert (
             checkpoint.project_run.verification_state
             == ProjectVerificationState.VERIFIED
@@ -786,6 +862,12 @@ def _run_live_scenario(
         evidence_path.write_text(
             json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+        attempted["completed"] = True
+    except Exception as exc:
+        attempted["failure_category"] = (
+            "assertion_failed" if isinstance(exc, AssertionError) else "scenario_error"
+        )
+        raise
     finally:
         daemon_stop(
             str(probe.config_path), home_root=home_root, data_root=probe.data_root
@@ -797,5 +879,6 @@ def test_live_minimax_simple_input_project_corpus(
     focus_probe: FocusProbe,
     tmp_path: Path,
     scenario_id: str,
+    request: pytest.FixtureRequest,
 ) -> None:
-    _run_live_scenario(focus_probe, tmp_path, scenario_id)
+    _run_live_scenario(focus_probe, tmp_path, scenario_id, request)

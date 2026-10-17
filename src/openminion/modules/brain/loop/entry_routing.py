@@ -1,4 +1,3 @@
-import re
 from typing import Any
 
 from pydantic import ValidationError
@@ -31,6 +30,20 @@ from .entry import (
     detect_entry_path,
 )
 from .failures import _internal_failure_answer
+
+
+def _validation_error_facts(exc: ValidationError) -> list[dict[str, str]]:
+    facts = []
+    for item in exc.errors(include_input=False, include_url=False):
+        category = str(item.get("type", ""))
+        location = item.get("loc", ())
+        path = (
+            "$"
+            if category == "extra_forbidden"
+            else ".".join(str(part) for part in location) or "$"
+        )
+        facts.append({"path": path, "category": category})
+    return sorted(facts, key=lambda item: (item["path"], item["category"]))
 
 
 def _response_usage_payload(response: Any) -> dict[str, Any]:
@@ -138,9 +151,7 @@ def _grounded_project_handoff(
         str(handoff_payload.get("user_request_quote", "") or "").split()
     ).casefold()
     request = " ".join(str(user_input or "").split()).casefold()
-    explicit_words = {"background", "persist", "persistent", "project", "restart"}
-    quote_words = set(re.findall(r"[a-z]+", quote))
-    return handoff if quote in request and quote_words & explicit_words else None
+    return handoff if quote and quote in request else None
 
 
 def _subtasks_from_decompose_payload(
@@ -229,7 +240,7 @@ def _entry_decompose_decision(
             {
                 "llm_call_id": llm_call_id,
                 "reason": "invalid_payload",
-                "error": str(exc),
+                "validation_errors": _validation_error_facts(exc),
             },
             trace_id=state.trace_id,
             status="warning",
@@ -376,10 +387,14 @@ def _entry_research_decision(
                 else None
             ),
         )
-    except ValidationError:
+    except ValidationError as exc:
         logger.emit(
             "brain.entry.research_invalid",
-            {"llm_call_id": llm_call_id, "reason": "invalid_payload"},
+            {
+                "llm_call_id": llm_call_id,
+                "reason": "invalid_payload",
+                "validation_errors": _validation_error_facts(exc),
+            },
             trace_id=state.trace_id,
             status="warning",
         )
@@ -461,10 +476,14 @@ def _entry_coding_decision(
                 else None
             ),
         )
-    except ValidationError:
+    except ValidationError as exc:
         logger.emit(
             "brain.entry.coding_invalid",
-            {"llm_call_id": llm_call_id, "reason": "invalid_payload"},
+            {
+                "llm_call_id": llm_call_id,
+                "reason": "invalid_payload",
+                "validation_errors": _validation_error_facts(exc),
+            },
             trace_id=state.trace_id,
             status="warning",
         )

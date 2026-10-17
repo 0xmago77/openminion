@@ -141,6 +141,9 @@ def main(argv: list[str] | None = None) -> int:
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     env.setdefault("PYTHONPATH", "src")
     root = _artifact_root(env)
+    if root.exists() and any(root.iterdir()):
+        print(f"SILC E2E artifact root must be empty: {root}", file=sys.stderr)
+        return 2
     root.mkdir(parents=True, exist_ok=True)
     env[_ARTIFACT_ENV] = str(root)
     env["OPENMINION_MNTE_E2E_ARTIFACT_ROOT"] = str(root / "mnte")

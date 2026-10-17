@@ -1,0 +1,43 @@
+{
+  "network_class": "disposable_testnet",
+  "signer_address": "0x1111111111111111111111111111111111111111",
+  "signer_secret_env": "OPENMINION_DISPOSABLE_TESTNET_SIGNER_KEY",
+  "max_total_fee_wei": "1000000000000000",
+  "confirmation_depth": 1,
+  "resolve_request": {
+    "rpc_url": "https://sepolia.drpc.org",
+    "expected_chain_id": 11155111,
+    "expected_genesis_hash": "0x25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6dd9",
+    "contract_address": "0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9",
+    "explorer_contract_url": "https://sepolia.etherscan.io/address/0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9#code",
+    "research_source_urls": [
+      "https://ethereum.org/developers/docs/networks/",
+      "https://repo.sourcify.dev/11155111/0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9"
+    ]
+  },
+  "precondition": {
+    "function_signature": "balanceOf(address)",
+    "arguments": [
+      "0x1111111111111111111111111111111111111111"
+    ],
+    "expected_result": [
+      "0"
+    ]
+  },
+  "prepare_request": {
+    "function_signature": "deposit()",
+    "arguments": [],
+    "value_wei": "1",
+    "postconditions": [
+      {
+        "function_signature": "balanceOf(address)",
+        "arguments": [
+          "0x1111111111111111111111111111111111111111"
+        ],
+        "expected_result": [
+          "1"
+        ]
+      }
+    ]
+  }
+}
