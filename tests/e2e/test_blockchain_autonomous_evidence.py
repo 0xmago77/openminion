@@ -613,31 +613,32 @@ def test_focus_deadline_fails_closed_when_unavailable(
 
 
 def test_testnet_validator_joins_full_lifecycle() -> None:
-    resolution_digest = "sha256:" + "1" * 64
     preparation_digest = "sha256:" + "2" * 64
     status = {
         "ok": True,
         "data": {
             "state": "succeeded",
             "preparation_digest": preparation_digest,
+            "submission_started": True,
+            "broadcast_attempts": 1,
             "postcondition_results": [{"matched": True}],
         },
     }
     payload = {
+        "schema_version": "blockchain-autonomous-testnet-write-evidence-v2",
         "protocol": "production_policy_runtime_protocol",
         "source_commit": "a" * 40,
-        "confirmation_depth": 1,
-        "resolution": {"ok": True, "data": {"resolution_digest": resolution_digest}},
-        "preparation": {
-            "resolution_digest": resolution_digest,
+        "config_sha256": "b" * 64,
+        "approval_envelope_digest": "sha256:" + "c" * 64,
+        "attempt_manifest": {
+            "state": "succeeded",
             "preparation_digest": preparation_digest,
-        },
-        "send": {
-            "ok": True,
-            "data": {
-                "preparation_digest": preparation_digest,
-                "broadcast_attempts": 1,
-            },
+            "source_commit": "a" * 40,
+            "config_sha256": "b" * 64,
+            "approval_envelope_digest": "sha256:" + "c" * 64,
+            "attempt_id": "attempt-1",
+            "private_root_identifier": "sha256:" + "d" * 64,
+            "signer_address": "0x" + "e" * 40,
         },
         "operation_status": deepcopy(status),
         "restart_status": deepcopy(status),
@@ -647,6 +648,21 @@ def test_testnet_validator_joins_full_lifecycle() -> None:
             "grant_id": "grant-1",
             "preview": {"preparation_digest": preparation_digest},
         },
+        "mutation_invocations_this_entry": 1,
+        "mutation_invocations_total": 1,
+        "max_broadcasts": 1,
+        "key_deletion_attestation": None,
+        "private_root_identifier": "sha256:" + "d" * 64,
+        "retained_secret_scan": {
+            "schema_version": "blockchain-testnet-secret-scan-v1",
+            "attempt_id": "attempt-1",
+            "private_root_identifier": "sha256:" + "d" * 64,
+            "signer_address": "0x" + "e" * 40,
+            "operator_id": "test-operator",
+            "secret_absent": True,
+            "source": "runner_initial",
+            "scanned_at": "2026-10-16T00:00:00+00:00",
+        },
         "execution_owners": {
             "command_executor": "RunnerCommandExecutor",
             "tool_adapter": "ToolAdapter",
@@ -655,9 +671,491 @@ def test_testnet_validator_joins_full_lifecycle() -> None:
         },
     }
     testnet_runner.validate_evidence(payload)
+    payload["policy_approval"]["preview"]["preparation_digest"] = "sha256:" + "9" * 64
+    with pytest.raises(ValueError, match="one-time policy approval"):
+        testnet_runner.validate_evidence(payload)
+    payload["policy_approval"]["preview"]["preparation_digest"] = preparation_digest
     payload["restart_status"]["data"]["state"] = "pending"
     with pytest.raises(ValueError, match="restart_status is not succeeded"):
         testnet_runner.validate_evidence(payload)
+
+
+def _approved_testnet_attempt(tmp_path) -> dict:
+    return {
+        "attempt_id": "attempt-1",
+        "source_commit": "a" * 40,
+        "config_sha256": "b" * 64,
+        "approval_envelope_digest": "sha256:" + "c" * 64,
+        "expected_chain_id": 11155111,
+        "expected_genesis_hash": "0x" + "1" * 64,
+        "expected_checkpoint": None,
+        "expected_rpc_origin": "https://rpc.example",
+        "signer_address": "0x" + "2" * 40,
+        "contract_address": "0x" + "3" * 40,
+        "canonical_call_digest": "sha256:" + "4" * 64,
+        "max_total_fee_wei": "1000",
+        "confirmation_depth": 1,
+        "max_duration_seconds": 30,
+        "precondition_digest": "sha256:" + "5" * 64,
+        "postcondition_digest": "sha256:" + "6" * 64,
+        "private_root_identifier": "sha256:" + "a" * 64,
+        "operator_id": "test-operator",
+        "attempt_root": tmp_path / "attempt",
+        "config_path": tmp_path / "config.json",
+    }
+
+
+def _testnet_resolution(approved: dict) -> dict:
+    return {
+        "ok": True,
+        "data": {
+            "resolution_digest": "sha256:" + "7" * 64,
+            "expected_chain_id": approved["expected_chain_id"],
+            "observed_chain_id": approved["expected_chain_id"],
+            "expected_genesis_hash": approved["expected_genesis_hash"],
+            "observed_genesis_hash": approved["expected_genesis_hash"],
+            "expected_checkpoint": approved["expected_checkpoint"],
+            "observed_checkpoint": approved["expected_checkpoint"],
+            "rpc_origin": approved["expected_rpc_origin"],
+            "contract_address": approved["contract_address"],
+        },
+    }
+
+
+def _testnet_terminal_status(preparation_digest: str) -> dict:
+    return {
+        "ok": True,
+        "data": {
+            "state": "succeeded",
+            "preparation_digest": preparation_digest,
+            "submission_started": True,
+            "broadcast_attempts": 1,
+            "postcondition_results": [{"matched": True}],
+        },
+    }
+
+
+def test_testnet_approval_envelope_binds_local_inputs(tmp_path, monkeypatch) -> None:
+    signer = "0x" + "2" * 40
+    contract = "0x" + "3" * 40
+    precondition = {
+        "function_signature": "balanceOf(address)",
+        "arguments": [signer],
+        "expected_result": ["0"],
+    }
+    postcondition = {
+        "function_signature": "balanceOf(address)",
+        "arguments": [signer],
+        "expected_result": ["1"],
+    }
+    payload = {
+        "network_class": "disposable_testnet",
+        "signer_address": signer,
+        "signer_secret_env": "TEST_SIGNER_SECRET",
+        "max_total_fee_wei": "1000",
+        "confirmation_depth": 1,
+        "resolve_request": {
+            "rpc_url": "https://rpc.example",
+            "expected_chain_id": 11155111,
+            "expected_genesis_hash": "0x" + "1" * 64,
+            "contract_address": contract,
+        },
+        "precondition": precondition,
+        "prepare_request": {
+            "function_signature": "deposit()",
+            "arguments": [],
+            "value_wei": "1",
+            "postconditions": [postcondition],
+        },
+    }
+    config_path = tmp_path / "testnet-write.json"
+    config_path.write_text(json.dumps(payload, sort_keys=True))
+    attempt_root = tmp_path / "attempt"
+    monkeypatch.setattr(testnet_runner, "_source_commit", lambda: "a" * 40)
+    monkeypatch.setattr(testnet_runner, "_source_status", lambda: "")
+    approved = {
+        "SOURCE_COMMIT": "a" * 40,
+        "CONFIG_SHA256": testnet_runner._file_sha256(config_path),
+        "PARENT_ROOT": str(tmp_path),
+        "ATTEMPT_ROOT": str(attempt_root),
+        "CHAIN_ID": "11155111",
+        "GENESIS_HASH": "0x" + "1" * 64,
+        "RPC_ORIGIN": "https://rpc.example",
+        "SIGNER_ADDRESS": signer,
+        "CONTRACT_ADDRESS": contract,
+        "FUNCTION_SIGNATURE": "deposit()",
+        "ARGUMENTS_DIGEST": testnet_runner._canonical_digest([]),
+        "VALUE_WEI": "1",
+        "MAX_TOTAL_FEE_WEI": "1000",
+        "CONFIRMATION_DEPTH": "1",
+        "MAX_DURATION_SECONDS": "30",
+        "PRECONDITION_DIGEST": testnet_runner._canonical_digest(precondition),
+        "POSTCONDITION_DIGEST": testnet_runner._canonical_digest(postcondition),
+        "ATTEMPT_ID": "attempt-1",
+        "OPERATOR_ID": "test-operator",
+        "CHECKPOINT_DIGEST": testnet_runner._canonical_digest(None),
+        "MUTATION_INVOCATIONS": "1",
+        "MAX_BROADCASTS": "1",
+    }
+    for suffix, value in approved.items():
+        monkeypatch.setenv(f"{testnet_runner.APPROVAL_PREFIX}{suffix}", value)
+
+    result = testnet_runner._approved_attempt(
+        config_path,
+        payload,
+        testnet_runner._file_sha256(config_path),
+    )
+
+    assert result["attempt_root"] == attempt_root
+    assert result["canonical_call_digest"] == testnet_runner._canonical_digest(
+        {"function_signature": "deposit()", "arguments": [], "value_wei": "1"}
+    )
+    first_digest = result["approval_envelope_digest"]
+    monkeypatch.setenv(
+        f"{testnet_runner.APPROVAL_PREFIX}ATTEMPT_ROOT",
+        str(tmp_path / "second-attempt"),
+    )
+    second = testnet_runner._approved_attempt(
+        config_path,
+        payload,
+        testnet_runner._file_sha256(config_path),
+    )
+    assert second["approval_envelope_digest"] != first_digest
+
+
+def test_testnet_checkout_paths_are_rejected_before_runtime(
+    tmp_path, monkeypatch
+) -> None:
+    config_path = tmp_path / "testnet-write.json"
+    config_path.write_text("{}")
+    monkeypatch.setattr(testnet_runner, "_source_commit", lambda: "a" * 40)
+    monkeypatch.setattr(testnet_runner, "_source_status", lambda: "")
+    monkeypatch.setenv(f"{testnet_runner.APPROVAL_PREFIX}SOURCE_COMMIT", "a" * 40)
+    monkeypatch.setenv(
+        f"{testnet_runner.APPROVAL_PREFIX}CONFIG_SHA256",
+        testnet_runner._file_sha256(config_path),
+    )
+    monkeypatch.setenv(
+        f"{testnet_runner.APPROVAL_PREFIX}PARENT_ROOT", str(testnet_runner.ROOT)
+    )
+    monkeypatch.setenv(
+        f"{testnet_runner.APPROVAL_PREFIX}ATTEMPT_ROOT",
+        str(testnet_runner.ROOT / ".testnet-write-attempt"),
+    )
+
+    with pytest.raises(RuntimeError, match="attempt root must be outside"):
+        testnet_runner._approved_attempt(
+            config_path,
+            {},
+            testnet_runner._file_sha256(config_path),
+        )
+
+    external_attempt = tmp_path / "attempt"
+    monkeypatch.setenv(f"{testnet_runner.APPROVAL_PREFIX}PARENT_ROOT", str(tmp_path))
+    monkeypatch.setenv(
+        f"{testnet_runner.APPROVAL_PREFIX}ATTEMPT_ROOT", str(external_attempt)
+    )
+    with pytest.raises(RuntimeError, match="config must be outside"):
+        testnet_runner._approved_attempt(
+            testnet_runner.ROOT
+            / "tests/e2e/fixtures/blockchain/testnet_write.example.json",
+            {},
+            testnet_runner._file_sha256(config_path),
+        )
+
+
+def test_testnet_dirty_source_is_rejected_before_runtime(monkeypatch) -> None:
+    monkeypatch.setattr(testnet_runner, "_source_commit", lambda: "a" * 40)
+    monkeypatch.setattr(testnet_runner, "_source_status", lambda: " M runner.py")
+
+    with pytest.raises(RuntimeError, match="clean committed checkout"):
+        testnet_runner._assert_clean_source("a" * 40)
+
+
+def test_testnet_config_drift_is_rejected_before_evidence(
+    tmp_path, monkeypatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"version":1}')
+    approved = _approved_testnet_attempt(tmp_path)
+    approved["config_path"] = config_path
+    approved["config_sha256"] = testnet_runner._file_sha256(config_path)
+    monkeypatch.setattr(testnet_runner, "_source_commit", lambda: "a" * 40)
+    monkeypatch.setattr(testnet_runner, "_source_status", lambda: "")
+    config_path.write_text('{"version":2}')
+
+    with pytest.raises(RuntimeError, match="config changed"):
+        testnet_runner._assert_approval_unchanged(approved)
+
+
+def test_testnet_recovery_requires_secret_scan_attestation(
+    tmp_path, monkeypatch
+) -> None:
+    approved = _approved_testnet_attempt(tmp_path)
+    approved["attempt_root"].mkdir()
+    monkeypatch.delenv(testnet_runner.SCAN_ATTESTATION_ENV, raising=False)
+
+    with pytest.raises(RuntimeError, match="requires a caller-owned"):
+        testnet_runner._required_recovery_scan(approved)
+
+
+def test_testnet_recovery_accepts_joined_external_scan(tmp_path, monkeypatch) -> None:
+    approved = _approved_testnet_attempt(tmp_path)
+    approved["attempt_root"].mkdir()
+    attestation = {
+        "schema_version": "blockchain-testnet-secret-scan-v1",
+        "attempt_id": approved["attempt_id"],
+        "private_root_identifier": approved["private_root_identifier"],
+        "signer_address": approved["signer_address"],
+        "operator_id": approved["operator_id"],
+        "secret_absent": True,
+        "source": "caller_recovery",
+        "scanned_at": "2026-10-16T00:00:00+00:00",
+    }
+    path = tmp_path / "scan.json"
+    path.write_text(json.dumps(attestation))
+    monkeypatch.setenv(testnet_runner.SCAN_ATTESTATION_ENV, str(path))
+
+    assert testnet_runner._required_recovery_scan(approved) == attestation
+    assert (
+        json.loads(
+            (
+                approved["attempt_root"] / testnet_runner.SCAN_ATTESTATION_NAME
+            ).read_text()
+        )
+        == attestation
+    )
+
+
+def test_testnet_example_uses_non_approval_mutation(monkeypatch) -> None:
+    path = (
+        testnet_runner.ROOT / "tests/e2e/fixtures/blockchain/testnet_write.example.json"
+    )
+    monkeypatch.setenv(testnet_runner.CONFIG_ENV, str(path))
+    resolved, payload, config_sha256 = testnet_runner._required_config()
+
+    assert resolved == path
+    assert config_sha256 == testnet_runner._file_sha256(path)
+    assert payload["prepare_request"]["function_signature"] == "deposit()"
+    assert payload["prepare_request"]["arguments"] == []
+    assert payload["prepare_request"]["value_wei"] == "1"
+    assert payload["precondition"]["function_signature"] == "balanceOf(address)"
+    assert (
+        payload["prepare_request"]["postconditions"][0]["function_signature"]
+        == "balanceOf(address)"
+    )
+
+
+def test_testnet_attempt_without_manifest_is_abandoned(tmp_path) -> None:
+    approved = _approved_testnet_attempt(tmp_path)
+    approved["attempt_root"].mkdir()
+
+    with pytest.raises(RuntimeError, match="no complete manifest"):
+        testnet_runner._resume_manifest(approved)
+
+
+def test_testnet_prepared_attempt_without_operation_closes_not_submitted(
+    tmp_path, monkeypatch
+) -> None:
+    approved = _approved_testnet_attempt(tmp_path)
+    approved["attempt_root"].mkdir()
+    preparation_digest = "sha256:" + "8" * 64
+    testnet_runner._write_manifest(
+        approved,
+        state="prepared",
+        preparation_digest=preparation_digest,
+    )
+    monkeypatch.setattr(testnet_runner, "_load_operation", lambda *_args: None)
+
+    with pytest.raises(RuntimeError, match="did not create an operation record"):
+        testnet_runner._resume_manifest(approved)
+
+    manifest = json.loads(
+        (approved["attempt_root"] / testnet_runner.MANIFEST_NAME).read_text()
+    )
+    assert manifest["state"] == "not_submitted"
+
+
+@pytest.mark.parametrize("state", ("broadcast_unknown", "pending", "succeeded"))
+def test_testnet_claimed_attempt_enters_status_only_recovery(
+    tmp_path, monkeypatch, state: str
+) -> None:
+    approved = _approved_testnet_attempt(tmp_path)
+    approved["attempt_root"].mkdir()
+    preparation_digest = "sha256:" + "8" * 64
+    testnet_runner._write_manifest(
+        approved,
+        state="prepared",
+        preparation_digest=preparation_digest,
+    )
+    monkeypatch.setattr(
+        testnet_runner,
+        "_load_operation",
+        lambda *_args: {"submission_started": True, "state": state},
+    )
+
+    manifest = testnet_runner._resume_manifest(approved)
+
+    assert manifest["state"] == state
+    assert manifest["preparation_digest"] == preparation_digest
+
+
+def test_testnet_observed_chain_mismatch_stops_before_prepare(tmp_path) -> None:
+    approved = _approved_testnet_attempt(tmp_path)
+    resolution = _testnet_resolution(approved)
+    resolution["data"]["observed_chain_id"] = 1
+
+    class Execution:
+        calls: list[str] = []
+
+        def execute_raw(self, *, name, **_kwargs):
+            self.calls.append(name)
+            return {"outputs": resolution}
+
+    execution = Execution()
+    with pytest.raises(RuntimeError, match="observed observed_chain_id"):
+        testnet_runner._resolve_and_prepare(
+            execution,
+            {"resolve_request": {}},
+            approved,
+        )
+
+    assert execution.calls == ["blockchain.resolve_contract"]
+
+
+def test_testnet_precondition_mismatch_stops_before_prepare(tmp_path) -> None:
+    approved = _approved_testnet_attempt(tmp_path)
+    payload = {
+        "resolve_request": {},
+        "precondition": {
+            "function_signature": "balanceOf(address)",
+            "arguments": [approved["signer_address"]],
+            "expected_result": ["1"],
+        },
+        "prepare_request": {},
+    }
+    outputs = [
+        _testnet_resolution(approved),
+        {"ok": True, "data": {"result": ["0"]}},
+    ]
+
+    class Execution:
+        calls: list[str] = []
+
+        def execute_raw(self, *, name, **_kwargs):
+            self.calls.append(name)
+            return {"outputs": outputs.pop(0)}
+
+    execution = Execution()
+    with pytest.raises(RuntimeError, match="precondition does not match"):
+        testnet_runner._resolve_and_prepare(execution, payload, approved)
+
+    assert execution.calls == ["blockchain.resolve_contract", "blockchain.inspect"]
+
+
+def test_testnet_response_loss_recovers_from_claim_without_resend(
+    tmp_path, monkeypatch
+) -> None:
+    approved = _approved_testnet_attempt(tmp_path)
+    approved["attempt_root"].mkdir()
+    preparation_digest = "sha256:" + "8" * 64
+    preparation = {"ok": True, "preparation_digest": preparation_digest}
+    status = _testnet_terminal_status(preparation_digest)
+
+    class Execution:
+        approval = {"action": "allow_once"}
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(testnet_runner, "_metadata", lambda _payload: {})
+    monkeypatch.setattr(testnet_runner, "_execution", lambda *_args: Execution())
+    monkeypatch.setattr(
+        testnet_runner,
+        "_resolve_and_prepare",
+        lambda *_args: ({"ok": True}, {"ok": True}, preparation),
+    )
+    monkeypatch.setattr(
+        testnet_runner,
+        "_send_once",
+        lambda *_args: (_ for _ in ()).throw(ConnectionError("response lost")),
+    )
+    monkeypatch.setattr(
+        testnet_runner,
+        "_load_operation",
+        lambda *_args: {"submission_started": True, "state": "broadcast_unknown"},
+    )
+    monkeypatch.setattr(
+        testnet_runner, "_terminal_status", lambda *_args, **_kwargs: status
+    )
+    monkeypatch.setattr(
+        testnet_runner, "_inspect_status", lambda *_args, **_kwargs: status
+    )
+    monkeypatch.setattr(testnet_runner, "_read_audit_events", lambda *_args: [])
+
+    evidence = testnet_runner._run_initial({}, approved, "sentinel-secret")
+
+    assert evidence["send"] is None
+    assert evidence["mutation_invocations_this_entry"] == 1
+    assert evidence["operation_status"] == status
+
+
+def test_testnet_recovery_never_loads_signer_or_sends(tmp_path, monkeypatch) -> None:
+    approved = _approved_testnet_attempt(tmp_path)
+    approved["attempt_root"].mkdir()
+    preparation_digest = "sha256:" + "8" * 64
+    manifest = testnet_runner._write_manifest(
+        approved,
+        state="broadcast_unknown",
+        preparation_digest=preparation_digest,
+    )
+    status = _testnet_terminal_status(preparation_digest)
+    monkeypatch.setattr(
+        testnet_runner, "_terminal_status", lambda *_args, **_kwargs: status
+    )
+    monkeypatch.setattr(
+        testnet_runner, "_inspect_status", lambda *_args, **_kwargs: status
+    )
+    monkeypatch.setattr(testnet_runner, "_read_audit_events", lambda *_args: [])
+    monkeypatch.setattr(
+        testnet_runner,
+        "_load_signer_secret",
+        lambda *_args: pytest.fail("recovery loaded the signer"),
+    )
+    monkeypatch.setattr(
+        testnet_runner,
+        "_send_once",
+        lambda *_args: pytest.fail("recovery attempted another send"),
+    )
+
+    evidence = testnet_runner._run_recovery(approved, manifest)
+
+    assert evidence["mutation_invocations_this_entry"] == 0
+    assert evidence["attempt_manifest"]["state"] == "succeeded"
+
+
+def test_testnet_local_approval_mismatch_precedes_runtime(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv(testnet_runner.OPT_IN, "1")
+    monkeypatch.setattr(
+        testnet_runner,
+        "_required_config",
+        lambda: (tmp_path, {}, "a" * 64),
+    )
+    monkeypatch.setattr(
+        testnet_runner,
+        "_approved_attempt",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("approval mismatch")),
+    )
+    monkeypatch.setattr(
+        testnet_runner,
+        "_load_signer_secret",
+        lambda *_args: pytest.fail("approval mismatch loaded the signer"),
+    )
+
+    with pytest.raises(RuntimeError, match="approval mismatch"):
+        testnet_runner.main()
 
 
 @pytest.mark.parametrize(

@@ -208,6 +208,140 @@ never send the preparation again. Restart loads the same endpoint, resolution,
 preparation, and precomputed transaction hash without new research or a second
 broadcast.
 
+## Disposable-testnet acceptance
+
+The opt-in testnet runner is an acceptance tool, not a general transaction
+command. Copy `tests/e2e/fixtures/blockchain/testnet_write.example.json` to the
+approved external attempt parent, then edit that copy with the approved
+disposable signer and observed balance. Use a non-approval mutation such as
+the one-wei WETH `deposit()` shown there. Do not edit or run the tracked example
+in place.
+
+Before the first network call, the runner requires
+`OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_` values for the source commit,
+config SHA-256, chain ID, genesis hash, checkpoint digest, RPC origin, signer,
+contract, function signature, argument digest, value, fee cap, confirmation
+depth, duration, precondition digest, postcondition digest, attempt ID, parent
+root, attempt root, one mutation invocation, and one maximum broadcast. The
+config supplies the exact public inputs and names the environment variable
+that contains the caller-owned private key. Both the edited config and attempt
+root must be outside the OpenMinion checkout. The attempt root must not exist
+on first entry and is created owner-only. From the OpenMinion checkout, create
+the external paths under the umbrella scratch tree:
+
+```bash
+OPENMINION_ROOT="$(git rev-parse --show-toplevel)"
+ATTEMPT_PARENT="$(dirname "$OPENMINION_ROOT")/workspace-tmp/blockchain-testnet-write-$ATTEMPT_ID"
+WRITE_CONFIG="$ATTEMPT_PARENT/testnet-write.json"
+ATTEMPT_ROOT="$ATTEMPT_PARENT/$ATTEMPT_ID"
+mkdir -p "$ATTEMPT_PARENT"
+cp tests/e2e/fixtures/blockchain/testnet_write.example.json "$WRITE_CONFIG"
+chmod 700 "$ATTEMPT_PARENT"
+chmod 600 "$WRITE_CONFIG"
+```
+
+Edit only `$WRITE_CONFIG`, then review and freeze it before continuing.
+
+From a clean committed OpenMinion checkout, derive the five JSON/config
+fingerprints from the exact reviewed config:
+
+```bash
+PY=.venv/bin/python3.11
+export OPENMINION_BLOCKCHAIN_TESTNET_WRITE_CONFIG="$WRITE_CONFIG"
+PYTHONPATH=src "$PY" - <<'PY'
+from tests.e2e.runners.run_blockchain_testnet_write import (
+    _canonical_digest,
+    _required_config,
+)
+
+_, payload, config_sha256 = _required_config()
+prepare = payload["prepare_request"]
+print(f"CONFIG_SHA256={config_sha256}")
+print(f"CHECKPOINT_DIGEST={_canonical_digest(payload['resolve_request'].get('expected_checkpoint'))}")
+print(f"ARGUMENTS_DIGEST={_canonical_digest(prepare['arguments'])}")
+print(f"PRECONDITION_DIGEST={_canonical_digest(payload['precondition'])}")
+print(f"POSTCONDITION_DIGEST={_canonical_digest(prepare['postconditions'][0])}")
+PY
+```
+
+Freeze those outputs and every other reviewed value, then run the initial
+attempt with the exact environment below. The private-key variable itself is
+the name in `signer_secret_env`; set it in the parent environment without
+putting the value in shell history.
+
+```bash
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_SOURCE_COMMIT="$APPROVED_SHA" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_CONFIG_SHA256="$CONFIG_SHA256" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_PARENT_ROOT="$ATTEMPT_PARENT" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_ATTEMPT_ROOT="$ATTEMPT_ROOT" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_CHAIN_ID="$CHAIN_ID" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_GENESIS_HASH="$GENESIS_HASH" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_CHECKPOINT_DIGEST="$CHECKPOINT_DIGEST" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_RPC_ORIGIN="$RPC_ORIGIN" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_SIGNER_ADDRESS="$SIGNER_ADDRESS" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_CONTRACT_ADDRESS="$CONTRACT_ADDRESS" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_FUNCTION_SIGNATURE="$FUNCTION_SIGNATURE" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_ARGUMENTS_DIGEST="$ARGUMENTS_DIGEST" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_VALUE_WEI="$VALUE_WEI" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_MAX_TOTAL_FEE_WEI="$MAX_TOTAL_FEE_WEI" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_CONFIRMATION_DEPTH="$CONFIRMATION_DEPTH" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_MAX_DURATION_SECONDS="$MAX_DURATION_SECONDS" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_PRECONDITION_DIGEST="$PRECONDITION_DIGEST" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_POSTCONDITION_DIGEST="$POSTCONDITION_DIGEST" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_ATTEMPT_ID="$ATTEMPT_ID" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_OPERATOR_ID="$OPERATOR_ID" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_MUTATION_INVOCATIONS=1 \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_APPROVED_MAX_BROADCASTS=1 \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_CONFIG="$WRITE_CONFIG" \
+OPENMINION_BLOCKCHAIN_TESTNET_WRITE_E2E=1 \
+  "$PY" tests/e2e/runners/run_blockchain_testnet_write.py
+```
+
+Use the same command for status-only recovery, with the private-key variable
+unset. If a hard stop occurred before the runner wrote `secret-scan.json`, the
+caller must first scan the exact attempt root for the key bytes and supply
+`OPENMINION_BLOCKCHAIN_TESTNET_WRITE_SCAN_ATTESTATION` pointing to an owner-only
+JSON file with this closed shape:
+
+```json
+{
+  "schema_version": "blockchain-testnet-secret-scan-v1",
+  "attempt_id": "the approved attempt ID",
+  "private_root_identifier": "sha256: canonical JSON digest of the normalized absolute attempt-root string",
+  "signer_address": "the approved public signer",
+  "operator_id": "the approved operator ID",
+  "secret_absent": true,
+  "source": "caller_recovery",
+  "scanned_at": "an ISO-8601 UTC timestamp"
+}
+```
+
+After preparation, the runner writes `attempt.json` before its single send.
+Restart behavior is intentionally narrow:
+
+- a root without a complete manifest is abandoned;
+- a prepared manifest without a production operation record closes as
+  `not_submitted`; and
+- an operation record with `submission_started=true` resumes by status only,
+  without loading the signer or sending again.
+
+The runner retains only public facts and digests in the manifest and scans its
+artifacts for the loaded key without printing matched content. After terminal
+receipt and evidence verification, the operator deletes the caller-owned key
+and records the following outside the attempt root as
+`$ATTEMPT_PARENT/$ATTEMPT_ID-key-deletion.json`; the runner does not claim
+deletion:
+
+```json
+{
+  "attempt_id": "the approved attempt ID",
+  "signer_address": "the approved public signer",
+  "secret_source_kind": "file or parent-shell environment",
+  "deletion_time": "an ISO-8601 UTC timestamp",
+  "operator_identity": "the approved operator ID"
+}
+```
+
 ## Safety boundary
 
 - Keep public-mainnet writes disabled. Use local Anvil or an explicitly
