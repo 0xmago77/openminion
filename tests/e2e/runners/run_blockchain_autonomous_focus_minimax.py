@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -213,6 +214,13 @@ def _source_commit() -> str:
     expected = _required("OPENMINION_BLOCKCHAIN_E2E_EXPECTED_SOURCE_COMMIT")
     if commit != expected:
         raise RuntimeError("current source commit does not match Stage C approval")
+    status = subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=ROOT,
+        text=True,
+    ).strip()
+    if status:
+        raise RuntimeError("Focus evidence requires a clean committed checkout")
     return commit
 
 
@@ -309,6 +317,39 @@ def _failure_evidence(
     }
 
 
+def _runtime_observations(
+    probe: FocusProbe, *, elapsed_seconds: float
+) -> tuple[list[Any], str, dict[str, object]]:
+    events, _messages, brain_session_id = read_focus_evidence(
+        probe.environment(), probe.session_id
+    )
+    current_events = [event for event in events if event.session_id == brain_session_id]
+    requested_tools = sorted(
+        {
+            str(event.data.get("canonical_name") or "")
+            for event in current_events
+            if event.event_type == "tool.call.requested"
+        }
+        - {""}
+    )
+    completed_tools = sorted(
+        {
+            str(event.data.get("canonical_name") or "")
+            for event in current_events
+            if event.event_type == "tool.call.completed"
+        }
+        - {""}
+    )
+    observed = {
+        "persisted_event_count": len(current_events),
+        "persisted_event_types": sorted({event.event_type for event in current_events}),
+        "requested_tools": requested_tools,
+        "completed_tools": completed_tools,
+        "elapsed_seconds": elapsed_seconds,
+    }
+    return current_events, brain_session_id, observed
+
+
 def _stage_c_inputs(config_path: Path, agent_id: str) -> dict[str, object]:
     config_sha256 = _file_sha256(config_path)
     expected_config = _required("OPENMINION_BLOCKCHAIN_E2E_EXPECTED_CONFIG_SHA256")
@@ -381,6 +422,7 @@ def main() -> int:
                 max_auto_continuations=3,
             )
             started = time.monotonic()
+            turn_error: AssertionError | TimeoutError | None = None
             with _deadline(int(approved["max_duration_seconds"])):
                 with probe.session(rows=48, cols=160) as session:
                     probe.wait_ready(session)
@@ -389,50 +431,56 @@ def main() -> int:
                         "/permissions readonly",
                         marker="permissions → read-only",
                     )
-                    transcript = probe.run_turn(session, scenario)
+                    try:
+                        transcript = probe.run_turn(session, scenario)
+                    except (AssertionError, TimeoutError) as error:
+                        turn_error = error
+            if turn_error is not None:
+                elapsed_seconds = round(time.monotonic() - started, 3)
+                observed = {
+                    "permission_mode": "readonly",
+                    "allow_unsandboxed_exec": False,
+                    "elapsed_seconds": elapsed_seconds,
+                }
+                try:
+                    _events, _brain_session_id, runtime_observed = (
+                        _runtime_observations(
+                            probe,
+                            elapsed_seconds=elapsed_seconds,
+                        )
+                    )
+                except (
+                    AssertionError,
+                    OSError,
+                    RuntimeError,
+                    sqlite3.Error,
+                    ValueError,
+                ):
+                    pass
+                else:
+                    observed.update(runtime_observed)
+                raise turn_error
             elapsed_seconds = round(time.monotonic() - started, 3)
-            events, _messages, brain_session_id = read_focus_evidence(
-                probe.environment(), probe.session_id
+            current_events, brain_session_id, observed = _runtime_observations(
+                probe,
+                elapsed_seconds=elapsed_seconds,
             )
-            current_events = [
-                event for event in events if event.session_id == brain_session_id
-            ]
-            requested_tools = sorted(
-                {
-                    str(event.data.get("canonical_name") or "")
-                    for event in current_events
-                    if event.event_type == "tool.call.requested"
-                }
-                - {""}
-            )
-            completed_tools = sorted(
-                {
-                    str(event.data.get("canonical_name") or "")
-                    for event in current_events
-                    if event.event_type == "tool.call.completed"
-                }
-                - {""}
-            )
+            requested_tools = set(observed["requested_tools"])
             if "blockchain.send_transaction" in requested_tools:
                 raise RuntimeError(
                     "read-only Focus scenario attempted a transaction send"
                 )
+            observed.update(
+                {
+                    "permission_mode": "readonly",
+                    "allow_unsandboxed_exec": False,
+                    "approval_prompt_count": 0,
+                    "broadcast_count": 0,
+                }
+            )
             successful_resolution_digests, successful_resolved_reads = (
                 _successful_blockchain_evidence(current_events)
             )
-            observed = {
-                "persisted_event_count": len(current_events),
-                "persisted_event_types": sorted(
-                    {event.event_type for event in current_events}
-                ),
-                "requested_tools": requested_tools,
-                "completed_tools": completed_tools,
-                "permission_mode": "readonly",
-                "allow_unsandboxed_exec": False,
-                "approval_prompt_count": 0,
-                "broadcast_count": 0,
-                "elapsed_seconds": elapsed_seconds,
-            }
             evidence = {
                 "schema_version": "blockchain-autonomous-focus-evidence-v2",
                 "scenario_id": "autonomous-public-discovery",
@@ -452,10 +500,12 @@ def main() -> int:
                 **observed,
             }
             validate_evidence(evidence, {"source_commit": source_commit, **approved})
+            _source_commit()
             _write_evidence(evidence_root, evidence)
             _assert_retained_evidence_safe(evidence_root, secrets)
         except Exception as error:
             evidence_path.unlink(missing_ok=True)
+            _source_commit()
             _write_evidence(
                 evidence_root,
                 _failure_evidence(

@@ -4,7 +4,9 @@ from copy import deepcopy
 import json
 import os
 import re
+import sqlite3
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -588,6 +590,193 @@ def test_focus_failure_evidence_keeps_observed_runtime_facts() -> None:
     assert evidence["approval_prompt_count"] == 0
     assert evidence["broadcast_count"] == 0
     assert "sensitive detail" not in json.dumps(evidence)
+
+
+def _prepare_focus_failure_main(
+    tmp_path, monkeypatch, probe_type, read_evidence
+) -> object:
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    generated_root = tmp_path / "home" / ".openminion" / "runtime"
+    generated_root.mkdir(parents=True)
+    monkeypatch.setenv(focus_runner.OPT_IN, "1")
+    monkeypatch.setattr(
+        focus_runner,
+        "_required_config",
+        lambda: (tmp_path / "source.json", {"runtime": {}}),
+    )
+    monkeypatch.setattr(focus_runner, "_required", lambda _name: "minimax")
+    monkeypatch.setattr(focus_runner, "_source_commit", lambda: "a" * 40)
+    monkeypatch.setattr(focus_runner, "_evidence_root", lambda: evidence_root)
+    monkeypatch.setattr(
+        focus_runner,
+        "isolate_runtime_roots",
+        lambda **_kwargs: generated_root,
+    )
+    monkeypatch.setattr(
+        focus_runner,
+        "_stage_c_inputs",
+        lambda _path, _agent: {"max_duration_seconds": 30},
+    )
+    monkeypatch.setattr(focus_runner, "FocusProbe", probe_type)
+    monkeypatch.setattr(focus_runner, "read_focus_evidence", read_evidence)
+    return evidence_root
+
+
+class _FailingFocusProbe:
+    session_id = "abo-focus-minimax"
+
+    def __init__(self, **_kwargs) -> None:
+        pass
+
+    def environment(self) -> dict[str, str]:
+        return {}
+
+    def session(self, **_kwargs):
+        return self
+
+    def __enter__(self):
+        return object()
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def wait_ready(self, _session) -> None:
+        pass
+
+    def run_slash(self, _session, _command, **_kwargs) -> None:
+        pass
+
+    def run_turn(self, _session, _scenario) -> str:
+        raise TimeoutError("provider detail")
+
+
+def test_focus_timeout_retains_current_runtime_facts(tmp_path, monkeypatch) -> None:
+    events = [
+        SimpleNamespace(
+            session_id="brain-session",
+            event_type="tool.call.requested",
+            data={
+                "canonical_name": "web.search",
+                "provider_detail": "must-not-be-retained",
+            },
+        ),
+        SimpleNamespace(
+            session_id="brain-session",
+            event_type="tool.call.completed",
+            data={"canonical_name": "web.search"},
+        ),
+    ]
+    evidence_root = _prepare_focus_failure_main(
+        tmp_path,
+        monkeypatch,
+        _FailingFocusProbe,
+        lambda _environment, _session_id: (events, [], "brain-session"),
+    )
+
+    with pytest.raises(TimeoutError, match="provider detail"):
+        focus_runner.main()
+
+    retained = json.loads((evidence_root / "evidence.json").read_text())
+    assert retained["persisted_event_count"] == 2
+    assert retained["requested_tools"] == ["web.search"]
+    assert retained["completed_tools"] == ["web.search"]
+    assert retained["permission_mode"] == "readonly"
+    assert retained["allow_unsandboxed_exec"] is False
+    assert "approval_prompt_count" not in retained
+    assert "broadcast_count" not in retained
+    assert "provider detail" not in json.dumps(retained)
+    assert "must-not-be-retained" not in json.dumps(retained)
+
+
+@pytest.mark.parametrize("diagnostic_error", (AssertionError, sqlite3.OperationalError))
+def test_focus_timeout_preserves_error_when_runtime_facts_are_unavailable(
+    tmp_path, monkeypatch, diagnostic_error
+) -> None:
+    def fail_read(_environment, _session_id):
+        raise diagnostic_error("missing runtime session")
+
+    evidence_root = _prepare_focus_failure_main(
+        tmp_path,
+        monkeypatch,
+        _FailingFocusProbe,
+        fail_read,
+    )
+
+    with pytest.raises(TimeoutError, match="provider detail"):
+        focus_runner.main()
+
+    retained = json.loads((evidence_root / "evidence.json").read_text())
+    assert retained["permission_mode"] == "readonly"
+    assert retained["allow_unsandboxed_exec"] is False
+    assert "persisted_event_count" not in retained
+    assert "approval_prompt_count" not in retained
+    assert "broadcast_count" not in retained
+
+
+def test_focus_prepermission_failure_does_not_claim_safety_facts(
+    tmp_path, monkeypatch
+) -> None:
+    class PrepermissionFailureProbe(_FailingFocusProbe):
+        def run_slash(self, _session, _command, **_kwargs) -> None:
+            raise AssertionError("permission command failed")
+
+    evidence_root = _prepare_focus_failure_main(
+        tmp_path,
+        monkeypatch,
+        PrepermissionFailureProbe,
+        lambda _environment, _session_id: pytest.fail(
+            "runtime evidence must not be read before permissions are established"
+        ),
+    )
+
+    with pytest.raises(AssertionError, match="permission command failed"):
+        focus_runner.main()
+
+    retained = json.loads((evidence_root / "evidence.json").read_text())
+    assert "permission_mode" not in retained
+    assert "allow_unsandboxed_exec" not in retained
+    assert "approval_prompt_count" not in retained
+    assert "broadcast_count" not in retained
+
+
+def test_focus_source_commit_rejects_dirty_checkout(monkeypatch) -> None:
+    monkeypatch.setattr(focus_runner, "_required", lambda _name: "a" * 40)
+
+    def check_output(command, **_kwargs):
+        if command[1:3] == ["rev-parse", "HEAD"]:
+            return "a" * 40 + "\n"
+        return " M tests/e2e/runner.py\n"
+
+    monkeypatch.setattr(focus_runner.subprocess, "check_output", check_output)
+
+    with pytest.raises(RuntimeError, match="clean committed checkout"):
+        focus_runner._source_commit()
+
+
+def test_focus_source_drift_prevents_failure_evidence(tmp_path, monkeypatch) -> None:
+    evidence_root = _prepare_focus_failure_main(
+        tmp_path,
+        monkeypatch,
+        _FailingFocusProbe,
+        lambda _environment, _session_id: ([], [], "brain-session"),
+    )
+    calls = 0
+
+    def source_commit() -> str:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise RuntimeError("current source commit does not match Stage C approval")
+        return "a" * 40
+
+    monkeypatch.setattr(focus_runner, "_source_commit", source_commit)
+
+    with pytest.raises(RuntimeError, match="does not match Stage C approval"):
+        focus_runner.main()
+
+    assert calls == 2
+    assert not (evidence_root / "evidence.json").exists()
 
 
 @pytest.mark.parametrize("attribute", ("SIGALRM", "setitimer"))
