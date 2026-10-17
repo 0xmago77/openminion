@@ -142,10 +142,6 @@ def test_canonical_browser_navigate_text_screenshot_against_local_file(
 
     def _scenario() -> dict[str, object]:
         context = _ToolContext(extras={"workspace_root": str(tmp_path)})
-        confirmed_context = _ToolContext(
-            runtime=type("_Confirmed", (), {"confirm": True})(),
-            extras=context.extras,
-        )
         started = tool.execute(
             {"op": "instance.start", "instance": {"mode": "headless"}},
             context,
@@ -202,14 +198,37 @@ def test_canonical_browser_navigate_text_screenshot_against_local_file(
         assert changed.ok is True, changed.error
         assert "browser action complete" in changed.data["text"]["content"]
 
+        upload_payload = {
+            "op": "tab.upload",
+            "tab_id": tab_id,
+            "files": [upload_file.name],
+            "target": {"selector": "#file"},
+        }
+        approval = tool.execute(upload_payload, context)
+        assert approval.ok is False
+        assert approval.data["error_code"] == "CONFIRM_REQUIRED"
+        assert approval.data["details"]["origin"] == "null"
+        assert approval.data["details"]["preview"] == {
+            "op": "tab.upload",
+            "action": "upload",
+            "tab_id": tab_id,
+            "origin": "null",
+            "files": [upload_file.name],
+            "target": {"selector": "#file"},
+        }
+        replay_args = approval.data["details"]["replay_args"]
+        assert replay_args["approved_origin"] == "null"
+
         uploaded = tool.execute(
-            {
-                "op": "tab.upload",
-                "tab_id": tab_id,
-                "files": [upload_file.name],
-                "target": {"selector": "#file"},
-            },
-            confirmed_context,
+            replay_args,
+            _ToolContext(
+                runtime=type("_ReplayConfirmed", (), {"confirm": True})(),
+                extras={
+                    **context.extras,
+                    "confirmation_source": "policy_replay",
+                    "confirmation_grant_id": "upload-grant",
+                },
+            ),
         )
         assert uploaded.ok is True, uploaded.error
         assert uploaded.data["data"]["uploaded"] == [upload_file.name]
