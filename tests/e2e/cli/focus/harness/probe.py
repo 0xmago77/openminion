@@ -44,6 +44,7 @@ _SIDECAR_CONSENT_RE = re.compile(
 _APPROVAL_ACTION_RE = re.compile(
     r"Approval required:\s*([A-Za-z0-9_.-]+)\(", re.IGNORECASE
 )
+_APPROVAL_TARGET_RE = re.compile(r"Approval required:\s*[^\r\n]+", re.IGNORECASE)
 _APPROVAL_PATTERN = rf"{_APPROVAL_PROMPT_PATTERN}|Waiting for your reply"
 _APPROVAL_PROMPT_RE = re.compile(_APPROVAL_PROMPT_PATTERN)
 _APPROVAL_RE = re.compile(_APPROVAL_PATTERN)
@@ -301,11 +302,20 @@ def inline_approval_fingerprint(screen_text: str) -> str | None:
     )
     matches = list(pattern.finditer(screen_text))
     prefix = screen_text[: matches[-1].start()]
-    prompt_lines = [line.strip() for line in prefix.splitlines() if line.strip()]
-    prompt = prompt_lines[-1] if prompt_lines else ""
+    target_matches = list(_APPROVAL_TARGET_RE.finditer(prefix))
+    if target_matches:
+        prompt = target_matches[-1].group(0).strip()
+    else:
+        prompt_lines = [line.strip() for line in prefix.splitlines() if line.strip()]
+        prompt = prompt_lines[-1] if prompt_lines else ""
     prompt = _COMPACT_INLINE_APPROVAL_RE.sub("", prompt).strip()
     prompt = _LEGACY_INLINE_APPROVAL_RE.sub("", prompt).strip()
     return f"{menu}:{prompt}"
+
+
+def approval_target_fingerprint(screen_text: str) -> str | None:
+    matches = list(_APPROVAL_TARGET_RE.finditer(screen_text))
+    return matches[-1].group(0).strip() if matches else None
 
 
 def _interactive_surface_follows(screen_text: str, *, offset: int) -> bool:
@@ -780,6 +790,7 @@ class FocusProbe:
 
     @staticmethod
     def _submit_terminal_confirmation(session: PtySession, reply: str) -> None:
+        approval_fingerprint = approval_target_fingerprint(session.screen_text)
         decision = str(reply or "").strip().lower()
         if decision in {"no", "deny", "denied"}:
             key = "n"
@@ -790,7 +801,15 @@ class FocusProbe:
         session.send(f"{key}\r")
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
-            if not approval_prompt_needs_reply(session.screen_text, offset=0):
+            screen_text = session.screen_text
+            if not approval_prompt_needs_reply(screen_text, offset=0):
+                return
+            current_fingerprint = approval_target_fingerprint(screen_text)
+            if (
+                approval_fingerprint is not None
+                and current_fingerprint is not None
+                and current_fingerprint != approval_fingerprint
+            ):
                 return
             time.sleep(0.05)
         raise AssertionError(
