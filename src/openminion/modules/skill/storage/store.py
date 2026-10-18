@@ -26,18 +26,21 @@ class _SkillStoreMixin(WorkflowObservationStoreMixin, SkillStore):
         scope: str,
         agent_id: str | None,
         ts: str,
-    ) -> None:
-        self._record_store.execute_count(
-            """
+    ) -> bool:
+        return bool(
+            self._record_store.execute_count(
+                """
             INSERT INTO skills(skill_id, name, status, scope, agent_id, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(skill_id) DO UPDATE SET
-                name=excluded.name,
-                scope=excluded.scope,
-                agent_id=excluded.agent_id,
-                updated_at=excluded.updated_at
+            ON CONFLICT(skill_id) DO UPDATE SET updated_at=skills.updated_at
+            WHERE skills.scope = excluded.scope
+              AND (
+                skills.agent_id = excluded.agent_id
+                OR (skills.agent_id IS NULL AND excluded.agent_id IS NULL)
+              )
             """,
-            (skill_id, name, status, scope, agent_id, ts, ts),
+                (skill_id, name, status, scope, agent_id, ts, ts),
+            )
         )
 
     def insert_skill_version(

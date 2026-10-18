@@ -227,6 +227,8 @@ def test_cli_proposal_apply_emits_addition(tmp_path: Path) -> None:
     addition = apply_payload["addition"]
     assert addition["added_skill_id"].startswith("emergent.")
     assert addition["added_by"] == "operator-cli"
+    assert apply_payload["operator_admission_command"].startswith("skillctl admit ")
+    assert addition["version_hash"] in apply_payload["operator_admission_command"]
 
 
 def test_cli_proposal_apply_refuses_pending(tmp_path: Path) -> None:

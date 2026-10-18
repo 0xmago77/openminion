@@ -48,10 +48,9 @@ class SkillIngestUrlArgs(BaseModel):
         max_length=256,
         description="Optional override for the stored skill name.",
     )
-    scope: str = Field(
-        default="global",
-        max_length=64,
-        description="Skill scope: 'global' (default), 'agent', or 'user'.",
+    scope: Literal["agent"] = Field(
+        default="agent",
+        description="Model-authored skills are saved for the current agent.",
     )
     max_snippet_tokens: int = Field(
         default=500,

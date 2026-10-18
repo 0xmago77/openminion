@@ -15,6 +15,7 @@ from openminion.modules.skill.proposal import (
 )
 from openminion.modules.skill.proposal.queue import (
     PROPOSAL_QUEUE_STATE_PENDING,
+    record_proposal_review,
 )
 from openminion.modules.skill.proposal.review import SkillProposalReview
 from openminion.modules.skill.storage.base import SkillStore
@@ -32,7 +33,9 @@ DEFAULT_SUGGESTION_BATCH_CAP = _DEFAULT_SKILL_CONFIG.suggestion_batch_cap
 DEFAULT_SUGGESTION_COOLDOWN_SECONDS = _DEFAULT_SKILL_CONFIG.suggestion_cooldown_seconds
 DEFAULT_SUGGESTION_MIN_AGE_SECONDS = _DEFAULT_SKILL_CONFIG.suggestion_min_age_seconds
 
-_CLI_INSPECT_FMT = "openminion skill proposal-inspect {proposal_id}"
+_CLI_INSPECT_FMT = "skillctl proposal-inspect {proposal_id}"
+_STRUCTURAL_DEDUP_REVIEWER_ID = "structural_dedup"
+_STRUCTURAL_DEDUP_POLICY_ID = "structural-dedup-v1"
 
 
 @dataclass(frozen=True)
@@ -232,6 +235,19 @@ def run_suggestion_surface_pass(
             continue
 
         if signature in pass_signatures_used:
+            record_proposal_review(
+                store,
+                proposal_id=proposal_id,
+                reviewer_id=_STRUCTURAL_DEDUP_REVIEWER_ID,
+                review_policy_id=_STRUCTURAL_DEDUP_POLICY_ID,
+                criterion_decisions=[
+                    {
+                        "criterion_id": "structural_duplicate",
+                        "status": "rejected",
+                        "comment": "Matches a proposal surfaced in this pass.",
+                    }
+                ],
+            )
             dismissed.append(
                 _record_auto_dismissal(
                     store,
@@ -251,15 +267,6 @@ def run_suggestion_surface_pass(
             and now_epoch > 0
             and (now_epoch - last_surfaced_epoch) < safe_cooldown
         ):
-            dismissed.append(
-                _record_auto_dismissal(
-                    store,
-                    proposal_id=proposal_id,
-                    signature=signature,
-                    reason=DISMISS_REASON_COOLDOWN_ACTIVE,
-                    surfaced_at=now_iso,
-                )
-            )
             continue
 
         if len(surfaced) >= safe_batch_cap:
@@ -276,7 +283,7 @@ def run_suggestion_surface_pass(
             _projected_suggestion(record, signature=signature, first_seen_at=now_iso)
         )
 
-    pending_remaining = max(0, len(pending) - len(surfaced) - len(dismissed))
+    pending_remaining = max(0, len(pending) - len(dismissed))
     return SuggestionSurfacePass(
         surfaced=surfaced,
         auto_dismissed=dismissed,

@@ -217,3 +217,45 @@ def test_fetch_rejects_invalid_scheme() -> None:
     result = url_ingest.fetch_skill_markdown_from_url("file:///etc/passwd.md")
     assert result["ok"] is False
     assert result["error_code"] == "INVALID_SCHEME"
+
+
+def test_url_ingest_passes_agent_and_withholds_pending_snippet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        url_ingest,
+        "fetch_skill_markdown_from_url",
+        lambda _url: {
+            "ok": True,
+            "content": _MARKDOWN_BODY.decode(),
+            "suggested_name": "sample",
+        },
+    )
+    calls: list[dict[str, Any]] = []
+
+    class _Skill:
+        def ingest_url(self, **kwargs: Any):
+            calls.append(kwargs)
+            return "sample", "pending-v1", []
+
+        def get_skill_version_state(self, **_kwargs: Any):
+            return {"admission_state": "pending", "active_version_hash": None}
+
+        def render_snippet(self, **_kwargs: Any):
+            raise AssertionError("pending versions must not render")
+
+    result = url_ingest.ingest_skill_url(
+        _Skill(),
+        url="https://example.com/SKILL.md",
+        scope="agent",
+        agent_id="agent-a",
+    )
+    assert result["ok"] is True
+    assert result["snippet"] == ""
+    assert result["admission_state"] == "pending"
+    assert result["operator_admission_command"] == (
+        "openminion skill admit --skill-id sample --version-hash pending-v1 "
+        "--expected-active-version-hash none --target-status verified "
+        '--reason "Reviewed and approved staged skill"'
+    )
+    assert calls[0]["agent_id"] == "agent-a"

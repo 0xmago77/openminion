@@ -67,7 +67,7 @@ def test_skill_rows_merge_catalog_with_config_only_entries(
             "version_hash": "abc123",
             "source": "catalog",
         },
-        {"id": "configured-only", "source": "config"},
+        {"id": "configured-only", "source": "config (unavailable)"},
     ]
     assert instances[0].config == tmp_path / "openminion.json"
     assert instances[0].home_root == tmp_path
@@ -159,6 +159,57 @@ def test_skills_report_renders_catalog_skill_details_and_closes_resource(
     assert "Summary:\nCollect a local system inventory." in report
     assert "Procedure:\nRun the inventory tool and verify both artifacts." in report
     assert instances[0].closed is True
+
+
+def test_skills_report_explains_configured_only_skill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _SkillCatalog:
+        def __init__(self, _config: object, *, home_root: Path) -> None:
+            self.home_root = home_root
+
+        def get_skill(self, skill_id: str) -> object:
+            from openminion.modules.skill.errors import SkillError
+
+            raise SkillError("NOT_FOUND", "Skill not found", {"skill_id": skill_id})
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "openminion.cli.interactive.runtime.controls.Skill", _SkillCatalog
+    )
+    controls = _RuntimeControls(
+        _runtime(
+            tmp_path,
+            profile=SimpleNamespace(skill=None, skill_catalog=["configured-only"]),
+        )
+    )
+    report = controls.skills_report("configured-only")
+    assert "status   unavailable" in report
+    assert "configured but is not installed" in report
+
+
+def test_skills_report_discloses_catalog_truncation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _SkillCatalog:
+        def __init__(self, _config: object, *, home_root: Path) -> None:
+            self.home_root = home_root
+
+        def catalog_summaries(self, *, agent_id: str) -> list[dict[str, object]]:
+            return [{"id": f"skill-{index}"} for index in range(21)]
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "openminion.cli.interactive.runtime.controls.Skill", _SkillCatalog
+    )
+    controls = _RuntimeControls(
+        _runtime(tmp_path, profile=SimpleNamespace(skill=None, skill_catalog=[]))
+    )
+    assert "showing 20 of 21 skills" in controls.skills_report()
 
 
 def test_skills_report_includes_read_only_learning_status(

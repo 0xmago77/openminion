@@ -13,6 +13,7 @@ from openminion.modules.tool.contracts.model_ids import (
 )
 from openminion.modules.tool.registry import ToolRegistry, ToolSpec
 from openminion.modules.skill.interfaces import SkillIngestAuthority
+from openminion.modules.skill.errors import SkillError
 
 from .inspect import scan
 from .schemas import (
@@ -23,7 +24,7 @@ from .schemas import (
     SkillListArgs,
     SkillRemoveArgs,
 )
-from .url_ingest import ingest_skill_url
+from .url_ingest import ingest_skill_url, operator_admission_command
 
 _LOG = logging.getLogger(__name__)
 _SKILL_UNAVAILABLE_MESSAGE = "Skill service is not available in this runtime context."
@@ -38,6 +39,31 @@ def _error(code: str, message: str) -> dict[str, Any]:
 
 def _invalid_args_error(exc: ValidationError) -> dict[str, Any]:
     return _error("INVALID_ARGS", str(exc))
+
+
+def _model_visible_package(
+    skill: Any,
+    *,
+    skill_id: str,
+    version_hash: str | None,
+    agent_id: str,
+    owned_only: bool = False,
+) -> Any:
+    package = skill.get_skill(skill_id=skill_id, version_hash=version_hash)
+    if not owned_only:
+        lifecycle = skill.get_skill_version_state(
+            skill_id=skill_id,
+            version_hash=package.version_hash,
+        )
+        if (
+            lifecycle is None
+            or lifecycle["active_version_hash"] != package.version_hash
+        ):
+            raise SkillError("NOT_FOUND", "Skill not found")
+    is_owned = package.scope == "agent" and package.agent_id == agent_id
+    if not is_owned and (owned_only or package.scope != "global"):
+        raise SkillError("NOT_FOUND", "Skill not found")
+    return package
 
 
 def _authority_override_error(
@@ -135,32 +161,27 @@ def _h_skill_ingest(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
             "Skill ingest did not create a canonical staged version.",
         )
 
-    admission_command = None
-    if lifecycle["admission_state"] == "pending":
-        admission_command = (
-            "openminion skill admit "
-            f"--skill-id {skill_id} --version-hash {version_hash} "
-            f"--expected-active-version-hash {lifecycle['active_version_hash'] or 'none'} "
-            '--target-status verified --reason "Reviewed and approved staged skill"'
-        )
-
+    admission_command = operator_admission_command(
+        skill_id=skill_id, version_hash=version_hash, lifecycle=lifecycle
+    )
     snippet = ""
     snippet_hash = ""
-    try:
-        snippet, snippet_hash = skill.render_snippet(
-            skill_id=skill_id,
-            version_hash=version_hash,
-            purpose="act",
-            max_tokens=parsed_args.max_snippet_tokens,
-        )
-    except Exception as exc:
-        _LOG.warning(
-            "skill snippet render failed: skill_id=%s version=%s err=%s: %s",
-            skill_id,
-            version_hash,
-            type(exc).__name__,
-            exc,
-        )
+    if lifecycle["active_version_hash"] == version_hash:
+        try:
+            snippet, snippet_hash = skill.render_snippet(
+                skill_id=skill_id,
+                version_hash=version_hash,
+                purpose="act",
+                max_tokens=parsed_args.max_snippet_tokens,
+            )
+        except Exception as exc:
+            _LOG.warning(
+                "skill snippet render failed: skill_id=%s version=%s err=%s: %s",
+                skill_id,
+                version_hash,
+                type(exc).__name__,
+                exc,
+            )
 
     return {
         "ok": True,
@@ -193,11 +214,19 @@ def _h_skill_ingest_url(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
     except ValidationError as exc:
         return _invalid_args_error(exc)
 
+    agent_id = str(getattr(ctx, "agent_id", "") or "").strip()
+    if not agent_id:
+        return _error(
+            "INVALID_RUNTIME_CONTEXT",
+            "skill.ingest_url requires the current agent identity.",
+        )
+
     return ingest_skill_url(
         skill,
         url=parsed_args.url,
         name=parsed_args.name,
-        scope=parsed_args.scope,
+        scope="agent",
+        agent_id=agent_id,
         max_snippet_tokens=parsed_args.max_snippet_tokens,
         authority=SkillIngestAuthority.runtime(
             surface="model.skill.ingest_url", source_kind="remote"
@@ -215,14 +244,25 @@ def _h_skill_list(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
     except ValidationError as exc:
         return _invalid_args_error(exc)
 
-    filters: dict[str, Any] = {}
+    agent_id = str(getattr(ctx, "agent_id", "") or "").strip()
+    if not agent_id:
+        return _error(
+            "INVALID_RUNTIME_CONTEXT",
+            "skill.list requires the current agent identity.",
+        )
+
+    filters: dict[str, Any] = {"agent_id": agent_id}
     for key in ("scope", "status", "tag", "tool"):
         value = getattr(parsed_args, key, None)
         if value is not None and value.strip():
             filters[key] = value.strip()
 
     try:
-        skills = skill.list_skills(filters)
+        skills = [
+            row
+            for row in skill.list_skills(filters)
+            if row.get("scope") == "global" or row.get("agent_id") == agent_id
+        ]
     except Exception as exc:
         return _error("SKILL_LIST_FAILED", str(exc))
 
@@ -245,19 +285,30 @@ def _h_skill_get(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
 
     skill_id = parsed_args.skill_id
     version_hash = parsed_args.version_hash
+    agent_id = str(getattr(ctx, "agent_id", "") or "").strip()
+    if not agent_id:
+        return _error(
+            "INVALID_RUNTIME_CONTEXT",
+            "skill.get requires the current agent identity.",
+        )
 
     try:
+        package = _model_visible_package(
+            skill,
+            skill_id=skill_id,
+            version_hash=version_hash,
+            agent_id=agent_id,
+        )
         if parsed_args.resource_path:
             return {
                 "ok": True,
                 **skill.read_skill_resource(
                     skill_id=skill_id,
-                    version_hash=version_hash,
+                    version_hash=package.version_hash,
                     resource_path=parsed_args.resource_path,
                     max_chars=parsed_args.max_chars,
                 ),
             }
-        package = skill.get_skill(skill_id=skill_id, version_hash=version_hash)
         snippet, snippet_hash = skill.render_snippet(
             skill_id=skill_id,
             version_hash=package.version_hash,
@@ -287,8 +338,21 @@ def _h_skill_remove(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
 
     skill_id = parsed_args.skill_id
     version_hash = parsed_args.version_hash
+    agent_id = str(getattr(ctx, "agent_id", "") or "").strip()
+    if not agent_id:
+        return _error(
+            "INVALID_RUNTIME_CONTEXT",
+            "skill.remove requires the current agent identity.",
+        )
 
     try:
+        _model_visible_package(
+            skill,
+            skill_id=skill_id,
+            version_hash=version_hash,
+            agent_id=agent_id,
+            owned_only=True,
+        )
         deleted = skill.delete_skill(skill_id=skill_id, version_hash=version_hash)
     except Exception as exc:
         return _error(str(getattr(exc, "code", "SKILL_REMOVE_FAILED")), str(exc))

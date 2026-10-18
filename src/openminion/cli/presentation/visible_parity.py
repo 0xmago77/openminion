@@ -278,6 +278,8 @@ def render_skills_report(runtime: Any, arg: str = "") -> str:
         if tokens:
             suffix += f" · {tokens} tokens"
         lines.append(f"  - {skill_id}{suffix}")
+    if len(rows) > 20:
+        lines.append(f"  showing 20 of {len(rows)} skills")
     lines.append("Use /skills <skill_id> to view details.")
     return "\n".join(lines)
 

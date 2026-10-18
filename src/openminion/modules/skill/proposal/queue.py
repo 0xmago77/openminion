@@ -240,14 +240,17 @@ def record_replay_proof(
 
 
 def _persist_pending_package(store: SkillStore, package: SkillPackage) -> None:
-    store.upsert_skill(
+    if not store.upsert_skill(
         skill_id=package.skill_id,
         name=package.name,
         status=package.status,
         scope=package.scope,
         agent_id=package.agent_id,
         ts=package.updated_at,
-    )
+    ):
+        raise ProposalQueueError(
+            f"skill id belongs to another scope or agent: {package.skill_id!r}"
+        )
     store.insert_skill_version(
         skill_id=package.skill_id,
         version_hash=package.version_hash,

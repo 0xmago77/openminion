@@ -177,6 +177,10 @@ class TestSharedURLIngest:
 
         api = SimpleNamespace(
             ingest_url=_ingest_url,
+            get_skill_version_state=lambda **kwargs: {
+                "admission_state": "admitted",
+                "active_version_hash": "vh-1",
+            },
             render_snippet=lambda **kwargs: ("snippet", "snippet-hash"),
         )
 
@@ -191,6 +195,7 @@ class TestSharedURLIngest:
         assert result["version_hash"] == "vh-1"
         assert result["name"] == "demo-skill"
         assert result["source_url"] == "https://example.com/SKILL.md"
+        assert result["operator_admission_command"] is None
         assert captured == {"name": "demo-skill", "scope": "global"}
 
     def test_ingest_skill_url_rejects_critical_safety(

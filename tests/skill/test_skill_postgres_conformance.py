@@ -93,6 +93,36 @@ def test_skill_store_round_trip(skill_store_case) -> None:
     assert store.get_skill_package("skill.frontend", "v1") is None
 
 
+def test_skill_store_rejects_cross_agent_owner_change(skill_store_case) -> None:
+    _backend, store = skill_store_case
+    assert store.upsert_skill(
+        skill_id="skill.owned",
+        name="Owned",
+        status="draft",
+        scope="agent",
+        agent_id="agent-a",
+        ts="2026-04-01T00:00:00+00:00",
+    )
+    store.insert_skill_version(
+        skill_id="skill.owned",
+        version_hash="v1",
+        source_artifact_ref="artifact://owned",
+        package_json='{"name":"Owned","agent_id":"agent-a"}',
+        created_at="2026-04-01T00:00:00+00:00",
+    )
+    assert not store.upsert_skill(
+        skill_id="skill.owned",
+        name="Takeover",
+        status="draft",
+        scope="agent",
+        agent_id="agent-b",
+        ts="2026-04-02T00:00:00+00:00",
+    )
+    rows = store.list_skills(agent_id="agent-a")
+    assert rows[0]["agent_id"] == "agent-a"
+    assert rows[0]["name"] == "Owned"
+
+
 def test_skill_admission_backend_parity(skill_store_case) -> None:
     _backend, store = skill_store_case
     store.upsert_skill(

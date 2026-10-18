@@ -253,6 +253,15 @@ def test_render_skills_report_passes_exact_skill_id_to_runtime() -> None:
     assert render_skills_report(_SkillRuntime(), "demo-skill") == "detail:demo-skill"
 
 
+def test_render_skills_report_discloses_fallback_truncation() -> None:
+    runtime = _Runtime()
+    runtime.skills_report = lambda *_args: ""
+    runtime.list_skill_rows = lambda: [
+        {"id": f"skill-{index}", "source": "catalog"} for index in range(21)
+    ]
+    assert "showing 20 of 21 skills" in render_skills_report(runtime)
+
+
 def test_render_tasks_report_includes_operator_state_and_resume_action(
     tmp_path,
 ) -> None:

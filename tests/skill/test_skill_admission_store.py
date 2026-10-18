@@ -51,6 +51,50 @@ def test_active_version_controls_implicit_reads_without_mutating_package(
         store.close()
 
 
+def test_skill_row_upsert_preserves_catalog_metadata_and_owner(tmp_path: Path) -> None:
+    store = SQLiteSkillStore(tmp_path / "skill.db", wal=False)
+    try:
+        assert store.upsert_skill(
+            skill_id="owned",
+            name="Owned",
+            status="draft",
+            scope="agent",
+            agent_id="agent-a",
+            ts="2026-01-01T00:00:00Z",
+        )
+        assert store.upsert_skill(
+            skill_id="owned",
+            name="Owned v2",
+            status="draft",
+            scope="agent",
+            agent_id="agent-a",
+            ts="2026-01-02T00:00:00Z",
+        )
+        assert not store.upsert_skill(
+            skill_id="owned",
+            name="Takeover",
+            status="draft",
+            scope="agent",
+            agent_id="agent-b",
+            ts="2026-01-03T00:00:00Z",
+        )
+        rows = store._record_store.query_dicts(
+            "SELECT name, status, scope, agent_id, updated_at FROM skills WHERE skill_id = ?",
+            ("owned",),
+        )
+        assert rows == [
+            {
+                "name": "Owned",
+                "status": "draft",
+                "scope": "agent",
+                "agent_id": "agent-a",
+                "updated_at": "2026-01-01T00:00:00Z",
+            }
+        ]
+    finally:
+        store.close()
+
+
 def test_activation_compare_and_swap_rejects_stale_writer(tmp_path: Path) -> None:
     store = SQLiteSkillStore(tmp_path / "skill.db", wal=False)
     try:

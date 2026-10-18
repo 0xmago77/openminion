@@ -11,7 +11,6 @@ from openminion.modules.skill.proposal.queue import (
 )
 from openminion.modules.skill.storage import SQLiteSkillStore
 from openminion.modules.skill.suggestion import (
-    DISMISS_REASON_COOLDOWN_ACTIVE,
     DISMISS_REASON_STRUCTURAL_DUPLICATE,
     SkillProposalSuggestion,
     SkillSuggestionStatus,
@@ -72,6 +71,7 @@ def test_surface_pass_emits_suggestion_for_single_pending_proposal(
             store, now="2026-05-26T12:00:00+00:00"
         )
         assert len(pass_report.surfaced) == 1
+        assert pass_report.pending_remaining == 1
         suggestion = pass_report.surfaced[0]
         assert isinstance(suggestion, SkillProposalSuggestion)
         assert suggestion.proposal_id == "scsp-1"
@@ -79,7 +79,7 @@ def test_surface_pass_emits_suggestion_for_single_pending_proposal(
         d = suggestion.to_dict()
         for forbidden in ("quality", "value", "score", "confidence"):
             assert forbidden not in d
-        assert suggestion.cli_inspect_command.endswith("scsp-1")
+        assert suggestion.cli_inspect_command == "skillctl proposal-inspect scsp-1"
     finally:
         store.close()
 
@@ -98,10 +98,15 @@ def test_surface_pass_dedupes_within_same_pass_by_structural_signature(
         )
         assert len(pass_report.surfaced) == 1
         assert len(pass_report.auto_dismissed) == 1
+        assert pass_report.pending_remaining == 1
         assert (
             pass_report.auto_dismissed[0]["reason"]
             == DISMISS_REASON_STRUCTURAL_DUPLICATE
         )
+        duplicate = store.get_proposal(proposal_id="scsp-b")
+        assert duplicate is not None
+        assert duplicate["queue_state"] == "reviewed"
+        assert duplicate["review"]["status"] == "rejected"
     finally:
         store.close()
 
@@ -129,13 +134,10 @@ def test_surface_pass_respects_cooldown_window_across_passes(
             now="2026-05-26T12:10:00+00:00",
             cooldown_seconds=3600,
         )
-        # Structural behavior: the cooldown is per-signature, not per-proposal.
-        # Both pending proposals with this signature are auto-dismissed during
-        # the cooldown window (anti-spam: do not re-surface the same signal).
+        # Cooldown suppresses presentation without changing proposal state.
         assert second.surfaced == []
-        assert len(second.auto_dismissed) >= 1
-        for entry in second.auto_dismissed:
-            assert entry["reason"] == DISMISS_REASON_COOLDOWN_ACTIVE
+        assert second.auto_dismissed == []
+        assert second.pending_remaining == 2
 
         third = run_suggestion_surface_pass(
             store,

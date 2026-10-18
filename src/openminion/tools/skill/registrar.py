@@ -30,7 +30,7 @@ _TOOL_DEFINITIONS = (
     ),
     (
         MODEL_SKILL_INGEST_URL,
-        "Fetch a remote markdown skill URL, safety-scan it, and store it for reuse in one step. Use this when the user wants to learn or ingest a skill directly from an http/https URL.",
+        "Fetch and safety-scan a remote Markdown skill URL. Saving requires user approval, remains pending until separate operator admission, and is not immediately selectable. When pending, report operator_admission_command exactly with the version and lifecycle facts.",
         RUNTIME_SKILL_INGEST_URL,
     ),
     (
