@@ -31,6 +31,8 @@ from acp.schema import (
     SessionInfo,
     SessionListCapabilities,
     TextContentBlock,
+    ToolCallProgress,
+    ToolCallStart,
     ToolCallUpdate,
 )
 
@@ -206,7 +208,18 @@ class OpenMinionACPAgent:
             text, trace_id = _progress_text_and_trace(payload)
             if trace_id:
                 self._active_traces[session_id] = trace_id
-            if text and self._client is not None:
+            tool_update = _tool_progress_update(payload)
+            if tool_update is not None and self._client is not None:
+                updates.append(
+                    asyncio.run_coroutine_threadsafe(
+                        self._client.session_update(
+                            session_id=session_id,
+                            update=tool_update,
+                        ),
+                        loop,
+                    )
+                )
+            elif text and self._client is not None:
                 streamed.append(text)
                 updates.append(
                     asyncio.run_coroutine_threadsafe(
@@ -426,3 +439,30 @@ def _progress_text_and_trace(payload: object) -> tuple[str, str]:
     if kind not in {"token", "delta", "final_text", "assistant_token"}:
         return "", trace_id
     return str(values.get("text", "") or values.get("delta_text", "")), trace_id
+
+
+def _tool_progress_update(
+    payload: object,
+) -> ToolCallStart | ToolCallProgress | None:
+    if not isinstance(payload, dict):
+        return None
+    kind = str(payload.get("kind", ""))
+    if kind not in {"tool_started", "tool_completed"}:
+        return None
+    call_id = str(payload.get("call_id", "") or "").strip()
+    if not call_id:
+        return None
+    title = str(payload.get("tool_name", "") or "tool")
+    if kind == "tool_started":
+        return ToolCallStart(
+            session_update="tool_call",
+            tool_call_id=call_id,
+            title=title,
+            status="in_progress",
+        )
+    return ToolCallProgress(
+        session_update="tool_call_update",
+        tool_call_id=call_id,
+        title=title,
+        status="completed" if bool(payload.get("ok")) else "failed",
+    )

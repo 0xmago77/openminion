@@ -192,8 +192,9 @@ def test_operation_status_facts_survive_supported_surfaces(
         name=published[0].name,
         arguments={**arguments, "_session_id": session_id},
     )
-    assert "structuredContent" not in mcp_result
+    assert mcp_result["structuredContent"]["tool"] == "blockchain.inspect"
     mcp_payload = json.loads(mcp_result["content"][0]["text"])
+    assert mcp_result["structuredContent"] == mcp_payload
     assert {
         key: mcp_payload["data"][key] for key in OperationStatusData.model_fields
     } == expected

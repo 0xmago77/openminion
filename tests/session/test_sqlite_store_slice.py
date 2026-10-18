@@ -325,6 +325,12 @@ def test_failed_tool_and_next_turn_preserve_active_plan_steps(
     assert next_decide_slice["recent_tool_events"][-1]["event_type"] == (
         "tool.call.blocked"
     )
+    blocked = next_decide_slice["recent_tool_events"][-1]
+    assert blocked["tool_name"] == "exec.run"
+    assert blocked["call_id"] == "call-validate"
+    assert blocked["status"] == "error"
+    assert blocked["error_code"] == "TOOL_ARG_VALIDATION_FAILED"
+    assert blocked["excerpt"] == "command must be a string"
 
 
 def test_ordinary_chat_has_no_active_plan(store: SQLiteSessionStore) -> None:

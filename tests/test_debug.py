@@ -336,6 +336,24 @@ class TestDebugE2EParity(unittest.TestCase):
         self.assertIn("duration=125ms", completed)
         self.assertIn("reason=command_completed", completed)
 
+    def test_timeline_detail_correlates_canonical_tool_terminal(self):
+        from openminion.cli.commands.debug.cli import _extract_details
+
+        details = _extract_details(
+            "tool.call.blocked",
+            {
+                "call_id": "call-1",
+                "status": "error",
+                "error": {"code": "TOOL_FAILED", "message": "failed"},
+            },
+            parent_payload={"canonical_name": "file.read", "call_id": "call-1"},
+        )
+
+        self.assertIn("tool=file.read", details)
+        self.assertIn("call=call-1", details)
+        self.assertIn("status=error", details)
+        self.assertIn("error=TOOL_FAILED", details)
+
     def test_inprocess_daemon_parity_same_module_status(self):
         from openminion.cli.commands.debug import OpenMinionDebugProvider
 

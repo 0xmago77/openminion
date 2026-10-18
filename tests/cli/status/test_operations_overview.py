@@ -65,6 +65,9 @@ class _Sessions:
                 "tool_name": "file.read",
                 "event_type": "tool.call.completed",
                 "timestamp": "2026-08-16T12:00:00Z",
+                "call_id": "call-1",
+                "status": "success",
+                "error_code": "",
                 "excerpt": "must not be rendered",
             }
         ]
@@ -159,7 +162,12 @@ def test_build_operations_overview_reuses_existing_read_owners(
     )
     assert snapshot.recent_tools.data == (
         ToolActivityOverview(
-            "file.read", "tool.call.completed", "2026-08-16T12:00:00Z"
+            "file.read",
+            "tool.call.completed",
+            "2026-08-16T12:00:00Z",
+            "call-1",
+            "success",
+            "",
         ),
     )
     assert snapshot.telemetry.data == TelemetryOverview(
@@ -168,6 +176,9 @@ def test_build_operations_overview_reuses_existing_read_owners(
     assert snapshot.host.data == HostOverview(
         "Darwin", "25.5.0", "arm64", "3.11.13", 40.0, 20.0, 1024, ()
     )
+
+    rendered = render_operations_overview(snapshot)
+    assert "file.read  tool.call.completed · status=success · call=call-1" in rendered
 
 
 def test_render_operations_overview_labels_sources_and_states() -> None:

@@ -269,7 +269,12 @@ class EventStore:
         )
         items = [row_to_session_event(row) for row in rows]
         items.reverse()
-        return [self._to_recent_tool_event(item) for item in items]
+        recent = []
+        for item in items:
+            parent_id = str(item.get("parent_event_id") or "")
+            parent = self.get_event_by_id(parent_id) if parent_id else None
+            recent.append(self._to_recent_tool_event(item, parent))
+        return recent
 
     def get_total_turn_count(self, session_id: str) -> int:
         rows = self._rs.query_dicts(
@@ -481,10 +486,19 @@ class EventStore:
                 return payload if isinstance(payload, dict) else None
         return None
 
-    def _to_recent_tool_event(self, event: dict[str, Any]) -> dict[str, Any]:
+    def _to_recent_tool_event(
+        self,
+        event: dict[str, Any],
+        parent_event: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         payload = event.get("payload")
         if not isinstance(payload, dict):
             payload = {}
+        parent_payload = (
+            parent_event.get("payload") if isinstance(parent_event, dict) else {}
+        )
+        if not isinstance(parent_payload, dict):
+            parent_payload = {}
         refs = event.get("refs")
         if not isinstance(refs, dict):
             refs = {}
@@ -493,6 +507,8 @@ class EventStore:
             str(
                 payload.get("tool_name")
                 or payload.get("tool")
+                or payload.get("canonical_name")
+                or parent_payload.get("canonical_name")
                 or event.get("event_type")
                 or "tool"
             ).strip()
@@ -506,9 +522,25 @@ class EventStore:
             ).strip()
         else:
             error_text = str(raw_error or "").strip()
+        error_code = (
+            str(raw_error.get("code") or "").strip()
+            if isinstance(raw_error, dict)
+            else ""
+        )
+
+        output = payload.get("output")
+        output_summary = (
+            str(output.get("summary") or output.get("message") or "").strip()
+            if isinstance(output, dict)
+            else ""
+        )
 
         excerpt = str(
-            payload.get("summary") or payload.get("message") or error_text or ""
+            payload.get("summary")
+            or payload.get("message")
+            or output_summary
+            or error_text
+            or ""
         ).strip()
         if not excerpt:
             excerpt = (
@@ -532,6 +564,11 @@ class EventStore:
             "event_type": str(event.get("event_type") or ""),
             "trace_id": event.get("trace_id"),
             "tool_name": tool_name,
+            "call_id": str(
+                payload.get("call_id") or parent_payload.get("call_id") or ""
+            ),
+            "status": str(payload.get("status") or ""),
+            "error_code": error_code,
             "excerpt": excerpt[:240],
             "artifact_refs": artifact_refs,
         }
