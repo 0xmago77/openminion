@@ -642,6 +642,20 @@ def test_sqlite_clear_cache_escapes_like_wildcards(tmp_path: Path) -> None:
     store.close()
 
 
+def test_render_normalizes_budget_before_cache_lookup() -> None:
+    identity = IdentityCtl(store=InMemoryIdentityStore())
+    profile = _profile(agent_id="normalized-budget-agent")
+    identity.upsert_profile(profile)
+
+    first = identity.render(profile.agent_id, purpose="verify", max_tokens=0)
+    second = identity.render(profile.agent_id, purpose="verify", max_tokens=0)
+
+    assert first.purpose == second.purpose == "judge"
+    assert first.budget == second.budget
+    assert first.budget.max_tokens == 1
+    assert first.budget.max_chars == 4
+
+
 def test_warm_cache_uses_canonical_per_purpose_budgets() -> None:
     store = InMemoryIdentityStore()
     identity = IdentityCtl(store=store)

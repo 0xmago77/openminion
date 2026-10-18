@@ -13,9 +13,15 @@ import yaml
 
 from openminion.modules.identity.config import load_yaml_file
 from openminion.modules.identity.models import AgentProfile, AgentProfileInput
+from openminion.modules.identity.runtime.generated_bundle import (
+    GENERATED_IDENTITY_README_NAME,
+)
 from openminion.modules.identity.runtime.lockfile import (
     IDENTITY_LOCKFILE_NAME,
     read_identity_lockfile,
+)
+from openminion.modules.identity.runtime.md_generator import (
+    export_profile_to_markdown_bundle,
 )
 from openminion.modules.identity.runtime.service import IdentityCtl
 
@@ -382,6 +388,7 @@ def _inspect_profile(
     snippet = ctl.render(agent_id, purpose=purpose, max_tokens=max_tokens)
     sidecars = _generated_sidecar_status(
         canonical_path.parent,
+        profile=profile,
         profile_version=summary.profile_version,
     )
     verification = _verification_status(
@@ -625,6 +632,7 @@ def _verification_result(
 def _generated_sidecar_status(
     bundle_root: Path,
     *,
+    profile: AgentProfile,
     profile_version: str,
 ) -> dict[str, Any]:
     lock_path = bundle_root / IDENTITY_LOCKFILE_NAME
@@ -632,7 +640,13 @@ def _generated_sidecar_status(
         return {"status": "missing", "lock_profile_version": None, "files": []}
     try:
         lockfile = read_identity_lockfile(lock_path)
-        drifted = []
+        expected_paths = {
+            document.relative_path
+            for document in export_profile_to_markdown_bundle(profile).documents
+        }
+        expected_paths.add(GENERATED_IDENTITY_README_NAME)
+        manifest_paths = {item.relative_path for item in lockfile.files}
+        drifted = sorted(expected_paths - manifest_paths)
         for item in lockfile.files:
             path = _safe_generated_path(bundle_root, item.relative_path)
             if (
@@ -641,6 +655,7 @@ def _generated_sidecar_status(
                 or sha256(path.read_bytes()).hexdigest() != item.sha256
             ):
                 drifted.append(item.relative_path)
+        drifted = sorted(set(drifted))
         clean = (
             not drifted and lockfile.generated_from_profile_version == profile_version
         )

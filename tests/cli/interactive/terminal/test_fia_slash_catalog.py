@@ -660,6 +660,11 @@ def test_identity_report_shows_render_completeness_and_verification_issues() -> 
                     {"message": "profile.yaml agent_id does not match its directory"}
                 ],
             },
+            "validation": {
+                "ok": True,
+                "errors": [],
+                "warnings": ["role.responsibilities recommended range is 3-7"],
+            },
             "rendered_text": "Mission: Operate safely.",
         }
     )
@@ -670,6 +675,10 @@ def test_identity_report_shows_render_completeness_and_verification_issues() -> 
     assert "Omitted fields: personality.formatting" in rendered
     assert "Render warning: non-critical fields omitted to fit budget" in rendered
     assert "Issue: profile.yaml agent_id does not match its directory" in rendered
+    assert "Validation: ok" in rendered
+    assert (
+        "Validation warning: role.responsibilities recommended range is 3-7" in rendered
+    )
 
 
 def test_identity_report_does_not_manufacture_missing_details() -> None:

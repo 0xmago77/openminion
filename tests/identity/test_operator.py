@@ -614,6 +614,40 @@ def test_inspect_rejects_unsafe_lockfile_paths(
     assert relative_path in inspected["generated_sidecars"]["drifted_files"]
 
 
+def test_inspect_rejects_lockfile_missing_required_generated_files(
+    tmp_path: Path,
+) -> None:
+    ctl = _ctl(tmp_path)
+    identity_root = tmp_path / "identity"
+    candidate = tmp_path / "candidate.yaml"
+    _write_profile(candidate, _profile_payload())
+    applied = apply_identity_candidate(
+        ctl,
+        identity_root=identity_root,
+        candidate_path=candidate,
+        expected_profile_version="missing",
+        expected_source_sha256="missing",
+    )
+    profile_root = identity_root / "ops-agent"
+    lock_path = profile_root / ".identity-lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["files"] = []
+    lock["generated_from_profile_version"] = applied["profile_version"]
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+    for name in ("AGENT.md", "SOUL.md", "README.md"):
+        (profile_root / name).unlink()
+
+    inspected = inspect_identity(ctl, identity_root=identity_root, agent_id="ops-agent")
+
+    assert inspected["generated_sidecars"]["status"] == "drifted"
+    assert inspected["generated_sidecars"]["drifted_files"] == [
+        "AGENT.md",
+        "README.md",
+        "SOUL.md",
+    ]
+    assert inspected["verification"]["ok"] is False
+
+
 def test_inspect_verifies_inherited_yaml_without_making_it_editable(
     tmp_path: Path,
 ) -> None:
