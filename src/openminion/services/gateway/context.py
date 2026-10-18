@@ -38,6 +38,7 @@ from openminion.modules.memory.gateway_turn import (
 from openminion.modules.memory.surfacing.evidence import (
     MemoryRetrievalEvidenceSelection,
 )
+from openminion.modules.telemetry.events.catalog import MEMORY_RECALL_STATUS
 from openminion.services.gateway.types import TurnContext
 from openminion.services.gateway.turn.runtime import (
     _append_knowledge_graph_context,
@@ -464,6 +465,9 @@ def _select_and_populate_memory_context(
 ) -> bool:
     if memory_capsule_strategy == MEMORY_CAPSULE_STRATEGY_OFF:
         return False
+    contextctl_attempted = bool(
+        contextctl_adapter is not None and contextctl_adapter.is_enabled
+    )
     contextctl_selected = _maybe_apply_contextctl_call_site(
         turn_context=turn_context,
         agent_id=agent_id,
@@ -472,46 +476,63 @@ def _select_and_populate_memory_context(
         user_message=user_message,
         contextctl_adapter=contextctl_adapter,
     )
-    if contextctl_selected:
-        return True
-    try:
-        _populate_memory_context(
-            turn_context=turn_context,
-            agent_memory=agent_memory,
+    if not contextctl_selected:
+        try:
+            _populate_memory_context(
+                turn_context=turn_context,
+                agent_memory=agent_memory,
+                session_id=session_id,
+                user_message=user_message,
+                memory_strategy=memory_capsule_strategy,
+                memory_capsule_cache=memory_capsule_cache,
+                memory_dynamic_retrieval_enabled=memory_dynamic_retrieval_enabled,
+            )
+            _emit_memory_build_events_for_turn(
+                turn_context=turn_context,
+                emit_memory_event=emit_memory_event,
+                session_id=session_id,
+                conversation_id=conversation_id,
+                thread_id=thread_id,
+                attach_id=attach_id,
+                run_id=run_id,
+                request_id=request_id,
+                memory_strategy=memory_capsule_strategy,
+                memory_dynamic_retrieval_enabled=memory_dynamic_retrieval_enabled,
+            )
+        except Exception as exc:
+            _record_memory_context_failure(
+                turn_context=turn_context,
+                emit_memory_event=emit_memory_event,
+                logger=logger,
+                agent_id=agent_id,
+                exc=exc,
+                session_id=session_id,
+                conversation_id=conversation_id or None,
+                thread_id=thread_id or None,
+                attach_id=attach_id or None,
+                run_id=run_id,
+                request_id=request_id,
+                memory_capsule_strategy=memory_capsule_strategy,
+            )
+    if contextctl_attempted:
+        emit_memory_event(
             session_id=session_id,
-            user_message=user_message,
-            memory_strategy=memory_capsule_strategy,
-            memory_capsule_cache=memory_capsule_cache,
-            memory_dynamic_retrieval_enabled=memory_dynamic_retrieval_enabled,
+            event_type=MEMORY_RECALL_STATUS,
+            conversation_id=None,
+            thread_id=None,
+            attach_id=None,
+            payload={
+                "run_id": run_id,
+                "request_id": request_id,
+                "status": "healthy" if contextctl_selected else "degraded",
+                "reason_code": (
+                    "contextctl_selected"
+                    if contextctl_selected
+                    else "contextctl_fallback"
+                ),
+            },
         )
-        _emit_memory_build_events_for_turn(
-            turn_context=turn_context,
-            emit_memory_event=emit_memory_event,
-            session_id=session_id,
-            conversation_id=conversation_id,
-            thread_id=thread_id,
-            attach_id=attach_id,
-            run_id=run_id,
-            request_id=request_id,
-            memory_strategy=memory_capsule_strategy,
-            memory_dynamic_retrieval_enabled=memory_dynamic_retrieval_enabled,
-        )
-    except Exception as exc:
-        _record_memory_context_failure(
-            turn_context=turn_context,
-            emit_memory_event=emit_memory_event,
-            logger=logger,
-            agent_id=agent_id,
-            exc=exc,
-            session_id=session_id,
-            conversation_id=conversation_id or None,
-            thread_id=thread_id or None,
-            attach_id=attach_id or None,
-            run_id=run_id,
-            request_id=request_id,
-            memory_capsule_strategy=memory_capsule_strategy,
-        )
-    return False
+    return contextctl_selected
 
 
 def _finalize_turn_context(

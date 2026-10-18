@@ -255,6 +255,85 @@ def test_recall_status_requires_observation_and_recovers_per_lane() -> None:
     assert separate_lane_failure.health == "degraded"
 
 
+def test_recall_status_preserves_metrics_and_recovers_health() -> None:
+    retrieval_event = {
+        "event_type": "memory.retrieval.built",
+        "payload": {
+            "memory_recall_mode": "shadow",
+            "memory_recall_capabilities": "keyword,graph,vector",
+            "memory_envelope_included_items": "3",
+            "memory_recall_threshold_drops": "2",
+            "evidence_budget_omissions": "1",
+        },
+    }
+    degraded = summarize_recall_processing(
+        [
+            retrieval_event,
+            {"event_type": "memory.context.failed", "payload": {}},
+            {
+                "event_type": "memory.recall.status",
+                "payload": {
+                    "status": "degraded",
+                    "reason_code": "contextctl_fallback",
+                },
+            },
+        ],
+        enabled=True,
+        mode="shadow",
+        supported=True,
+    )
+    recovered = summarize_recall_processing(
+        [
+            retrieval_event,
+            {"event_type": "memory.context.failed", "payload": {}},
+            {
+                "event_type": "memory.recall.status",
+                "payload": {
+                    "status": "degraded",
+                    "reason_code": "contextctl_fallback",
+                },
+            },
+            {
+                "event_type": "memory.recall.status",
+                "payload": {
+                    "status": "healthy",
+                    "reason_code": "contextctl_selected",
+                },
+            },
+        ],
+        enabled=True,
+        mode="shadow",
+        supported=True,
+    )
+    mode_updated = summarize_recall_processing(
+        [
+            retrieval_event,
+            {
+                "event_type": "memory.recall.status",
+                "payload": {"status": "healthy", "memory_recall_mode": "legacy"},
+            },
+        ],
+        enabled=True,
+        mode="shadow",
+        supported=True,
+    )
+
+    assert degraded.health == "degraded"
+    assert degraded.mode == "shadow"
+    assert degraded.capabilities == ("keyword", "graph", "vector")
+    assert degraded.selected_memory == 3
+    assert degraded.omission_reasons == (
+        ("budget", 1),
+        ("relevance", 2),
+    )
+    assert recovered.health == "healthy"
+    assert recovered.selected_memory == 3
+    assert recovered.omission_reasons == degraded.omission_reasons
+    assert mode_updated.mode == "legacy"
+    assert mode_updated.capabilities == degraded.capabilities
+    assert mode_updated.selected_memory == 3
+
+
 def test_capture_and_recall_status_events_are_registered() -> None:
     assert MEMORY_CAPTURE_STATUS in EVENT_TYPES
     assert MEMORY_RECALL_STATUS in EVENT_TYPES

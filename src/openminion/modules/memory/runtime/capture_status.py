@@ -278,6 +278,39 @@ def _add_omission(
     counts[reason] = counts.get(reason, 0) + count
 
 
+def _project_memory_recall_payload(
+    payload: dict[str, Any],
+    *,
+    mode: str,
+    capabilities: tuple[str, ...],
+    selected_memory: int,
+    omissions: dict[str, int],
+    partial: bool,
+) -> tuple[str, tuple[str, ...], int]:
+    if not partial or "memory_recall_mode" in payload:
+        mode = str(payload.get("memory_recall_mode", mode) or mode).strip().lower()
+    if not partial or "memory_recall_capabilities" in payload:
+        capabilities = _normalized_capabilities(
+            payload.get("memory_recall_capabilities", capabilities)
+        )
+    if not partial or "memory_envelope_included_items" in payload:
+        selected_memory = _non_negative_int(payload, "memory_envelope_included_items")
+    for reason, key in (
+        ("relevance", "memory_recall_threshold_drops"),
+        ("duplicate", "evidence_duplicate_omissions"),
+        ("budget", "evidence_budget_omissions"),
+    ):
+        if partial and key not in payload:
+            continue
+        omissions.pop(f"memory:{reason}", None)
+        _add_omission(
+            omissions,
+            reason=f"memory:{reason}",
+            count=_non_negative_int(payload, key),
+        )
+    return mode, capabilities, selected_memory
+
+
 def _project_recall_events(
     events: list[Any],
     *,
@@ -306,27 +339,19 @@ def _project_recall_events(
         if event_type == "memory.context.built":
             context_status = str(payload.get("status", "healthy") or "healthy").lower()
         if event_type in {"memory.retrieval.built", "memory.recall.status"}:
-            for reason in ("relevance", "duplicate", "budget"):
-                omissions.pop(f"memory:{reason}", None)
             status = str(payload.get("status", "") or "").strip().lower()
             retrieval_status = status or "healthy"
-            mode = str(payload.get("memory_recall_mode", mode) or mode).strip().lower()
-            capabilities = _normalized_capabilities(
-                payload.get("memory_recall_capabilities", capabilities)
+            is_status = event_type == "memory.recall.status"
+            if is_status:
+                context_status = retrieval_status
+            mode, capabilities, selected_memory = _project_memory_recall_payload(
+                payload,
+                mode=mode,
+                capabilities=capabilities,
+                selected_memory=selected_memory,
+                omissions=omissions,
+                partial=is_status,
             )
-            selected_memory = _non_negative_int(
-                payload, "memory_envelope_included_items"
-            )
-            for reason, key in (
-                ("relevance", "memory_recall_threshold_drops"),
-                ("duplicate", "evidence_duplicate_omissions"),
-                ("budget", "evidence_budget_omissions"),
-            ):
-                _add_omission(
-                    omissions,
-                    reason=f"memory:{reason}",
-                    count=_non_negative_int(payload, key),
-                )
         if event_type in {
             "knowledge_graph.query.completed",
             "knowledge_graph.query.degraded",
