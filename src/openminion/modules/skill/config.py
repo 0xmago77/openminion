@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, TypedDict
 
 from openminion.base.config import OpenMinionConfig
 from openminion.base.config.parse import _as_obj
@@ -72,6 +72,18 @@ class SkillConfig:
     path_mode: str = "module_standalone"
     path_source: str = "standalone_default"
     home_root: str | None = None
+
+
+class _RuntimeTunables(TypedDict):
+    selection_rag_threshold: int
+    selection_rag_topk: int
+    promotion_cadence_enabled: bool
+    runtime_workflow_observation_enabled: bool
+    promotion_cadence_success_threshold: int
+    promotion_cadence_utility_threshold: float
+    suggestion_batch_cap: int
+    suggestion_cooldown_seconds: int
+    suggestion_min_age_seconds: int
 
 
 def load_config(
@@ -206,9 +218,7 @@ def load_config(
         allowed_roots=_as_str_list(root.get("allowed_roots"), []),
         trust_tier=str(root.get("trust_tier", "disabled")),
         ingest_enabled=bool(root.get("ingest_enabled", True)),
-        runtime_workflow_observation_enabled=_strict_bool(
-            root, "runtime_workflow_observation_enabled"
-        ),
+        **_runtime_tunables(root),
         skill_blob_retention=skill_blob_retention,
         path_mode=default_mode,
         path_source=path_source,
@@ -285,6 +295,32 @@ def _strict_bool(root: dict[str, Any], key: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"skill.{key} must be a boolean")
     return value
+
+
+def _runtime_tunables(root: dict[str, Any]) -> _RuntimeTunables:
+    return {
+        "selection_rag_threshold": int(root.get("selection_rag_threshold", 10)),
+        "selection_rag_topk": int(root.get("selection_rag_topk", 5)),
+        "promotion_cadence_enabled": _strict_bool(
+            root, "promotion_cadence_enabled"
+        ),
+        "runtime_workflow_observation_enabled": _strict_bool(
+            root, "runtime_workflow_observation_enabled"
+        ),
+        "promotion_cadence_success_threshold": int(
+            root.get("promotion_cadence_success_threshold", 3)
+        ),
+        "promotion_cadence_utility_threshold": float(
+            root.get("promotion_cadence_utility_threshold", 0.7)
+        ),
+        "suggestion_batch_cap": int(root.get("suggestion_batch_cap", 5)),
+        "suggestion_cooldown_seconds": int(
+            root.get("suggestion_cooldown_seconds", 7 * 24 * 60 * 60)
+        ),
+        "suggestion_min_age_seconds": int(
+            root.get("suggestion_min_age_seconds", 0)
+        ),
+    }
 
 
 def _skill_blob_retention(root: dict[str, Any]) -> str:

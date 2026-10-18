@@ -175,6 +175,29 @@ def test_surface_pass_respects_batch_cap(tmp_path: Path) -> None:
         store.close()
 
 
+def test_surface_pass_caps_batch_at_fifty(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        for idx in range(60):
+            create_proposal(
+                store,
+                _proposal(
+                    proposal_id=f"scsp-max-{idx}",
+                    name=f"playbook-max-{idx}",
+                    tags=(f"capability-{idx}",),
+                    intents=(f"intent-{idx}",),
+                ),
+            )
+        pass_report = run_suggestion_surface_pass(
+            store,
+            now="2026-05-26T12:00:00+00:00",
+            batch_cap=1000,
+        )
+        assert len(pass_report.surfaced) == 50
+    finally:
+        store.close()
+
+
 def test_surface_pass_respects_min_age(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:

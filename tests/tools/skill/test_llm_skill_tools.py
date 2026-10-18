@@ -88,7 +88,9 @@ def test_skill_get_contract_exposes_progressive_resource_retrieval() -> None:
     schema = SkillGetArgs.model_json_schema()["properties"]
 
     assert "required skill_id" in model_tool.description
+    assert "not name" in model_tool.description
     assert schema["skill_id"]["description"].startswith("Required")
+    assert "do not send name" in schema["skill_id"]["description"]
     assert "resource_path" in model_tool.description
     assert "version_hash" in model_tool.description
     assert "references/guide.md" in schema["resource_path"]["description"]
@@ -103,6 +105,7 @@ def test_skill_ingest_contract_limits_default_save_to_one() -> None:
 
     assert "at most one" in model_tool.description
     assert "substantial reusable work" in model_tool.description
+    assert "do not send skill_markdown" in model_tool.description
 
 
 def test_skill_get_reads_requested_resource_with_pinned_version() -> None:

@@ -5773,6 +5773,63 @@ def test_direct_tool_turn_failed_tool_result_skips_llm_recovery() -> None:
     assert runtime.calls == []
 
 
+def test_operator_denial_stops_before_llm_recovery() -> None:
+    runtime = _FakeRuntime(responses=[])
+    loop_ctx = _LoopContext(
+        state=_state(tool_calls=4),
+        outcomes=[
+            CommandExecutionOutcome(
+                approved_command=SimpleNamespace(),
+                action_result=ActionResult(
+                    command_id=new_uuid(),
+                    status="failed",
+                    summary="Tool execution denied by operator",
+                    error=ActionError(
+                        code="POLICY_DENIED",
+                        message="Tool execution denied by operator.",
+                        details={"reason": "operator_denied"},
+                    ),
+                ),
+            )
+        ],
+    )
+
+    outcome = run_adaptive_tool_loop(
+        loop_ctx,
+        profile=_profile(
+            allowed_tools=frozenset({"skill.ingest"}),
+            allow_llm_recovery_after_tool_failure=True,
+        ),
+        runtime=runtime,
+        model="fake-model",
+        initial_messages=[Message(role="user", content="Save this as a skill")],
+        initial_state=AdaptiveToolLoopState(
+            messages=[Message(role="user", content="Save this as a skill")]
+        ),
+        tool_specs=_tool_specs("skill.ingest"),
+        seed_response=LLMResponse(
+            ok=True,
+            provider="fake",
+            model="fake-model",
+            output_text="",
+            tool_calls=[
+                ToolCall(
+                    id="call-1",
+                    name="skill.ingest",
+                    arguments={"name": "Denied Skill", "markdown": "# Denied"},
+                )
+            ],
+            finish_reason="tool_calls",
+        ),
+    )
+
+    assert outcome.termination_reason == ADAPTIVE_TERM_TOOL_FAILURE_NO_RECOVERY
+    assert outcome.action_result is not None
+    assert outcome.action_result.error is not None
+    assert outcome.action_result.error.details == {"reason": "operator_denied"}
+    assert runtime.calls == []
+
+
 def test_engine_clamps_overexpanded_initial_direct_tool_batch_to_requested_call() -> (
     None
 ):

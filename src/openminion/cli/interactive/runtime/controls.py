@@ -24,6 +24,8 @@ from openminion.modules.memory.interfaces import (
 from openminion.modules.llm.config import resolve_provider_identity_translation
 from openminion.modules.skill import Skill
 
+from .skill_status import skill_learning_summary
+
 _PROVIDER_CONFIG_ALIASES = {
     "claude": "anthropic",
 }
@@ -760,11 +762,21 @@ class RuntimeControlsMixin:
             return "\n".join(lines)
 
         rows = self.list_skill_rows()
-        if not rows:
+        runtime = self._rt
+        learning_summary = skill_learning_summary(
+            config_path=getattr(runtime, "config_path", None),
+            home_root=Path(getattr(runtime, "home_root")),
+            agent_id=self.agent_id,
+        )
+        if not rows and not learning_summary:
             return "(no skills)"
         lines = ["Skills:"]
+        if not rows:
+            lines.append("  (none)")
         for row in rows[:20]:
             lines.append(f"  - {row.get('id')} · {row.get('source', 'config')}")
+        if learning_summary:
+            lines.extend(("", *learning_summary))
         lines.append("Use /skills <skill_id> to view details.")
         return "\n".join(lines)
 
