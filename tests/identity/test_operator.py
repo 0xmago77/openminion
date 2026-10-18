@@ -16,6 +16,7 @@ from openminion.modules.identity.runtime.operator import (
     IdentityOperatorError,
     apply_identity_candidate,
     inspect_identity,
+    runtime_identity_snapshot,
     validate_identity_candidate,
 )
 from openminion.modules.identity.runtime.service import IdentityCtl
@@ -79,7 +80,29 @@ def test_validate_candidate_is_read_only_and_returns_render(tmp_path: Path) -> N
 
     assert result["ok"] is True
     assert result["render"]["text"]
+    assert result["render"]["budget"]["max_tokens"] == 180
+    assert isinstance(result["render"]["warnings"], list)
     assert ctl.list_profiles() == []
+
+
+def test_runtime_snapshot_keeps_render_budget_and_warnings(tmp_path: Path) -> None:
+    ctl = _ctl(tmp_path)
+    profile = AgentProfile.model_validate(_profile_payload())
+    ctl.upsert_profile(profile)
+
+    result = runtime_identity_snapshot(
+        ctl,
+        agent_id="ops-agent",
+        purpose="act",
+        max_tokens=20,
+    )
+
+    assert result is not None
+    assert result["budget"]["max_tokens"] == 20
+    assert result["warnings"] == [
+        "snippet exceeds budget; truncation applied",
+        "snippet still over budget after truncation",
+    ]
 
 
 def test_apply_writes_canonical_yaml_store_and_sidecars(tmp_path: Path) -> None:
@@ -237,6 +260,35 @@ def test_external_yaml_edit_trips_source_guard_without_overwrite(
     inspected = inspect_identity(ctl, identity_root=identity_root, agent_id="ops-agent")
     assert inspected["verification"]["source_status"] == "drifted"
     assert inspected["verification"]["ok"] is False
+
+
+def test_inspect_explains_source_agent_id_mismatch(tmp_path: Path) -> None:
+    ctl = _ctl(tmp_path)
+    identity_root = tmp_path / "identity"
+    candidate = tmp_path / "candidate.yaml"
+    _write_profile(candidate, _profile_payload())
+    apply_identity_candidate(
+        ctl,
+        identity_root=identity_root,
+        candidate_path=candidate,
+        expected_profile_version="missing",
+        expected_source_sha256="missing",
+    )
+    _write_profile(
+        identity_root / "ops-agent" / "profile.yaml",
+        _profile_payload(agent_id="other-agent"),
+    )
+
+    inspected = inspect_identity(ctl, identity_root=identity_root, agent_id="ops-agent")
+
+    issue = inspected["verification"]["issues"][0]
+    assert issue == {
+        "message": (
+            "profile.yaml agent_id 'other-agent' does not match directory agent_id 'ops-agent'"
+        ),
+        "expected_agent_id": "ops-agent",
+        "actual_agent_id": "other-agent",
+    }
 
 
 def test_missing_store_row_does_not_overwrite_existing_source(tmp_path: Path) -> None:

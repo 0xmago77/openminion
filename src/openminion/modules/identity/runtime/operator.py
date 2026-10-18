@@ -277,8 +277,10 @@ def runtime_identity_snapshot(
         "render_version": snippet.render_version,
         "purpose": snippet.purpose,
         "rendered_text": snippet.text,
+        "budget": snippet.budget.model_dump(mode="json"),
         "included_fields": list(snippet.included_fields),
         "omitted_fields": list(snippet.omitted_fields),
+        "warnings": list(snippet.warnings),
     }
 
 
@@ -505,6 +507,7 @@ def _verification_status(
                         code="agent_id_mismatch",
                         issues=[
                             {
+                                "message": f"profile.yaml agent_id {source_agent_id!r} does not match directory agent_id {expected_agent_id!r}",
                                 "expected_agent_id": expected_agent_id,
                                 "actual_agent_id": source_agent_id,
                             }
@@ -557,7 +560,6 @@ def _verification_status(
                     if isinstance(exc, IdentityOperatorError) and exc.issues
                     else [{"message": str(exc)}]
                 )
-
     return _verification_result(
         issues=issues,
         source=source,
