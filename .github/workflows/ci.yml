@@ -556,7 +556,8 @@ jobs:
           cache: pip
       - name: Install OpenMinion with PostgreSQL support
         run: python -m pip install -e ".[dev,postgres]"
-      - name: Run PostgreSQL memory conformance
+      - name: Run PostgreSQL memory and skill conformance
         run: |
           python -m pytest -q -m postgres tests/memory/test_memory_postgres_conformance.py
           python -m pytest -q -m postgres tests/memory/test_memory_search_quality.py::test_postgres_lexical_score_contributes_to_semantic_order
+          python -m pytest -q -m postgres tests/skill/test_skill_postgres_conformance.py
