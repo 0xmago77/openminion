@@ -12,6 +12,8 @@ from acp.schema import (
     DeniedOutcome,
     RequestPermissionResponse,
     TextContentBlock,
+    ToolCallProgress,
+    ToolCallStart,
 )
 
 from openminion.api.operations.acp import OpenMinionACPAgent
@@ -73,6 +75,23 @@ class _Runtime:
         progress_callback,
         approval_callback,
     ) -> dict[str, object]:
+        progress_callback(
+            {
+                "kind": "tool_started",
+                "tool_name": "file.read",
+                "call_id": "call-1",
+                "args": {"path": "secret.txt"},
+            }
+        )
+        progress_callback(
+            {
+                "kind": "tool_completed",
+                "tool_name": "file.read",
+                "call_id": "call-1",
+                "ok": True,
+                "content": "secret contents",
+            }
+        )
         progress_callback(
             {"kind": "token", "trace_id": "trace-1", "data": {"text": "hello"}}
         )
@@ -159,7 +178,23 @@ async def test_acp_prompt_streams_and_routes_approval(
     assert result.stop_reason == "end_turn"
     assert runtime.approval_result is True
     assert len(client.permission_requests) == 1
-    assert [update.content.text for _, update in client.updates] == ["hello"]
+    tool_updates = [
+        update
+        for _, update in client.updates
+        if isinstance(update, (ToolCallStart, ToolCallProgress))
+    ]
+    assert [(update.title, update.status) for update in tool_updates] == [
+        ("file.read", "in_progress"),
+        ("file.read", "completed"),
+    ]
+    assert all(update.tool_call_id == "call-1" for update in tool_updates)
+    assert all(update.raw_input is None for update in tool_updates)
+    assert all(update.raw_output is None for update in tool_updates)
+    assert [
+        update.content.text
+        for _, update in client.updates
+        if not isinstance(update, (ToolCallStart, ToolCallProgress))
+    ] == ["hello"]
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,7 @@ from ..contracts import (
     MCP_PROTOCOL_VERSION,
     MCP_SUPPORTED_PROTOCOL_VERSIONS,
 )
+from ..schemas import MCPArgumentValidationError, validate_mcp_value
 
 
 class MCPServerError(RuntimeError):
@@ -36,6 +37,7 @@ class PublishedTool:
     description: str
     input_schema: dict[str, Any]
     handler: Callable[[dict[str, Any]], Any]
+    output_schema: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
     runtime_tool_name: str = ""
     dangerous: bool = False
@@ -47,7 +49,7 @@ def render_tools_list_payload(
 ) -> dict[str, Any]:
     """Produce the MCP ``tools/list`` response shape.
 
-    Spec: each tool entry has ``name``, ``description``, ``inputSchema``.
+    Each tool includes its input schema and its output schema when declared.
     """
 
     return {
@@ -56,6 +58,7 @@ def render_tools_list_payload(
                 "name": tool.name,
                 "description": tool.description,
                 "inputSchema": tool.input_schema,
+                **({"outputSchema": tool.output_schema} if tool.output_schema else {}),
             }
             for tool in tools
         ]
@@ -81,7 +84,7 @@ def invoke_published_tool(
             "content": [{"type": "text", "text": str(exc) or exc.__class__.__name__}],
             "isError": True,
         }
-    return {
+    response = {
         "content": [
             {
                 "type": "text",
@@ -90,6 +93,25 @@ def invoke_published_tool(
         ],
         "isError": False,
     }
+    if tool.output_schema:
+        try:
+            validate_mcp_value(
+                schema=tool.output_schema,
+                value=result,
+                value_path="structuredContent",
+            )
+        except MCPArgumentValidationError as exc:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"published tool output schema mismatch: {exc}",
+                    }
+                ],
+                "isError": True,
+            }
+        response["structuredContent"] = result
+    return response
 
 
 def handle_published_mcp_request(
@@ -355,6 +377,7 @@ def build_runtime_published_tools(
                 name=published_name,
                 description=str(provider_spec.description or runtime_name),
                 input_schema=dict(provider_spec.parameters),
+                output_schema=_runtime_tool_output_schema(),
                 handler=_runtime_tool_handler(
                     registry=registry,
                     authored_tools=runtime.authored_tools,
@@ -369,6 +392,21 @@ def build_runtime_published_tools(
             )
         )
     return published
+
+
+def _runtime_tool_output_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "tool": {"type": "string"},
+            "content": {"type": "string"},
+            "verified": {"type": "boolean"},
+            "data": {"type": "object"},
+            "source": {"type": "string"},
+        },
+        "required": ["tool", "content", "verified", "data", "source"],
+        "additionalProperties": False,
+    }
 
 
 def _resolve_publish_config(

@@ -141,6 +141,49 @@ def test_invoke_dispatches_to_matching_tool() -> None:
     assert parsed == {"echo": {"x": 1}}
 
 
+def test_invoke_returns_declared_structured_content() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"value": {"type": "integer"}},
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+    tool = PublishedTool(
+        name="structured",
+        description="t",
+        input_schema={"type": "object"},
+        output_schema=schema,
+        handler=lambda _args: {"value": 3},
+    )
+
+    listed = render_tools_list_payload([tool])
+    result = invoke_published_tool([tool], name="structured", arguments={})
+
+    assert listed["tools"][0]["outputSchema"] == schema
+    assert result["structuredContent"] == {"value": 3}
+    assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
+
+
+def test_invoke_rejects_structured_content_that_breaks_declared_schema() -> None:
+    tool = PublishedTool(
+        name="structured",
+        description="t",
+        input_schema={"type": "object"},
+        output_schema={
+            "type": "object",
+            "properties": {"value": {"type": "integer"}},
+            "required": ["value"],
+        },
+        handler=lambda _args: {"value": "not-an-integer"},
+    )
+
+    result = invoke_published_tool([tool], name="structured", arguments={})
+
+    assert result["isError"] is True
+    assert "output schema mismatch" in result["content"][0]["text"]
+    assert "structuredContent" not in result
+
+
 def test_invoke_unknown_tool_raises_mcp_server_error() -> None:
     tools = _contract_tools()
     with pytest.raises(MCPServerError, match="unknown MCP tool"):

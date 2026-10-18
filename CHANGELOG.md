@@ -1,11 +1,18 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-15
+Last updated: 2026-10-17
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+- Preserve canonical tool identity, call ID, status, and error code in recent
+  tool activity and debug timelines.
+- Stream tool-call lifecycle status through ACP without copying raw tool input
+  or output into progress updates.
+- Publish declared MCP output schemas and return successful runtime-tool results
+  as both JSON text and validated `structuredContent`.
 
 ## Current package line - 2026-10-15
 
