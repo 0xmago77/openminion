@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import builtins
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from threading import RLock
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Iterator, Literal
 
 from openminion.modules.tool.contracts import ProviderToolCall, ProviderToolSpec
 from openminion.modules.tool.executor import (  # noqa: F401  (re-exported)
@@ -58,6 +60,10 @@ _ALLOW_MODEL_EXPOSURE_PROVIDER_FALLBACK_ENV = (
 
 Handler = Callable[[dict[str, Any], "RuntimeContext"], dict[str, Any]]
 Scope = Literal["READ_ONLY", "WRITE_SAFE", "POWER_USER", "UI_AUTOMATION"]
+_TEMPORARY_REGISTRATION_OWNER: ContextVar[int | None] = ContextVar(
+    "openminion_tool_temporary_registration_owner",
+    default=None,
+)
 
 
 class ToolRegistry:
@@ -82,6 +88,20 @@ class ToolRegistry:
     @property
     def temporary_registration_lock(self) -> RLock:
         return self._temporary_registration_lock
+
+    @contextmanager
+    def temporary_registration_scope(self) -> Iterator[None]:
+        with self.temporary_registration_lock:
+            token = _TEMPORARY_REGISTRATION_OWNER.set(id(self))
+            try:
+                yield
+            finally:
+                _TEMPORARY_REGISTRATION_OWNER.reset(token)
+
+    def registration_read_lock(self) -> Any:
+        if _TEMPORARY_REGISTRATION_OWNER.get() == id(self):
+            return nullcontext()
+        return self.temporary_registration_lock
 
     def bind_registry_manager(self, manager: "ToolRegistryManager") -> None:
         """Bind the manifest manager compiled for this registry instance."""
@@ -134,15 +154,15 @@ class ToolRegistry:
         _catalog_index_tool_category(self, tool_name, tool)
 
     def tools_by_category(self, category: str) -> builtins.list[str]:
-        with self.temporary_registration_lock:
+        with self.registration_read_lock():
             return _catalog_tools_by_category(self, category)
 
     def category_for_tool(self, tool_name: str) -> ToolCategoryEntry:
-        with self.temporary_registration_lock:
+        with self.registration_read_lock():
             return _catalog_category_for_tool(self, tool_name)
 
     def all_categories(self) -> builtins.list[str]:
-        with self.temporary_registration_lock:
+        with self.registration_read_lock():
             return _catalog_all_categories(self)
 
     def add(self, spec: Any) -> None:
@@ -155,7 +175,7 @@ class ToolRegistry:
 
     def get(self, name: str) -> Any:
         """Shim for openminion-tool plugin compatibility."""
-        with self.temporary_registration_lock:
+        with self.registration_read_lock():
             tool = self._tools.get(name)
             if tool is None:
                 raise KeyError(name)
@@ -163,54 +183,54 @@ class ToolRegistry:
 
     def list(self) -> dict[str, Any]:
         """Shim for openminion-tool plugin compatibility."""
-        with self.temporary_registration_lock:
+        with self.registration_read_lock():
             return dict(self._tools)
 
     def list_by_capability(self, capability: str) -> builtins.list[ToolSpec]:
         """Shim for openminion-tool plugin compatibility."""
-        with self.temporary_registration_lock:
+        with self.registration_read_lock():
             return _catalog_list_by_capability(self, capability)
 
     def provider_specs(self) -> builtins.list[ProviderToolSpec]:
         from .exposure import provider_specs
 
-        with self.temporary_registration_lock:
+        with self.registration_read_lock():
             return provider_specs(self)
 
     def model_provider_specs(self) -> builtins.list[ProviderToolSpec]:
         from .exposure import model_provider_specs
 
-        with self.temporary_registration_lock:
+        with self.registration_read_lock():
             return model_provider_specs(self)
 
     def model_to_runtime_binding_map(self) -> dict[str, str]:
         from .exposure import model_to_runtime_binding_map
 
-        with self.temporary_registration_lock:
+        with self.registration_read_lock():
             return model_to_runtime_binding_map(self)
 
     def model_to_runtime_tool_map(self) -> dict[str, str]:
         from .exposure import model_to_runtime_tool_map
 
-        with self.temporary_registration_lock:
+        with self.registration_read_lock():
             return model_to_runtime_tool_map(self)
 
     def model_runtime_dispatch_map(self) -> dict[str, dict[str, Any]]:
         from .exposure import model_runtime_dispatch_map
 
-        with self.temporary_registration_lock:
+        with self.registration_read_lock():
             return model_runtime_dispatch_map(self)
 
     def registration_debug_snapshot(self) -> dict[str, Any]:
         from .exposure import registration_debug_snapshot
 
-        with self.temporary_registration_lock:
+        with self.registration_read_lock():
             return registration_debug_snapshot(self)
 
     def provider_spec_for_name(self, name: str) -> ProviderToolSpec | None:
         from .exposure import provider_spec_for_name
 
-        with self.temporary_registration_lock:
+        with self.registration_read_lock():
             return provider_spec_for_name(self, name)
 
     def _provider_spec_for_runtime_name(
@@ -218,7 +238,7 @@ class ToolRegistry:
     ) -> ProviderToolSpec | None:
         from .exposure import provider_spec_for_runtime_name
 
-        with self.temporary_registration_lock:
+        with self.registration_read_lock():
             return provider_spec_for_runtime_name(self, tool_name)
 
     def policy_for(self, tool_name: str) -> ToolPolicyProfile:

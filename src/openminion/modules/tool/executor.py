@@ -99,6 +99,29 @@ def _runtime_env_from_metadata(
     return None
 
 
+def _registry_snapshot(registry: Any) -> tuple[dict[str, Any], Any]:
+    from openminion.modules.tool.registry.runtime import binding_manager
+
+    def snapshot() -> tuple[dict[str, Any], Any]:
+        tools = getattr(registry, "_tools", None)
+        if not isinstance(tools, Mapping):
+            list_tools = getattr(registry, "list", None)
+            tools = list_tools() if callable(list_tools) else {}
+        return (
+            dict(tools) if isinstance(tools, Mapping) else {},
+            binding_manager(registry),
+        )
+
+    read_lock = getattr(registry, "registration_read_lock", None)
+    lock = read_lock() if callable(read_lock) else None
+    if lock is None:
+        lock = getattr(registry, "temporary_registration_lock", None)
+    if lock is None or not hasattr(type(lock), "__enter__"):
+        return snapshot()
+    with lock:
+        return snapshot()
+
+
 def is_retry_eligible_for_fallback(
     result: ToolExecutionResult,
     *,
@@ -495,9 +518,7 @@ def execute_single_call(
     binding_manager: Any = None,
 ) -> ToolExecutionResult:
     if available_tools is None or binding_manager is None:
-        with registry.temporary_registration_lock:
-            available_tools = dict(registry._tools)
-            binding_manager = registry._binding_manager()
+        available_tools, binding_manager = _registry_snapshot(registry)
     started_at, raw_tool_name = _start_tool_execution(context, call)
     resolution = resolve_binding_for_call(
         raw_tool_name=raw_tool_name,
@@ -697,9 +718,7 @@ def execute_calls_with_dependencies(
     binding_manager: Any = None,
 ) -> list[ToolExecutionResult]:
     if available_tools is None or binding_manager is None:
-        with registry.temporary_registration_lock:
-            available_tools = dict(registry._tools)
-            binding_manager = registry._binding_manager()
+        available_tools, binding_manager = _registry_snapshot(registry)
     graph = _dependency_graph_for_calls(calls)
     pending = [
         node_id for node_id in graph.node_order if node_id not in graph.result_by_node
@@ -936,9 +955,7 @@ def execute_calls(
     if not normalized_calls:
         return ToolExecutionBatch(results=[])
 
-    with registry.temporary_registration_lock:
-        available_tools = dict(registry._tools)
-        binding_manager = registry._binding_manager()
+    available_tools, binding_manager = _registry_snapshot(registry)
     available_tool_names = tuple(available_tools)
     runtime_binding_policies = None
     if isinstance(getattr(context, "metadata", None), Mapping):

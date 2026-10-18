@@ -1,7 +1,9 @@
 import json
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Callable, cast
 
-from openminion.modules.tool.dispatch import get_registry, get_registry_manager
+from openminion.modules.tool.dispatch import get_registry
+from openminion.modules.tool.registry.runtime import binding_manager
 
 from ...constants import (
     BRAIN_COMMAND_KIND_AGENT,
@@ -30,18 +32,18 @@ def normalize_tool_name_for_brain(
         return None
 
     target_registry = registry if registry is not None else get_registry()
-    mgr = (
-        target_registry._binding_manager()
-        if target_registry is not None
-        else get_registry_manager()
-    )
+    mgr = binding_manager(target_registry)
     normalized = mgr.normalize_model_input_name(token)
     if normalized:
         return normalized
 
     if target_registry is None:
         return None
-    tool = target_registry.list().get(token)
+    list_tools = getattr(target_registry, "list", None)
+    tools = (
+        list_tools() if callable(list_tools) else getattr(target_registry, "_tools", {})
+    )
+    tool = tools.get(token) if isinstance(tools, Mapping) else None
     if tool is not None and bool(getattr(tool, "prompt_visible_runtime_name", False)):
         return token
     return None

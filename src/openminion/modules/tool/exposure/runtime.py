@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Mapping
+from contextlib import nullcontext
 from typing import Any
 
 from openminion.modules.tool.contracts import (
@@ -13,6 +14,14 @@ from openminion.modules.tool.contracts import (
 from .service import ToolExposureService, exposure_scope
 
 _LOG = logging.getLogger(__name__)
+
+
+def _registration_lock(registry: Any) -> Any:
+    read_lock = getattr(registry, "registration_read_lock", None)
+    lock = read_lock() if callable(read_lock) else None
+    if lock is None:
+        lock = getattr(registry, "temporary_registration_lock", None)
+    return lock if hasattr(type(lock), "__enter__") else nullcontext()
 
 
 def _available_runtime_tool_names(registry: Any) -> set[str]:
@@ -55,23 +64,32 @@ def _get_model_exposure_specs(
 
     if registry is None:
         return []
+    specs: list[ProviderToolSpec] = []
     binding_manager_fn = getattr(registry, "_binding_manager", None)
+    manager = None
     if callable(binding_manager_fn):
         try:
-            specs = list(
-                binding_manager_fn().model_provider_specs(
-                    _available_runtime_tool_names(registry)
+            manager = binding_manager_fn()
+            specs = (
+                list(
+                    manager.model_provider_specs(
+                        _available_runtime_tool_names(registry)
+                    )
                 )
+                if manager is not None
+                else []
             )
         except Exception:
             _LOG.warning(
                 "manager-backed model tool exposure lookup failed", exc_info=True
             )
-            return []
-    else:
+            specs = []
+    if manager is None:
         model_specs_fn = getattr(registry, "model_provider_specs", None)
         if not callable(model_specs_fn):
-            return []
+            model_specs_fn = getattr(registry, "provider_specs", None)
+        if not callable(model_specs_fn):
+            return specs
         try:
             specs = list(model_specs_fn())
         except Exception:
@@ -89,10 +107,7 @@ def get_model_exposure_specs(
     *,
     metadata: Mapping[str, Any] | None = None,
 ) -> list[ProviderToolSpec]:
-    lock = getattr(registry, "temporary_registration_lock", None)
-    if lock is None:
-        return _get_model_exposure_specs(registry, metadata=metadata)
-    with lock:
+    with _registration_lock(registry):
         return _get_model_exposure_specs(registry, metadata=metadata)
 
 
@@ -175,10 +190,7 @@ def get_visible_tool_specs_and_dispatch_map(
     *,
     metadata: Mapping[str, Any] | None = None,
 ) -> tuple[list[ProviderToolSpec], dict[str, dict[str, Any]]]:
-    lock = getattr(registry, "temporary_registration_lock", None)
-    if lock is None:
-        return _get_visible_tool_specs_and_dispatch_map(registry, metadata=metadata)
-    with lock:
+    with _registration_lock(registry):
         return _get_visible_tool_specs_and_dispatch_map(registry, metadata=metadata)
 
 

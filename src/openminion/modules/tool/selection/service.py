@@ -11,6 +11,7 @@ from openminion.modules.tool.contracts.provider_types import ProviderToolSpec
 from openminion.modules.tool.runtime.policy import ToolBindingPolicyManager
 from openminion.modules.tool.contracts import normalize_raw_model_tool_name
 from openminion.modules.tool.registry import ToolRegistry
+from openminion.modules.tool.registry.runtime import binding_manager
 from openminion.modules.tool.exposure import get_model_exposure_specs
 
 from .records import (
@@ -509,7 +510,7 @@ class ToolSelectionService:
         normalized = str(token or "").strip()
         if not normalized:
             return None
-        canonical = self._registry._binding_manager().normalize_raw_name(normalized)
+        canonical = binding_manager(self._registry).normalize_raw_name(normalized)
         if canonical:
             return canonical
         return normalize_raw_model_tool_name(normalized)

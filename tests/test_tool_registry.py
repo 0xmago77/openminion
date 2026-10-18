@@ -1,5 +1,6 @@
 import importlib
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 import json
 import os
 import subprocess
@@ -1011,3 +1012,27 @@ def test_registration_debug_report_contract_shape() -> None:
         "runtime_bindings",
     ):
         assert key in manager
+
+
+def test_temporary_registration_scope_preserves_cross_thread_isolation() -> None:
+    registry = ToolRegistry()
+    started = threading.Event()
+    finished = threading.Event()
+
+    def unrelated_read() -> dict[str, object]:
+        started.set()
+        result = registry.list()
+        finished.set()
+        return result
+
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
+        with registry.temporary_registration_scope():
+            owner = pool.submit(copy_context().run, registry.list)
+            assert owner.result(timeout=1) == {}
+            unrelated = pool.submit(unrelated_read)
+            assert started.wait(timeout=1)
+            assert not finished.wait(timeout=0.05)
+        assert unrelated.result(timeout=1) == {}
+    finally:
+        pool.shutdown(wait=True)

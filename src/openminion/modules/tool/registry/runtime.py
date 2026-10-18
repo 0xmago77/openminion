@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from openminion.modules.tool.errors import ToolRuntimeError
 from openminion.modules.tool.runtime.dispatch import resolve_binding_for_call
@@ -99,7 +99,7 @@ def sidecar_for(registry: ToolRegistry, tool_name: str) -> str:
 
 
 def resolve_runtime_tool(registry: ToolRegistry, key: str) -> tuple[str, Any | None]:
-    with registry.temporary_registration_lock:
+    with registry.registration_read_lock():
         tool = registry._tools.get(key)
         if tool is not None:
             return key, tool
@@ -123,27 +123,18 @@ def resolve_runtime_tool(registry: ToolRegistry, key: str) -> tuple[str, Any | N
         return key, None
 
 
-def binding_manager(registry: ToolRegistry) -> ToolRegistryManager:
-    manager = getattr(registry, "_registry_manager", None)
-    if manager is not None:
-        return manager
-    base_registry = getattr(registry, "_base_registry", None)
-    if base_registry is not None:
-        return binding_manager(base_registry)
+def binding_manager(registry: Any | None) -> ToolRegistryManager:
+    if registry is not None:
+        manager = getattr(registry, "_registry_manager", None)
+        if manager is not None:
+            return cast("ToolRegistryManager", manager)
+        base_registry = getattr(registry, "_base_registry", None)
+        if base_registry is not None:
+            return binding_manager(base_registry)
 
     from openminion.modules.tool.runtime.dispatch import get_registry_manager
 
-    manager = get_registry_manager()
-    if manager.model_provider_specs(set(registry._tools)):
-        return manager
-    try:
-        from openminion.modules.tool.bootstrap import wire_default_tool_registry_manager
-
-        wire_default_tool_registry_manager()
-        manager = get_registry_manager()
-    except Exception:
-        pass
-    return manager
+    return get_registry_manager()
 
 
 __all__ = [
