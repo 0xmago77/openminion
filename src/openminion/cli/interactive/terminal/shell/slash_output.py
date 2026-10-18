@@ -121,8 +121,22 @@ def render_identity_report(payload: dict[str, Any]) -> str:
                 and isinstance(message := issue.get("message"), str)
                 and message.strip()
             )
-    elif isinstance(validation := payload.get("validation"), dict):
+    if isinstance(validation := payload.get("validation"), dict):
         lines.append(f"Validation: {'ok' if validation.get('ok') else 'failed'}")
+        errors = validation.get("errors")
+        if isinstance(errors, list):
+            lines.extend(
+                f"Validation error: {error}"
+                for error in errors
+                if isinstance(error, str) and error.strip()
+            )
+        warnings = validation.get("warnings")
+        if isinstance(warnings, list):
+            lines.extend(
+                f"Validation warning: {warning}"
+                for warning in warnings
+                if isinstance(warning, str) and warning.strip()
+            )
     if rendered := str(payload.get("rendered_text", "") or "").strip():
         lines.extend(("", rendered))
     return "\n".join(lines)

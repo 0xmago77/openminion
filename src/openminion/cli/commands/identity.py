@@ -444,8 +444,8 @@ def run_identity_render(
 
         print(snippet.text)
         print("\n--- Rendering Stats ---")
-        print(f"Purpose: {purpose}")
-        print(f"Max Tokens: {max_tokens}")
+        print(f"Purpose: {snippet.purpose}")
+        print(f"Max Tokens: {snippet.budget.max_tokens}")
         print(f"Used Tokens: {snippet.budget.used_tokens}")
         print(f"Profile Version: {snippet.profile_version[:12]}")
         print(f"Render Version: {snippet.render_version}")
@@ -453,6 +453,8 @@ def run_identity_render(
             print(f"Included Fields: {', '.join(snippet.included_fields)}")
         if snippet.omitted_fields:
             print(f"Omitted Fields: {', '.join(snippet.omitted_fields)}")
+        for warning in snippet.warnings:
+            print(f"Warning: {warning}")
     except ValueError as e:
         print(f"Rendering Error: {e}", file=sys.stderr)
         sys.exit(1)

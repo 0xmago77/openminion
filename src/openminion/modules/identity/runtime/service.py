@@ -209,19 +209,20 @@ class IdentityCtl:
 
         normalized_purpose = normalize_purpose(purpose)
         render_version = self.resolved_render_version
+        effective_max_tokens = max(1, int(max_tokens))
+        effective_max_chars = max(1, int(max_chars or (effective_max_tokens * 4)))
         cache_key = self._cache_key(
             agent_id=resolved.agent_id,
             purpose=normalized_purpose,
             profile_version=profile_version,
             render_version=render_version,
-            max_tokens=max_tokens,
-            max_chars=max_chars,
+            max_tokens=effective_max_tokens,
+            max_chars=effective_max_chars,
             provider_pref=provider_pref,
             query_text=query_text,
         )
 
         cached = self.store.get_cached_snippet(cache_key)
-        effective_max_chars = max(1, int(max_chars or (max_tokens * 4)))
         if cached is not None:
             return IdentitySnippet(
                 agent_id=resolved.agent_id,
@@ -230,7 +231,7 @@ class IdentityCtl:
                 profile_version=profile_version,
                 render_version=render_version,
                 budget={
-                    "max_tokens": int(max_tokens),
+                    "max_tokens": effective_max_tokens,
                     "used_tokens": int(cached.used_tokens),
                     "max_chars": int(effective_max_chars),
                     "used_chars": int(cached.used_chars),
@@ -244,8 +245,8 @@ class IdentityCtl:
         snippet = render_identity_snippet(
             resolved,
             purpose=normalized_purpose,
-            max_tokens=max(1, int(max_tokens)),
-            max_chars=max_chars,
+            max_tokens=effective_max_tokens,
+            max_chars=effective_max_chars,
             render_version=render_version,
             profile_version=profile_version,
             bullet_prefix=self.bullet_prefix,

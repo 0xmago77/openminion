@@ -838,12 +838,13 @@ def test_run_identity_render_existing_profile(
     _seed_profile(ctl, agent_id="ops-agent")
     monkeypatch.setattr(identity_command, "_get_identityctl", lambda: ctl)
 
-    identity_command.run_identity_render("ops-agent", purpose="act", max_tokens=180)
+    identity_command.run_identity_render("ops-agent", purpose="verify", max_tokens=0)
 
     out = capsys.readouterr().out
     assert "Rendering Stats" in out
-    assert "Purpose: act" in out
-    assert "Max Tokens: 180" in out
+    assert "Purpose: judge" in out
+    assert "Max Tokens: 1" in out
+    assert "Warning:" in out
 
 
 def test_run_identity_render_missing_profile_exits_one(
