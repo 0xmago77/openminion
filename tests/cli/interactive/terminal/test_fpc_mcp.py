@@ -22,6 +22,9 @@ class _FakeRuntime:
     def mcp_status_report(self) -> str:
         return self._report
 
+    def mcp_reload(self) -> dict[str, int | str]:
+        return {"status": "reloaded", "servers": 1, "runtime_tools": 4}
+
 
 class _StubOverlay:
     pass
@@ -33,10 +36,10 @@ def _make_console() -> tuple[Console, io.StringIO]:
     return console, buf
 
 
-async def _dispatch(runtime: Any) -> str:
+async def _dispatch(runtime: Any, text: str = "/mcp") -> str:
     console, buf = _make_console()
     await _handle_slash(
-        "/mcp",
+        text,
         runtime=runtime,
         console=console,
         transcript=TerminalTranscript(console),
@@ -83,4 +86,10 @@ def test_render_mcp_status_handles_raise() -> None:
 def test_slash_mcp_dispatch_renders_report() -> None:
     out = asyncio.run(_dispatch(_FakeRuntime()))
     assert "MCP servers:" in out
+    assert "fixture" in out
+
+
+def test_slash_mcp_reload_updates_runtime_and_renders_report() -> None:
+    out = asyncio.run(_dispatch(_FakeRuntime(), "/mcp reload"))
+    assert "MCP reloaded: 1 servers, 4 runtime tools" in out
     assert "fixture" in out

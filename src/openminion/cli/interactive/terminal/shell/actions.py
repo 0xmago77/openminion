@@ -731,6 +731,8 @@ async def _handle_tool_view_slash(
     if cmd == "/tools":
         _render_tools_command(runtime, console, text)
     elif cmd == "/mcp":
+        if _slash_arg(text).strip().lower() == "reload":
+            _reload_mcp(runtime=runtime, console=console)
         _render_mcp_status(runtime=runtime, console=console)
     elif cmd == "/theme":
         _handle_slash_theme(text, runtime=runtime, console=console)
@@ -742,6 +744,25 @@ async def _handle_tool_view_slash(
     else:
         return False
     return True
+
+
+def _reload_mcp(*, runtime: Any, console: Console) -> None:
+    reload_fn = getattr(runtime, "mcp_reload", None)
+    if not callable(reload_fn):
+        console.print(Text("(/mcp reload: unavailable)", style=_style(StyleToken.ERROR)))
+        return
+    try:
+        result = reload_fn()
+    except (OSError, RuntimeError, ValueError) as exc:
+        console.print(Text(f"(/mcp reload: {exc})", style=_style(StyleToken.ERROR)))
+        return
+    console.print(
+        Text(
+            f"(MCP reloaded: {result['servers']} servers, "
+            f"{result['runtime_tools']} runtime tools)",
+            style=_style(StyleToken.MUTED),
+        )
+    )
 
 
 def _handle_shell_preference_slash(

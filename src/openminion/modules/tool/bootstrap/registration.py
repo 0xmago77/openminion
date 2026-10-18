@@ -445,6 +445,7 @@ def _register_registrar(
         typed_registrar.register(registry, ctx)
         _apply_dynamic_runtime_ownership(
             registry=registry,
+            registry_manager=registry_manager,
             prepared_state=prepared_state,
         )
         if manifest is not None:

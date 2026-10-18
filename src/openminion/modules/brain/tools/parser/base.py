@@ -18,22 +18,30 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from ...runner import BrainRunner
 
 
-def normalize_tool_name_for_brain(raw_name: str) -> str | None:
+def normalize_tool_name_for_brain(
+    raw_name: str,
+    *,
+    registry: Any | None = None,
+) -> str | None:
     """Normalize model-facing tool names for brain-owned paths only."""
 
     token = str(raw_name or "").strip()
     if not token:
         return None
 
-    mgr = get_registry_manager()
+    target_registry = registry if registry is not None else get_registry()
+    mgr = (
+        target_registry._binding_manager()
+        if target_registry is not None
+        else get_registry_manager()
+    )
     normalized = mgr.normalize_model_input_name(token)
     if normalized:
         return normalized
 
-    registry = get_registry()
-    if registry is None:
+    if target_registry is None:
         return None
-    tool = registry.list().get(token)
+    tool = target_registry.list().get(token)
     if tool is not None and bool(getattr(tool, "prompt_visible_runtime_name", False)):
         return token
     return None
@@ -74,7 +82,11 @@ def parse_tool_command(
     if len(parts) < 2 or parts[0].lower() != "tool":
         return None
     raw_tool_name = parts[1]
-    tool_name = normalize_tool_name_for_brain(raw_tool_name) or raw_tool_name
+    registry = getattr(getattr(runner, "tool_api", None), "registry", None)
+    tool_name = (
+        normalize_tool_name_for_brain(raw_tool_name, registry=registry)
+        or raw_tool_name
+    )
     args: dict[str, Any] = {}
     if len(parts) == 3 and parts[2].strip():
         args = _parse_optional_json_payload(parts[2].strip())

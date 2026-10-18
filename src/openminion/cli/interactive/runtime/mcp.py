@@ -43,6 +43,12 @@ def _mcp_runtime_auxiliary_counts(
 class RuntimeMCPMixin:
     _rt: Any
 
+    def mcp_reload(self) -> dict[str, Any]:
+        from openminion.tools.mcp.reload import reload_runtime_mcp
+
+        result: dict[str, Any] = reload_runtime_mcp(self._rt)
+        return result
+
     def mcp_status_rows(self) -> list[MCPServerStatusRow]:
         runtime_config = getattr(getattr(self._rt, "config", None), "runtime", None)
         configured_servers = list(getattr(runtime_config, "mcp_servers", []) or [])

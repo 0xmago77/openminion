@@ -16,9 +16,6 @@ from openminion.modules.tool.executor import (  # noqa: F401  (re-exported)
     is_retry_eligible_for_fallback as _executor_is_retry_eligible_for_fallback,
     normalize_tool_call as _executor_normalize_tool_call,
 )
-from openminion.modules.tool.runtime.dispatch import (
-    resolve_binding_for_call,
-)
 from .catalog import (  # noqa: F401  (re-exported)
     ToolCategoryEntry,
     ToolPolicyProfile,
@@ -52,6 +49,7 @@ if TYPE_CHECKING:
     from openminion.modules.tool.exposure import ToolExposureService
     from openminion.modules.tool.runtime.manager import ToolRegistryManager
     from openminion.tools.mcp.interfaces import MCPFleetHandle
+    from openminion.tools.mcp.registry_sync import MCPRegistrySynchronizer
     from openminion.modules.tool.runtime import RuntimeContext
 
 _ALLOW_MODEL_EXPOSURE_PROVIDER_FALLBACK_ENV = (
@@ -70,7 +68,9 @@ class ToolRegistry:
         self._category_index: dict[str, set[str]] = {}
         self._sidecar_autostart: Callable[..., dict[str, Any]] | None = None
         self._temporary_registration_lock = RLock()
+        self._registry_manager: ToolRegistryManager | None = None
         self.mcp_manager: MCPFleetHandle | None = None
+        self.mcp_synchronizer: MCPRegistrySynchronizer | None = None
         self._exposure_service = ToolExposureService()
         for tool in tools or []:
             self.register(tool)
@@ -83,8 +83,37 @@ class ToolRegistry:
     def temporary_registration_lock(self) -> RLock:
         return self._temporary_registration_lock
 
+    def bind_registry_manager(self, manager: "ToolRegistryManager") -> None:
+        """Bind the manifest manager compiled for this registry instance."""
+        with self.temporary_registration_lock:
+            self._registry_manager = manager
+
+    @property
+    def registry_manager(self) -> "ToolRegistryManager":
+        return self._binding_manager()
+
+    def replace_mcp_tools(
+        self,
+        specs: Sequence[ToolSpec],
+        *,
+        registry_manager: "ToolRegistryManager",
+        expected_manager: "MCPFleetHandle | None",
+        mcp_manager: "MCPFleetHandle | None" = None,
+    ) -> bool:
+        """Publish one staged MCP snapshot if its fleet still owns this registry."""
+        from .runtime import replace_mcp_tools
+
+        return replace_mcp_tools(
+            self,
+            specs,
+            registry_manager=registry_manager,
+            expected_manager=expected_manager,
+            mcp_manager=mcp_manager,
+        )
+
     def register(self, tool: Any) -> None:
-        _catalog_register_tool(self, tool)
+        with self.temporary_registration_lock:
+            _catalog_register_tool(self, tool)
 
     def bind_sidecar_autostart(self, callback: Callable[..., dict[str, Any]]) -> None:
         self._sidecar_autostart = callback
@@ -98,172 +127,119 @@ class ToolRegistry:
         return self._sidecar_autostart(**kwargs)
 
     def unregister(self, tool_name: str) -> None:
-        _catalog_unregister_tool(self, tool_name)
+        with self.temporary_registration_lock:
+            _catalog_unregister_tool(self, tool_name)
 
     def _index_tool_category(self, tool_name: str, tool: Tool) -> None:
         _catalog_index_tool_category(self, tool_name, tool)
 
     def tools_by_category(self, category: str) -> builtins.list[str]:
-        return _catalog_tools_by_category(self, category)
+        with self.temporary_registration_lock:
+            return _catalog_tools_by_category(self, category)
 
     def category_for_tool(self, tool_name: str) -> ToolCategoryEntry:
-        return _catalog_category_for_tool(self, tool_name)
+        with self.temporary_registration_lock:
+            return _catalog_category_for_tool(self, tool_name)
 
     def all_categories(self) -> builtins.list[str]:
-        return _catalog_all_categories(self)
+        with self.temporary_registration_lock:
+            return _catalog_all_categories(self)
 
     def add(self, spec: Any) -> None:
         """Shim for openminion-tool plugin compatibility."""
-        _catalog_add_tool_spec(self, spec)
+        with self.temporary_registration_lock:
+            _catalog_add_tool_spec(self, spec)
 
     def _infer_categories_from_index(self, tool_name: str) -> ToolCategoryInfo:
         return _catalog_infer_categories_from_index(self, tool_name)
 
     def get(self, name: str) -> Any:
         """Shim for openminion-tool plugin compatibility."""
-        tool = self._tools.get(name)
-        if tool is None:
-            raise KeyError(name)
-        return tool
+        with self.temporary_registration_lock:
+            tool = self._tools.get(name)
+            if tool is None:
+                raise KeyError(name)
+            return tool
 
     def list(self) -> dict[str, Any]:
         """Shim for openminion-tool plugin compatibility."""
-        return dict(self._tools)
+        with self.temporary_registration_lock:
+            return dict(self._tools)
 
     def list_by_capability(self, capability: str) -> builtins.list[ToolSpec]:
         """Shim for openminion-tool plugin compatibility."""
-        return _catalog_list_by_capability(self, capability)
+        with self.temporary_registration_lock:
+            return _catalog_list_by_capability(self, capability)
 
     def provider_specs(self) -> builtins.list[ProviderToolSpec]:
         from .exposure import provider_specs
 
-        return provider_specs(self)
+        with self.temporary_registration_lock:
+            return provider_specs(self)
 
     def model_provider_specs(self) -> builtins.list[ProviderToolSpec]:
         from .exposure import model_provider_specs
 
-        return model_provider_specs(self)
+        with self.temporary_registration_lock:
+            return model_provider_specs(self)
 
     def model_to_runtime_binding_map(self) -> dict[str, str]:
         from .exposure import model_to_runtime_binding_map
 
-        return model_to_runtime_binding_map(self)
+        with self.temporary_registration_lock:
+            return model_to_runtime_binding_map(self)
 
     def model_to_runtime_tool_map(self) -> dict[str, str]:
         from .exposure import model_to_runtime_tool_map
 
-        return model_to_runtime_tool_map(self)
+        with self.temporary_registration_lock:
+            return model_to_runtime_tool_map(self)
 
     def model_runtime_dispatch_map(self) -> dict[str, dict[str, Any]]:
         from .exposure import model_runtime_dispatch_map
 
-        return model_runtime_dispatch_map(self)
+        with self.temporary_registration_lock:
+            return model_runtime_dispatch_map(self)
 
     def registration_debug_snapshot(self) -> dict[str, Any]:
         from .exposure import registration_debug_snapshot
 
-        return registration_debug_snapshot(self)
+        with self.temporary_registration_lock:
+            return registration_debug_snapshot(self)
 
     def provider_spec_for_name(self, name: str) -> ProviderToolSpec | None:
         from .exposure import provider_spec_for_name
 
-        return provider_spec_for_name(self, name)
+        with self.temporary_registration_lock:
+            return provider_spec_for_name(self, name)
 
     def _provider_spec_for_runtime_name(
         self, tool_name: str
     ) -> ProviderToolSpec | None:
         from .exposure import provider_spec_for_runtime_name
 
-        return provider_spec_for_runtime_name(self, tool_name)
+        with self.temporary_registration_lock:
+            return provider_spec_for_runtime_name(self, tool_name)
 
     def policy_for(self, tool_name: str) -> ToolPolicyProfile:
-        key = str(tool_name or "").strip()
-        key, tool = self._resolve_runtime_tool(key)
-        if tool is None:
-            return ToolPolicyProfile(
-                tool_name=key or "unknown",
-                required_scopes_all=frozenset({"tool.execute"}),
-                risk="medium",
-                budget_cost=1,
-            )
-        if isinstance(tool, ToolSpec):
-            min_scope = (
-                str(getattr(tool, "min_scope", "READ_ONLY") or "READ_ONLY")
-                .strip()
-                .upper()
-            )
-            required_scopes = {"tool.execute"}
-            if min_scope in {"POWER_USER", "UI_AUTOMATION"}:
-                required_scopes.add("tool.execute.elevated")
-            risk = "high" if bool(getattr(tool, "dangerous", False)) else "medium"
-            budget_cost = 2 if risk == "high" else 1
-            return ToolPolicyProfile(
-                tool_name=str(getattr(tool, "name", key) or key).strip()
-                or key
-                or "unknown",
-                required_scopes_all=frozenset(required_scopes),
-                risk=risk,
-                budget_cost=budget_cost,
-            )
-        policy = tool.execution_policy()
-        try:
-            budget_cost = max(1, int(policy.budget_cost))
-        except (TypeError, ValueError):
-            budget_cost = 1
-        return ToolPolicyProfile(
-            tool_name=str(tool.name or key).strip() or key or "unknown",
-            required_scopes_all=frozenset(policy.required_scopes_all),
-            risk=str(policy.risk or "medium").strip().lower() or "medium",
-            budget_cost=budget_cost,
-        )
+        from .runtime import policy_for
+
+        return policy_for(self, tool_name)
 
     def sidecar_for(self, tool_name: str) -> str:
-        _, tool = self._resolve_runtime_tool(str(tool_name or "").strip())
-        sidecar = getattr(tool, "sidecar", "") if tool is not None else ""
-        return str(sidecar or "").strip()
+        from .runtime import sidecar_for
+
+        return sidecar_for(self, tool_name)
 
     def _resolve_runtime_tool(self, key: str) -> tuple[str, Any | None]:
-        tool = self._tools.get(key)
-        if tool is not None:
-            return key, tool
-        manager = self._binding_manager()
-        model_tool_id = manager.normalize_raw_name(key)
-        if model_tool_id:
-            runtime_map = manager.model_to_runtime_tool_map(set(self._tools))
-            mapped_runtime_tool = runtime_map.get(model_tool_id)
-            if mapped_runtime_tool:
-                tool = self._tools.get(mapped_runtime_tool)
-                if tool is not None:
-                    return mapped_runtime_tool, tool
-        resolution = resolve_binding_for_call(
-            raw_tool_name=key,
-            available_tool_names=tuple(self._tools),
-        )
-        if resolution is not None and resolution.runtime_tool_name:
-            tool = self._tools.get(resolution.runtime_tool_name)
-            if tool is not None:
-                return resolution.runtime_tool_name, tool
-        return key, None
+        from .runtime import resolve_runtime_tool
+
+        return resolve_runtime_tool(self, key)
 
     def _binding_manager(self) -> "ToolRegistryManager":
-        # Resolver manager is the authoritative, bootstrap-wired source.
-        from openminion.modules.tool.runtime.dispatch import get_registry_manager
+        from .runtime import binding_manager
 
-        manager = get_registry_manager()
-        if manager.model_provider_specs(set(self._tools)):
-            return manager
-
-        # If resolver manager is still empty, bootstrap default manifests once.
-        try:
-            from openminion.modules.tool.bootstrap import (
-                wire_default_tool_registry_manager,
-            )
-
-            wire_default_tool_registry_manager()
-            manager = get_registry_manager()
-        except Exception:
-            pass
-        return manager
+        return binding_manager(self)
 
     def execute_calls(
         self,

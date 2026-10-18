@@ -72,8 +72,13 @@ def scoped_tools_for_agent(tools: Any, profile: AgentProfileConfig) -> Any:
     return scoped_mcp_registry_view(tools, getattr(profile, "mcp_exposure", None))
 
 
-def bind_mcp_sampling_executor(tools: Any, agent_service: Any) -> None:
-    manager = getattr(tools, "mcp_manager", None)
+def bind_mcp_sampling_executor(
+    tools: Any,
+    agent_service: Any,
+    *,
+    manager: Any | None = None,
+) -> None:
+    manager = manager or getattr(tools, "mcp_manager", None)
     bind = getattr(manager, "bind_sampling_executor", None)
     executor = getattr(agent_service, "_invoke_provider_request", None)
     if callable(bind) and callable(executor):
