@@ -225,8 +225,13 @@ def _provider_failure_categories(telemetry_path: Path) -> list[str]:
     with sqlite3.connect(telemetry_path) as connection:
         rows = connection.execute(
             "SELECT event_type, data FROM events "
-            "WHERE event_type IN (?, ?, ?) ORDER BY id",
-            ("llm.call.failed", "module.stats", "agent.turn.failed"),
+            "WHERE event_type IN (?, ?, ?, ?) ORDER BY id",
+            (
+                "llm.call.failed",
+                "module.stats",
+                "agent.turn.failed",
+                "chat.phase_timing",
+            ),
         ).fetchall()
     categories = []
     for event_type, raw_data in rows:
@@ -246,6 +251,12 @@ def _provider_failure_categories(telemetry_path: Path) -> list[str]:
             raw_error = event.get("error")
             if isinstance(raw_error, dict):
                 if category := str(raw_error.get("code", "")):
+                    categories.append(category)
+        elif event_type == "chat.phase_timing":
+            for attempt in event.get("provider_attempts", []):
+                if attempt.get("outcome") == "ok":
+                    continue
+                if category := str(attempt.get("error_code", "")):
                     categories.append(category)
     return categories
 
@@ -557,6 +568,7 @@ def test_live_minimax_approved_project_research_code_git_and_denial(
     evidence_path = root / "mnte-project-live-evidence.json"
     telemetry_path = root / "data" / artifact_id / "telemetry" / "telemetry.db"
     approval_events: list[dict[str, object]] = []
+    payloads: list[dict[str, object]] = []
 
     def write_failure_evidence() -> None:
         if evidence_path.exists():
@@ -574,6 +586,10 @@ def test_live_minimax_approved_project_research_code_git_and_denial(
                 "provider": provider,
                 "model": model,
                 "provider_failure_categories": failure_categories,
+                "terminal_brain_statuses": [
+                    str(_result_metadata(payload).get("brain_status", ""))
+                    for payload in payloads
+                ],
                 "disposition": _failure_disposition(failure_categories),
                 "approval_events": approval_events,
                 "unplanned_interventions": _unplanned_intervention_count(
@@ -616,7 +632,7 @@ def test_live_minimax_approved_project_research_code_git_and_denial(
                 require_git_repository=True,
                 max_iterations=3,
                 max_tool_calls=20,
-                permission_profile_id="bypass",
+                permission_profile_id="local-safe",
                 config_ref=str(config_path),
                 verification_domain="coding",
                 verification_commands=("git status --short",),
@@ -628,7 +644,6 @@ def test_live_minimax_approved_project_research_code_git_and_denial(
         allowed_tools = tuple(
             sorted({*PROJECT_CODING_ALLOWED_TOOLS, TOOL_REQUEST_TOOL_NAME})
         )
-        payloads = []
         wall_times_ms = []
         for index in range(3):
             if index >= len(prompts):
@@ -647,27 +662,28 @@ def test_live_minimax_approved_project_research_code_git_and_denial(
                 project_tool_calls_remaining=20,
             )
             started = time.monotonic()
-            payloads.append(
-                runtime.run_turn(
-                    payload={
-                        "message": prompt,
-                        "agent_id": minimax_agent_id,
-                        "session_id": turn_request.session_id,
-                        "channel": "console",
-                        "target": "mnte-project",
-                        "timeout_seconds": 1200,
-                        "inbound_metadata": project_turn_inbound_metadata(
-                            turn_request,
-                            base={
-                                "source": "openminion.mnte.e2e",
-                                "workspace_root": str(workspace),
-                                **autonomy_permission_metadata("bypass"),
-                            },
-                        ),
-                    }
-                )
+            payload = runtime.run_turn(
+                payload={
+                    "message": prompt,
+                    "agent_id": minimax_agent_id,
+                    "session_id": turn_request.session_id,
+                    "channel": "console",
+                    "target": "mnte-project",
+                    "timeout_seconds": 1200,
+                    "inbound_metadata": project_turn_inbound_metadata(
+                        turn_request,
+                        base={
+                            "source": "openminion.mnte.e2e",
+                            "workspace_root": str(workspace),
+                            **autonomy_permission_metadata("local-safe"),
+                        },
+                    ),
+                }
             )
+            payloads.append(payload)
             wall_times_ms.append(round((time.monotonic() - started) * 1000))
+            if _result_metadata(payload).get("brain_status") == "waiting_user":
+                break
             if index == 0:
                 research_results = parse_tool_results(
                     _result_metadata(payloads[0]).get("tool_calls_cumulative")

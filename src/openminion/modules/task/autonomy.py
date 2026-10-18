@@ -13,6 +13,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from openminion.base.generated_paths import resolve_generated_state_path
+from openminion.base.config.action_policy import ACTION_POLICY_SESSION_OVERRIDE_KEY
 from openminion.modules.task.constants import (
     DEFAULT_PROJECT_TURN_TIMEOUT_SECONDS,
     DEFAULT_PROJECT_VERIFICATION_TIMEOUT_SECONDS,
@@ -38,8 +39,13 @@ def autonomy_permission_metadata(permission_profile_id: str) -> dict[str, str]:
                 sort_keys=True,
             )
         }
-    if profile_id in {"readonly", "bypass"}:
+    if profile_id == "readonly":
         return {"permission_mode": profile_id}
+    if profile_id == "bypass":
+        return {
+            "permission_mode": profile_id,
+            ACTION_POLICY_SESSION_OVERRIDE_KEY: profile_id,
+        }
     return {}
 
 
