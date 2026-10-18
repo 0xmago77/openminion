@@ -203,7 +203,7 @@ def run_suggestion_surface_pass(
 
     now_iso = str(now or utc_now_iso())
     now_epoch = _parse_iso_to_epoch(now_iso) or 0.0
-    safe_batch_cap = max(1, int(batch_cap))
+    safe_batch_cap = max(1, min(50, int(batch_cap)))
     safe_cooldown = max(0, int(cooldown_seconds))
     safe_min_age = max(0, int(min_age_seconds))
 

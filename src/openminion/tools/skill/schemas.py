@@ -16,7 +16,10 @@ class SkillIngestArgs(BaseModel):
         ...,
         min_length=1,
         max_length=500_000,
-        description="Required complete SKILL.md content in Markdown.",
+        description=(
+            "Required complete SKILL.md content in Markdown. Use the exact "
+            "markdown field; do not send skill_markdown."
+        ),
     )
     scope: Literal["agent"] = Field(
         default="agent",
@@ -107,7 +110,10 @@ class SkillGetArgs(BaseModel):
         ...,
         min_length=1,
         max_length=256,
-        description="Required exact stored skill ID.",
+        description=(
+            "Required exact stored skill ID. Use the exact skill_id field; "
+            "do not send name."
+        ),
     )
     version_hash: str | None = Field(
         default=None,

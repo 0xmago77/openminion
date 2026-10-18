@@ -322,6 +322,13 @@ def _add_skill_cli_subcommands(sub: Any) -> None:
 
     _add_learning_subcommands(sub)
 
+    _add_suggestion_subcommands(sub)
+
+    add_storage_subcommands(sub)
+
+
+def _add_suggestion_subcommands(sub: Any) -> None:
+
     suggestion_inbox = sub.add_parser(
         "suggestion-inbox",
         help="List currently-pending proposals as operator suggestions.",
@@ -360,8 +367,12 @@ def _add_skill_cli_subcommands(sub: Any) -> None:
         default=None,
         help="Override the per-signature cooldown window in seconds.",
     )
-
-    add_storage_subcommands(sub)
+    suggestion_surface.add_argument(
+        "--min-age-seconds",
+        type=int,
+        default=None,
+        help="Override the minimum proposal age in seconds.",
+    )
 
 
 def _add_learning_subcommands(sub: Any) -> None:
@@ -666,8 +677,6 @@ def _dispatch_skill_command(ctl: Skill, args: argparse.Namespace) -> None:
 
 def _dispatch_suggestion_cmd(ctl: Skill, args: argparse.Namespace) -> None:
     from openminion.modules.skill.suggestion import (
-        DEFAULT_SUGGESTION_BATCH_CAP,
-        DEFAULT_SUGGESTION_COOLDOWN_SECONDS,
         list_active_suggestions,
         run_suggestion_surface_pass,
         suggestion_status,
@@ -691,19 +700,25 @@ def _dispatch_suggestion_cmd(ctl: Skill, args: argparse.Namespace) -> None:
 
     if args.cmd == "suggestion-surface-pass":
         cap = (
-            DEFAULT_SUGGESTION_BATCH_CAP
+            ctl.config.suggestion_batch_cap
             if args.batch_cap is None
-            else max(1, min(50, int(args.batch_cap)))
+            else int(args.batch_cap)
         )
         cooldown = (
-            DEFAULT_SUGGESTION_COOLDOWN_SECONDS
+            ctl.config.suggestion_cooldown_seconds
             if args.cooldown_seconds is None
             else max(0, int(args.cooldown_seconds))
+        )
+        min_age = (
+            ctl.config.suggestion_min_age_seconds
+            if args.min_age_seconds is None
+            else max(0, int(args.min_age_seconds))
         )
         report = run_suggestion_surface_pass(
             ctl.store,
             batch_cap=cap,
             cooldown_seconds=cooldown,
+            min_age_seconds=min_age,
         )
         _print_json(
             {

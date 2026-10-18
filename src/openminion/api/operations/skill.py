@@ -261,34 +261,41 @@ def suggestion_surface(
     try:
         batch_cap = body.get("batch_cap")
         if batch_cap is not None:
-            batch_cap = max(1, min(50, int(batch_cap)))
+            batch_cap = int(batch_cap)
         cooldown_seconds = body.get("cooldown_seconds")
         if cooldown_seconds is not None:
             cooldown_seconds = max(0, int(cooldown_seconds))
+        min_age_seconds = body.get("min_age_seconds")
+        if min_age_seconds is not None:
+            min_age_seconds = max(0, int(min_age_seconds))
     except (TypeError, ValueError):
         return _error(
             HTTPStatus.BAD_REQUEST,
             code="invalid_request",
-            message="`batch_cap` and `cooldown_seconds` must be integers.",
+            message=(
+                "`batch_cap`, `cooldown_seconds`, and `min_age_seconds` "
+                "must be integers."
+            ),
             details={},
         )
 
     def _build(ctl: Skill) -> RouteResult:
-        from openminion.modules.skill.suggestion import (
-            DEFAULT_SUGGESTION_BATCH_CAP,
-            DEFAULT_SUGGESTION_COOLDOWN_SECONDS,
-            run_suggestion_surface_pass,
-        )
+        from openminion.modules.skill.suggestion import run_suggestion_surface_pass
 
         report = run_suggestion_surface_pass(
             ctl.store,
             batch_cap=(
-                batch_cap if batch_cap is not None else DEFAULT_SUGGESTION_BATCH_CAP
+                batch_cap if batch_cap is not None else ctl.config.suggestion_batch_cap
             ),
             cooldown_seconds=(
                 cooldown_seconds
                 if cooldown_seconds is not None
-                else DEFAULT_SUGGESTION_COOLDOWN_SECONDS
+                else ctl.config.suggestion_cooldown_seconds
+            ),
+            min_age_seconds=(
+                min_age_seconds
+                if min_age_seconds is not None
+                else ctl.config.suggestion_min_age_seconds
             ),
         )
         return RouteResult(

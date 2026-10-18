@@ -159,13 +159,20 @@ def _write_summary(root: Path, name: str, payload: dict) -> None:
 
 
 def _normalized_step(value: str) -> str:
-    without_number = re.sub(r"^\s*\**\d+(?:[.)]\s*|\s+)", "", value)
+    without_number = re.sub(
+        r"^\s*\**(?:step\s+)?\d+(?:[.):]\**\s*|\s+)", "", value, flags=re.I
+    )
     return re.sub(r"[*_`]", "", without_number).strip().lower()
 
 
 @pytest.mark.parametrize(
     "rendered",
-    ("1 Inspect the target", "1. Inspect the target", "1) Inspect the target"),
+    (
+        "1 Inspect the target",
+        "1. Inspect the target",
+        "1) Inspect the target",
+        "**Step 1:** Inspect the target",
+    ),
 )
 def test_normalized_step_accepts_common_numbered_list_markers(rendered: str) -> None:
     assert _normalized_step(rendered) == "inspect the target"
