@@ -106,7 +106,11 @@ class GatewayServiceMemoryTests(GatewayServiceTestCase):
             event.event_type
             for event in self.sessions.list_events(session_id=session_id, limit=100)
             if event.event_type
-            in {"memory.context.built", "memory.retrieval.built", "memory.recall.status"}
+            in {
+                "memory.context.built",
+                "memory.retrieval.built",
+                "memory.recall.status",
+            }
         ]
         self.assertLess(
             first_turn_types.index("memory.context.built"),
