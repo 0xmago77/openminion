@@ -110,9 +110,7 @@ def test_mcp_publication_preserves_concurrent_non_mcp_registration(
     manager = bootstrap.mcp_manager
     assert manager is not None
     specs = tuple(
-        tool
-        for name, tool in registry.list().items()
-        if name.startswith("mcp.")
+        tool for name, tool in registry.list().items() if name.startswith("mcp.")
     )
     staging_started = threading.Event()
     late_registration_started = threading.Event()
@@ -210,10 +208,13 @@ def test_runtime_registry_manager_is_isolated_from_later_bootstrap() -> None:
             "runtime_tool_name": "mcp.fixture.echo_text",
             "runtime_candidates": ["mcp.fixture.echo_text"],
         }
-        assert normalize_tool_name_for_brain(
-            "mcp.fixture.echo_text",
-            registry=scoped_first,
-        ) == "mcp.fixture.echo_text"
+        assert (
+            normalize_tool_name_for_brain(
+                "mcp.fixture.echo_text",
+                registry=scoped_first,
+            )
+            == "mcp.fixture.echo_text"
+        )
         runner = SimpleNamespace(tool_api=SimpleNamespace(registry=scoped_first))
         assert "mcp.fixture.echo_text" in collect_runtime_tool_names(runner)
         selection = ToolSelectionService(ToolSelectionConfig(), scoped_first)

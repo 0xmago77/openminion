@@ -416,7 +416,9 @@ def _mcp_login(args: argparse.Namespace) -> int:
                 required=metadata.authorization_response_iss_parameter_supported,
             )
             raise RuntimeError(f"OAuth authorization failed: {result.error}")
-        completion_args = argparse.Namespace(state=payload["state"], issuer=result.issuer)
+        completion_args = argparse.Namespace(
+            state=payload["state"], issuer=result.issuer
+        )
         return _complete_mcp_login(
             completion_args,
             server,
@@ -427,6 +429,8 @@ def _mcp_login(args: argparse.Namespace) -> int:
         if callback is not None:
             callback.close()
         token_store.close()
+
+
 def _prepare_mcp_login_client(
     manager: Any,
     server: Any,
@@ -846,7 +850,6 @@ def _redacted_server_payload(server: MCPServerConfig) -> dict[str, Any]:
             "risk_levels": list(server.approval.risk_levels),
         },
     }
-
 
 
 def register(

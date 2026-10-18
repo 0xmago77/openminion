@@ -17,6 +17,7 @@ from .runtime import (
 )
 from .service import ToolExposureService, exposure_scope
 
+
 def render_catalog_cards(
     cards: tuple[ToolCatalogCard, ...],
     *,

@@ -902,12 +902,7 @@ def test_mcp_login_starts_cimd_pkce_flow(monkeypatch, capsys) -> None:
         lambda **_kwargs: secrets,
     )
 
-    assert (
-        run_mcp(
-            _args("login", name="remote", code="", issuer="", manual=True)
-        )
-        == 0
-    )
+    assert run_mcp(_args("login", name="remote", code="", issuer="", manual=True)) == 0
     payload = json.loads(capsys.readouterr().out)
     query = urllib_parse.parse_qs(
         urllib_parse.urlparse(payload["authorization_url"]).query

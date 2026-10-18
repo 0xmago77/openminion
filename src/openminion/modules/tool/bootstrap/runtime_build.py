@@ -280,9 +280,7 @@ def build_runtime_bootstrap(
     registry_manager.set_runtime_tool_schemas(_collect_runtime_tool_schemas(registry))
     registry_manager.compile()
     if registry.mcp_manager is not None and registry.mcp_synchronizer is not None:
-        registry.mcp_manager.bind_capability_change_listener(
-            registry.mcp_synchronizer
-        )
+        registry.mcp_manager.bind_capability_change_listener(registry.mcp_synchronizer)
     contract_drift_report = _emit_contract_drift_report(
         registry_manager,
         config=config,

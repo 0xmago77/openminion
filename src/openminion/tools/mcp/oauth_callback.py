@@ -41,7 +41,9 @@ class MCPOAuthCallbackServer:
         port = self._server.server_address[1]
         return f"http://127.0.0.1:{port}{self._path}"
 
-    def wait(self, *, expected_state: str, timeout_seconds: float) -> MCPOAuthCallbackResult:
+    def wait(
+        self, *, expected_state: str, timeout_seconds: float
+    ) -> MCPOAuthCallbackResult:
         self._expected_state = expected_state
         deadline = time.monotonic() + float(timeout_seconds)
         try:

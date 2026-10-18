@@ -63,16 +63,12 @@ def _update_runtime_config(runtime: Any, loaded: Any) -> None:
     source = loaded.runtime
     target.mcp_servers = list(source.mcp_servers)
     target.mcp_sampling_mode = source.mcp_sampling_mode
-    target.mcp_discovery_cache_ttl_seconds = (
-        source.mcp_discovery_cache_ttl_seconds
-    )
+    target.mcp_discovery_cache_ttl_seconds = source.mcp_discovery_cache_ttl_seconds
     if runtime.config_manager is not None:
         managed = runtime.config_manager.base_config.runtime
         managed.mcp_servers = list(source.mcp_servers)
         managed.mcp_sampling_mode = source.mcp_sampling_mode
-        managed.mcp_discovery_cache_ttl_seconds = (
-            source.mcp_discovery_cache_ttl_seconds
-        )
+        managed.mcp_discovery_cache_ttl_seconds = source.mcp_discovery_cache_ttl_seconds
         runtime.config_manager.reset()
 
 

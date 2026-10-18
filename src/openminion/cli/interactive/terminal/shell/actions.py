@@ -749,7 +749,9 @@ async def _handle_tool_view_slash(
 def _reload_mcp(*, runtime: Any, console: Console) -> None:
     reload_fn = getattr(runtime, "mcp_reload", None)
     if not callable(reload_fn):
-        console.print(Text("(/mcp reload: unavailable)", style=_style(StyleToken.ERROR)))
+        console.print(
+            Text("(/mcp reload: unavailable)", style=_style(StyleToken.ERROR))
+        )
         return
     try:
         result = reload_fn()

@@ -84,8 +84,7 @@ def parse_tool_command(
     raw_tool_name = parts[1]
     registry = getattr(getattr(runner, "tool_api", None), "registry", None)
     tool_name = (
-        normalize_tool_name_for_brain(raw_tool_name, registry=registry)
-        or raw_tool_name
+        normalize_tool_name_for_brain(raw_tool_name, registry=registry) or raw_tool_name
     )
     args: dict[str, Any] = {}
     if len(parts) == 3 and parts[2].strip():

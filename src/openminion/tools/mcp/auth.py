@@ -401,9 +401,7 @@ def select_oauth_client(
                     "CIMD client_id must be an HTTPS URL with a non-root path"
                 )
             if not metadata.client_id_metadata_document_supported:
-                raise ValueError(
-                    "authorization server does not advertise CIMD support"
-                )
+                raise ValueError("authorization server does not advertise CIMD support")
             return MCPOAuthClientSelection("cimd", client_id, issuer)
         return MCPOAuthClientSelection("provided", client_id, issuer)
 

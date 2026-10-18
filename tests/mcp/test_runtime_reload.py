@@ -118,7 +118,9 @@ def test_reload_failure_keeps_existing_fleet_and_tools(tmp_path: Path) -> None:
 
         assert registry.mcp_manager is old_manager
         assert "mcp.fixture.echo_text" in registry.list()
-        result = registry.get("mcp.fixture.echo_text").handler({"text": "still live"}, None)
+        result = registry.get("mcp.fixture.echo_text").handler(
+            {"text": "still live"}, None
+        )
         assert result["data"]["structured_content"]["echo"] == "still live"
     finally:
         if old_manager is not None:

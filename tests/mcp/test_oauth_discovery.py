@@ -126,7 +126,9 @@ def test_oauth_discovery_rejects_ambiguous_authorization_servers(
     )
 
     with pytest.raises(ValueError, match="multiple authorization servers"):
-        discover_oauth_metadata(MCPAuthorizationConfig(mode="oauth_pkce"), resource=resource)
+        discover_oauth_metadata(
+            MCPAuthorizationConfig(mode="oauth_pkce"), resource=resource
+        )
 
 
 def test_oauth_discovery_selects_explicit_advertised_issuer(monkeypatch) -> None:
@@ -208,7 +210,9 @@ def test_oauth_discovery_rejects_plain_http_metadata_endpoints(
     monkeypatch.setattr("openminion.tools.mcp.auth.urllib_request.urlopen", open_url)
 
     with pytest.raises(ValueError, match="HTTPS"):
-        discover_oauth_metadata(MCPAuthorizationConfig(mode="oauth_pkce"), resource=resource)
+        discover_oauth_metadata(
+            MCPAuthorizationConfig(mode="oauth_pkce"), resource=resource
+        )
 
 
 def test_select_oauth_client_supports_provided_cimd_and_dcr() -> None:

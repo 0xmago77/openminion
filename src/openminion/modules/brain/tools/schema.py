@@ -21,9 +21,7 @@ def _normalize_execution_tool_name(
     if not token:
         return None
     manager = (
-        registry._binding_manager()
-        if registry is not None
-        else get_registry_manager()
+        registry._binding_manager() if registry is not None else get_registry_manager()
     )
     return manager.normalize_raw_name(token) or normalize_tool_name_for_brain(
         token,
