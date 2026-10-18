@@ -312,20 +312,6 @@ class _SkillStoreMixin(WorkflowObservationStoreMixin, SkillStore):
             package["status"] = str(target_status)
         return package
 
-    def get_skill_owner(self, *, skill_id: str) -> dict[str, str | None] | None:
-        rows = self._record_store.query_dicts(
-            "SELECT scope, agent_id FROM skills WHERE skill_id = ? LIMIT 1",
-            (skill_id,),
-        )
-        if not rows:
-            return None
-        return {
-            "scope": str(rows[0]["scope"]),
-            "agent_id": (
-                str(rows[0]["agent_id"]) if rows[0].get("agent_id") else None
-            ),
-        }
-
     def list_latest_skills(
         self,
         *,
@@ -465,7 +451,8 @@ class _SkillStoreMixin(WorkflowObservationStoreMixin, SkillStore):
 
     def get_skill_lifecycle_facts(self, *, skill_id: str) -> dict[str, Any]:
         skill_rows = self._record_store.query_dicts(
-            "SELECT active_version_hash FROM skills WHERE skill_id = ? LIMIT 1",
+            "SELECT active_version_hash, scope, agent_id "
+            "FROM skills WHERE skill_id = ? LIMIT 1",
             (skill_id,),
         )
         admission_rows = self._record_store.query_dicts(
@@ -488,15 +475,14 @@ class _SkillStoreMixin(WorkflowObservationStoreMixin, SkillStore):
         )
         admissions = {str(row["state"]): int(row["n"] or 0) for row in admission_rows}
         outcomes = {str(row["outcome"]): int(row["n"] or 0) for row in run_rows}
+        skill_row = skill_rows[0] if skill_rows else {}
         last_used_at = max(
             (str(row["last_used_at"] or "") for row in run_rows), default=""
         )
         return {
-            "active_version_hash": (
-                str(skill_rows[0].get("active_version_hash") or "")
-                if skill_rows
-                else ""
-            ),
+            "active_version_hash": str(skill_row.get("active_version_hash") or ""),
+            "scope": str(skill_row.get("scope") or ""),
+            "agent_id": skill_row.get("agent_id"),
             "admission_count": sum(admissions.values()),
             "pending_admission_count": admissions.get("pending", 0),
             "use_count": sum(outcomes.values()),
