@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from typing import Any
 
+from openminion.modules.artifact.interfaces import ArtifactReferenceLifecycle
 from openminion.modules.artifact.models import parse_ref_or_sha
 
 
@@ -66,48 +67,37 @@ def create_default_artifactctl() -> Any:
     return ArtifactCtl({})
 
 
-def _apply_reference_edges(
+def add_reference_edges(
     *,
-    artifactctl: Any | None,
+    artifactctl: ArtifactReferenceLifecycle | None,
     owner_type: str,
     owner_id: str,
     ref_values: Any,
-    operation_name: str,
 ) -> None:
     if artifactctl is None:
         return
-    operation = getattr(artifactctl, operation_name)
     for target in normalize_artifact_ref_targets(ref_values):
-        operation(owner_type, owner_id, target)
-
-
-def add_reference_edges(
-    *,
-    artifactctl: Any | None,
-    owner_type: str,
-    owner_id: str,
-    ref_values: Any,
-) -> None:
-    _apply_reference_edges(
-        artifactctl=artifactctl,
-        owner_type=owner_type,
-        owner_id=owner_id,
-        ref_values=ref_values,
-        operation_name="ref_add",
-    )
+        artifactctl.ref_add(owner_type, owner_id, target)
 
 
 def remove_reference_edges(
     *,
-    artifactctl: Any | None,
+    artifactctl: ArtifactReferenceLifecycle | None,
     owner_type: str,
     owner_id: str,
     ref_values: Any,
 ) -> None:
-    _apply_reference_edges(
-        artifactctl=artifactctl,
-        owner_type=owner_type,
-        owner_id=owner_id,
-        ref_values=ref_values,
-        operation_name="ref_remove",
-    )
+    if artifactctl is None:
+        return
+    for target in normalize_artifact_ref_targets(ref_values):
+        artifactctl.ref_remove(owner_type, owner_id, target)
+
+
+def remove_owner_reference_edges(
+    *,
+    artifactctl: ArtifactReferenceLifecycle | None,
+    owner_type: str,
+    owner_id: str,
+) -> None:
+    if artifactctl is not None:
+        artifactctl.ref_remove_owner(owner_type, owner_id)

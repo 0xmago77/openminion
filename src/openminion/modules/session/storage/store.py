@@ -91,6 +91,7 @@ from openminion.modules.artifact.refs import (
     add_reference_edges,
     create_default_artifactctl,
     normalize_artifact_ref_targets,
+    remove_owner_reference_edges,
 )
 from openminion.modules.storage.backends.blob_store import BlobStoreFS
 from openminion.modules.storage.backends.hybrid_store import HybridStore
@@ -441,6 +442,13 @@ class SQLiteSessionStore(SessionStore):
             owner_type="session",
             owner_id=session_id,
             ref_values=targets,
+        )
+
+    def remove_artifact_references(self, session_id: str) -> None:
+        remove_owner_reference_edges(
+            artifactctl=self._resolve_artifactctl(),
+            owner_type="session",
+            owner_id=session_id,
         )
 
     @property

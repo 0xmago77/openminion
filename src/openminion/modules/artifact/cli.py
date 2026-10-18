@@ -134,6 +134,14 @@ def _build_parser() -> argparse.ArgumentParser:
     ref_remove.add_argument("owner_id")
     ref_remove.add_argument("target")
 
+    ref_remove_owner = refs_sub.add_parser(
+        "remove-owner", help="Remove all reference edges for an owner"
+    )
+    ref_remove_owner.add_argument(
+        "owner_type", choices=["session", "memory", "alias", "collection", "a2a"]
+    )
+    ref_remove_owner.add_argument("owner_id")
+
     add_storage_subcommands(sub)
 
     return parser
@@ -210,6 +218,11 @@ def _dispatch(ctl: ArtifactCtl, args: argparse.Namespace) -> None:
 
     if args.cmd == "refs" and args.refs_cmd == "remove":
         ctl.ref_remove(args.owner_type, args.owner_id, args.target)
+        _print_json({"ok": True})
+        return
+
+    if args.cmd == "refs" and args.refs_cmd == "remove-owner":
+        ctl.ref_remove_owner(args.owner_type, args.owner_id)
         _print_json({"ok": True})
         return
 

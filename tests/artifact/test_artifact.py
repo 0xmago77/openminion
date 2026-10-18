@@ -147,6 +147,83 @@ def test_verify_detects_corruption(tmp_path: Path) -> None:
         ctl.close()
 
 
+def test_verify_all_reports_blob_left_by_failed_index_write(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    with ArtifactCtl(_cfg(tmp_path)) as ctl:
+
+        def fail_upsert(_meta) -> None:
+            raise RuntimeError("index unavailable")
+
+        monkeypatch.setattr(ctl.index, "upsert_artifact", fail_upsert)
+        with pytest.raises(RuntimeError, match="index unavailable"):
+            ctl.ingest_bytes(b"orphan", original_name="orphan.txt")
+
+        report = ctl.verify("all")
+
+        assert report.checked == 1
+        assert report.ok == 0
+        assert report.failed == 1
+        assert [issue.issue for issue in report.issues] == ["orphan_blob"]
+
+
+def test_verify_target_does_not_scan_blob_inventory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    with ArtifactCtl(_cfg(tmp_path)) as ctl:
+        ref = ctl.ingest_bytes(b"target", original_name="target.txt")
+
+        def fail_inventory() -> list[str]:
+            raise AssertionError("targeted verify must not scan blob inventory")
+
+        monkeypatch.setattr(ctl.blob_store, "list_sha256", fail_inventory)
+
+        assert ctl.verify(ref.sha256).failed == 0
+
+
+def test_verify_all_does_not_report_soft_deleted_indexed_blob_as_orphan(
+    tmp_path: Path,
+) -> None:
+    config = _cfg(tmp_path)
+    config["artifactctl"]["views"]["auto_generate"] = []
+    with ArtifactCtl(config) as ctl:
+        ref = ctl.ingest_bytes(b"deleted", original_name="deleted.txt")
+        ctl.delete(ref.sha256)
+
+        report = ctl.verify("all")
+
+        assert report.checked == 0
+        assert report.issues == []
+
+
+def test_verify_all_counts_valid_missing_corrupt_and_orphan_blobs(
+    tmp_path: Path,
+) -> None:
+    config = _cfg(tmp_path)
+    config["artifactctl"]["views"]["auto_generate"] = []
+    with ArtifactCtl(config) as ctl:
+        ctl.ingest_bytes(b"valid", original_name="valid.txt")
+        missing = ctl.ingest_bytes(b"missing", original_name="missing.txt")
+        corrupt = ctl.ingest_bytes(b"corrupt", original_name="corrupt.txt")
+        ctl.blob_store.delete(missing.sha256)
+        Path(ctl.blob_store.path_for(corrupt.sha256)).write_bytes(b"changed")
+        orphan_data = b"orphan"
+        orphan_sha = hashlib.sha256(orphan_data).hexdigest()
+        ctl.blob_store.put_bytes(orphan_sha, orphan_data)
+
+        report = ctl.verify("all")
+
+        assert report.checked == 4
+        assert report.ok == 1
+        assert report.failed == 3
+        assert {issue.issue for issue in report.issues} == {
+            "missing_blob",
+            "digest_mismatch",
+            "orphan_blob",
+        }
+
+
 def test_soft_deleted_artifact_metadata_remains_but_payload_is_unreadable(
     tmp_path: Path,
 ) -> None:

@@ -354,6 +354,16 @@ class _ArtifactIndexMixin(ArtifactIndex):
             (deleted_at, owner_type, owner_id, sha256),
         )
 
+    def remove_references_for_owner(self, owner_type: str, owner_id: str) -> None:
+        self._record_store.execute_count(
+            """
+            UPDATE reference_edges
+            SET deleted_at = ?
+            WHERE owner_type = ? AND owner_id = ? AND deleted_at IS NULL
+            """,
+            (iso_now(), owner_type, owner_id),
+        )
+
     def active_reference_shas(self) -> set[str]:
         rows = self._record_store.query_dicts(
             """

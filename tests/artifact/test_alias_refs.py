@@ -4,14 +4,16 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from openminion.modules.artifact.control import ArtifactCtl
 from openminion.modules.artifact.errors import ArtifactCtlError
 from openminion.modules.artifact.models import sha_to_ref
 from openminion.modules.artifact.refs import (
     normalize_artifact_ref_targets,
+    remove_owner_reference_edges,
     remove_reference_edges,
 )
 
-from .utils import artifact_ctl
+from .utils import artifact_ctl, run_cli_command, write_config_file
 
 
 def test_alias_set_respects_overwrite_flag(tmp_path):
@@ -72,6 +74,55 @@ def test_reference_edge_idempotency(tmp_path):
         assert ref.sha256 in ctl.index.active_reference_shas()
 
 
+def test_remove_owner_reference_edges_is_exact_and_idempotent(tmp_path) -> None:
+    with artifact_ctl(tmp_path) as ctl:
+        shared = ctl.ingest_bytes(b"shared", original_name="shared.txt")
+        other = ctl.ingest_bytes(b"other", original_name="other.txt")
+        ctl.ref_add("session", "session-a", shared.sha256)
+        ctl.ref_add("session", "session-a", other.sha256)
+        ctl.ref_add("session", "session-b", shared.sha256)
+
+        remove_owner_reference_edges(
+            artifactctl=ctl,
+            owner_type="session",
+            owner_id="session-a",
+        )
+        remove_owner_reference_edges(
+            artifactctl=ctl,
+            owner_type="session",
+            owner_id="session-a",
+        )
+
+        filters = {"owner_type": "session", "owner_id": "session-a"}
+        assert ctl.list_recent(scope_filters=filters) == []
+        remaining = ctl.list_recent(
+            scope_filters={"owner_type": "session", "owner_id": "session-b"}
+        )
+        assert [item.sha256 for item in remaining] == [shared.sha256]
+
+
+def test_remove_owner_rejects_invalid_owner_type(tmp_path) -> None:
+    with artifact_ctl(tmp_path) as ctl:
+        with pytest.raises(ArtifactCtlError) as exc_info:
+            ctl.ref_remove_owner("unknown", "owner")
+        assert exc_info.value.code == "INVALID_ARGUMENT"
+
+
+def test_refs_remove_owner_cli_uses_configured_store(tmp_path) -> None:
+    config_path = write_config_file(tmp_path)
+    with ArtifactCtl(str(config_path)) as ctl:
+        ref = ctl.ingest_bytes(b"shared", original_name="shared.txt")
+        ctl.ref_add("session", "session-a", ref.sha256)
+
+    assert run_cli_command(
+        config_path,
+        ["refs", "remove-owner", "session", "session-a"],
+    ) == {"ok": True}
+
+    with ArtifactCtl(str(config_path)) as ctl:
+        assert ctl.index.active_reference_shas() == set()
+
+
 def test_owner_filters_use_only_active_reference_edges(tmp_path) -> None:
     with artifact_ctl(tmp_path) as ctl:
         session_a = ctl.ingest_bytes(b"session-a", original_name="shared-a.txt")
@@ -89,6 +140,34 @@ def test_owner_filters_use_only_active_reference_edges(tmp_path) -> None:
 
         ctl.ref_remove("session", "session-a", session_a.sha256)
         assert ctl.search("shared", filters=filters) == []
+
+
+def test_same_content_is_discoverable_through_two_session_edges(tmp_path) -> None:
+    with artifact_ctl(tmp_path) as ctl:
+        first = ctl.ingest_bytes(
+            b"shared payload",
+            original_name="first.txt",
+            label="first writer",
+        )
+        second = ctl.ingest_bytes(
+            b"shared payload",
+            original_name="second.txt",
+            label="second writer",
+        )
+        assert first.sha256 == second.sha256
+        ctl.ref_add("session", "session-a", first.sha256)
+        ctl.ref_add("session", "session-b", second.sha256)
+
+        for session_id in ("session-a", "session-b"):
+            rows = ctl.list_recent(
+                scope_filters={
+                    "owner_type": "session",
+                    "owner_id": session_id,
+                }
+            )
+            assert [row.sha256 for row in rows] == [first.sha256]
+
+        assert ctl.get(first.sha256).original_name == "first.txt"
 
 
 def test_normalize_artifact_ref_targets_dedupes_mixed_shapes() -> None:

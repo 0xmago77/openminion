@@ -167,6 +167,7 @@ class SessionRetentionService:
             if self._purge_session_records is not None:
                 self._purge_session_records(candidate.session_id)
             deleted[candidate.session_id] = self._purge_session(candidate.session_id)
+            self.store.remove_artifact_references(candidate.session_id)
         return {
             "schema_version": SESSION_RETENTION_PLAN_VERSION,
             "purged_session_count": len(fresh.candidates),

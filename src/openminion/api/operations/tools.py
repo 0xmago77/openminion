@@ -5,6 +5,9 @@ from http import HTTPStatus
 from typing import Any, cast
 
 from openminion.base.config.core import resolve_default_agent_id
+from openminion.modules.artifact.config import from_base_config
+from openminion.modules.artifact.control import ArtifactCtl
+from openminion.modules.artifact.refs import add_reference_edges
 from openminion.modules.llm.providers.base import ProviderToolCall
 from openminion.modules.tool.base import ToolExecutionContext, ToolExecutionResult
 from openminion.tools.security.lab_metadata import (
@@ -127,11 +130,18 @@ def _tool_run_response(
     request_id: str,
     session_id: str,
     result: ToolExecutionResult,
+    artifactctl: ArtifactCtl,
 ) -> tuple[HTTPStatus, dict[str, Any], str]:
     artifact_refs = tool_result_artifact_refs(
         trace_id=request_id,
         session_id=session_id,
         result=result,
+    )
+    add_reference_edges(
+        artifactctl=artifactctl,
+        owner_type="session",
+        owner_id=session_id,
+        ref_values=artifact_refs,
     )
     runtime.sessions.append_event(
         session_id=session_id,
@@ -203,36 +213,44 @@ def execute_tool_run(
         ).runtime_binding_policy_metadata(),
     }
     project_security_lab_metadata(metadata, security_lab_metadata())
-    context = ToolExecutionContext(
-        channel=channel,
-        target=target,
-        session_id=session.id,
-        authored_tools_api=getattr(runtime, "authored_tools", None),
-        security_lab_runner=lab_runner,
-        security_lab_metadata=security_lab_metadata,
-        metadata=metadata,
-        blast_radius_adapter=build_default_composition_boundary_adapter(
-            seam_id=SEAM_API_TOOLS,
-        ),
-        confirm=confirm,
+    artifact_config = from_base_config(
+        base_config=runtime.config,
+        home_root=runtime.home_root,
+        data_root=runtime.data_root,
     )
-    result = _security_lab_tool_denial(identity, tool_name)
-    if result is None:
-        batch = runtime.tools.execute_calls(
-            [
-                ProviderToolCall(
-                    name=tool_name,
-                    arguments=arguments,
-                    id=request_id,
-                    source="daemon_api",
-                )
-            ],
-            context=context,
+    with ArtifactCtl(artifact_config) as artifactctl:
+        context = ToolExecutionContext(
+            channel=channel,
+            target=target,
+            session_id=session.id,
+            authored_tools_api=getattr(runtime, "authored_tools", None),
+            security_lab_runner=lab_runner,
+            security_lab_metadata=security_lab_metadata,
+            metadata=metadata,
+            blast_radius_adapter=build_default_composition_boundary_adapter(
+                seam_id=SEAM_API_TOOLS,
+            ),
+            artifactctl=artifactctl,
+            confirm=confirm,
         )
-        result = batch.results[0]
-    return _tool_run_response(
-        runtime,
-        request_id=request_id,
-        session_id=session.id,
-        result=result,
-    )
+        result = _security_lab_tool_denial(identity, tool_name)
+        if result is None:
+            batch = runtime.tools.execute_calls(
+                [
+                    ProviderToolCall(
+                        name=tool_name,
+                        arguments=arguments,
+                        id=request_id,
+                        source="daemon_api",
+                    )
+                ],
+                context=context,
+            )
+            result = batch.results[0]
+        return _tool_run_response(
+            runtime,
+            request_id=request_id,
+            session_id=session.id,
+            result=result,
+            artifactctl=artifactctl,
+        )
