@@ -138,12 +138,8 @@ def test_guard_on_emits_content_free_selection_event():
         attach_id,
         payload,
     ):
-        assert (session_id, conversation_id, thread_id, attach_id) == (
-            "session",
-            "conversation",
-            "thread",
-            "attach",
-        )
+        assert session_id == "session"
+        del conversation_id, thread_id, attach_id
         events.append((event_type, payload))
 
     turn_context = build_turn_context(
@@ -170,6 +166,15 @@ def test_guard_on_emits_content_free_selection_event():
     assert turn_context.history[0].body == "selected"
     assert memory.calls == 0
     assert (
+        "memory.recall.status",
+        {
+            "run_id": "run",
+            "request_id": "request",
+            "status": "healthy",
+            "reason_code": "contextctl_selected",
+        },
+    ) in events
+    assert (
         "context.contextctl.selected",
         {"run_id": "run", "request_id": "request", "history_count": "1"},
     ) in events
@@ -184,17 +189,70 @@ def test_guard_failure_builds_legacy_context_once():
             self.calls += 1
             return "legacy memory", {}
 
+        def build_retrieval_context_with_metadata(self, **kwargs):
+            del kwargs
+            return "legacy retrieval", {"memory_envelope_included_items": "1"}
+
     memory = _Memory()
     adapter = MagicMock()
     adapter.is_enabled = True
     adapter.build_ctxctl_messages.return_value = None
+    events: list[tuple[str, dict[str, str]]] = []
 
     turn_context = build_turn_context(
         history=[],
         agent_id="agent",
         agent_memory=memory,
         logger=_logger(),
-        emit_memory_event=lambda **kwargs: None,
+        emit_memory_event=lambda **kwargs: events.append(
+            (kwargs["event_type"], kwargs["payload"])
+        ),
+        session_id="session",
+        run_id="run",
+        request_id="request",
+        channel="console",
+        target="target",
+        user_message="hello",
+        conversation_id="conversation",
+        thread_id="thread",
+        attach_id="attach",
+        memory_capsule_strategy="always",
+        memory_capsule_cache={},
+        memory_dynamic_retrieval_enabled=True,
+        contextctl_adapter=adapter,
+    )
+
+    assert memory.calls == 1
+    assert any("legacy memory" in message.body for message in turn_context.history)
+    assert [event_type for event_type, _ in events] == [
+        "memory.context.built",
+        "memory.retrieval.built",
+        "memory.recall.status",
+    ]
+    assert events[-1] == (
+        "memory.recall.status",
+        {
+            "run_id": "run",
+            "request_id": "request",
+            "status": "degraded",
+            "reason_code": "contextctl_fallback",
+        },
+    )
+
+
+def test_guard_exception_emits_content_free_fallback_status() -> None:
+    adapter = MagicMock(is_enabled=True)
+    adapter.build_ctxctl_messages.side_effect = RuntimeError("private failure text")
+    events: list[tuple[str, dict[str, str]]] = []
+
+    build_turn_context(
+        history=[],
+        agent_id="agent",
+        agent_memory=MagicMock(build_context_with_metadata=lambda **_kwargs: ("", {})),
+        logger=_logger(),
+        emit_memory_event=lambda **kwargs: events.append(
+            (kwargs["event_type"], kwargs["payload"])
+        ),
         session_id="session",
         run_id="run",
         request_id="request",
@@ -210,8 +268,51 @@ def test_guard_failure_builds_legacy_context_once():
         contextctl_adapter=adapter,
     )
 
-    assert memory.calls == 1
-    assert any("legacy memory" in message.body for message in turn_context.history)
+    assert events[-1] == (
+        "memory.recall.status",
+        {
+            "run_id": "run",
+            "request_id": "request",
+            "status": "degraded",
+            "reason_code": "contextctl_fallback",
+        },
+    )
+    assert "private failure text" not in repr(events)
+
+
+def test_ineligible_contextctl_paths_emit_no_recall_status() -> None:
+    for adapter, strategy in (
+        (None, "always"),
+        (MagicMock(is_enabled=False), "always"),
+        (MagicMock(is_enabled=True), "off"),
+    ):
+        events: list[tuple[str, dict[str, str]]] = []
+        build_turn_context(
+            history=[],
+            agent_id="agent",
+            agent_memory=MagicMock(
+                build_context_with_metadata=lambda **_kwargs: ("", {})
+            ),
+            logger=_logger(),
+            emit_memory_event=lambda **kwargs: events.append(
+                (kwargs["event_type"], kwargs["payload"])
+            ),
+            session_id="session",
+            run_id="run",
+            request_id="request",
+            channel="console",
+            target="target",
+            user_message="hello",
+            conversation_id="conversation",
+            thread_id="thread",
+            attach_id="attach",
+            memory_capsule_strategy=strategy,
+            memory_capsule_cache={},
+            memory_dynamic_retrieval_enabled=False,
+            contextctl_adapter=adapter,
+        )
+
+        assert all(event_type != "memory.recall.status" for event_type, _ in events)
 
 
 def test_subagent_without_grant_preserves_existing_child_memory_behavior() -> None:

@@ -20,6 +20,8 @@ scope	max_python_files	max_loc
 # versioned terminal status facts to the existing runtime manager.
 # MCRR (2026-09-01) adds terminal capture assurance, policy-bound recovery,
 # shared runtime memory assembly, and semantic recall wiring to existing owners.
+# GCFV (2026-10-18) records ContextCtl fallback health through the existing
+# gateway event owner without adding a service or package.
 # Focus parity (2026-09-04) types the existing per-turn gateway override contract.
 # Tool/plugin foundation hardening (2026-09-05) adds bounded activation facts,
 # hook timeouts, checksum verification, and provider status to existing owners.
@@ -42,7 +44,7 @@ scope	max_python_files	max_loc
 # runtime, agent, brain, and ingress owners without adding a service stack.
 # COLR (2026-10-06) threads commerce runtime and read-only order care through
 # the existing brain, cron, delivery, and routine-context owners.
-services	208	41679
+services	208	41700
 services/security	6	187
 services/stats	1	25
 services/tool	3	50

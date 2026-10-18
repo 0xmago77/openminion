@@ -367,6 +367,7 @@ class GatewayServiceTestCase(unittest.TestCase):
         history_limit: int = 20,
         session_context: object | None = None,
         agent_memory: object | None = None,
+        contextctl_adapter: object | None = None,
         record_context_selection: Callable[[str], None] | None = None,
         knowledge_graphs: object | None = None,
         auto_resume: bool = True,
@@ -398,6 +399,7 @@ class GatewayServiceTestCase(unittest.TestCase):
             history_limit=history_limit,
             session_context=session_context,  # type: ignore[arg-type]
             agent_memory=agent_memory,
+            contextctl_adapter=contextctl_adapter,
             record_context_selection=record_context_selection,
             knowledge_graphs=knowledge_graphs,
         )
