@@ -8,6 +8,7 @@ from openminion.base.channel import ChannelRegistry
 from openminion.base.config import OpenMinionConfig
 from openminion.services.agent import AgentService
 from openminion.modules.context.slices import build_session_slice_from_runtime_store
+from openminion.modules.context.contracts import PluginRegistry as ContextPluginRegistry
 from openminion.modules.context.memory_client import ContextMemoryClientAdapter
 from openminion.modules.context.pack.finalize import selected_memory_record_ids
 from openminion.modules.context.schemas import (
@@ -19,12 +20,16 @@ from openminion.modules.context.service import ContextCtlService
 from openminion.modules.memory.config import from_base_config
 from openminion.modules.memory.service import MemoryService
 from openminion.modules.memory.storage.sqlite.store import SQLiteMemoryStore
+from openminion.modules.brain.adapters.retrieve.runtime import RetrievectlAdapter
+from openminion.modules.retrieve.config import load_config as load_retrieve_config
+from openminion.modules.retrieve.runtime.retrieve import RetrieveCtl
 from openminion.modules.storage.runtime.migrations import migrate_database
 from openminion.modules.storage.runtime.idempotency_store import IdempotencyStore
 from openminion.modules.storage.runtime.session_store import SessionStore
 from openminion.modules.storage.runtime.sqlite import connect_database
 from openminion.services.agent.memory.gateway_adapter import MemoryServiceGatewayAdapter
 from openminion.services.context.session import SessionContextService
+from openminion.services.context.adapter import CompactedEpisodeRetriever
 from openminion.services.gateway import GatewayService
 from openminion.services.runtime.plugins import PluginRegistry
 from tests._csc_fixtures import _csc_install_default_agent
@@ -254,6 +259,100 @@ def test_contextctl_continuity_query_retrieves_seeded_durable_record(tmp_path) -
     assert "Deploy release alpha" in "\n".join(
         segment.content for segment in pack.segments
     )
+
+
+def test_contextctl_recalls_old_compacted_episode_after_restart(tmp_path) -> None:
+    session_path = tmp_path / "runtime.db"
+    migrate_database(session_path)
+    connection = connect_database(session_path)
+    sessions = SessionStore(connection)
+    session = sessions.resolve_session(
+        agent_id="continuity-agent",
+        channel="console",
+        target="project-1",
+        session_id="session-old",
+    )
+    for role, body in (
+        ("inbound", "Same-session continuity marker saffron comet: request."),
+        ("outbound", "Same-session continuity marker saffron comet: response."),
+        ("inbound", "Same-session continuity marker saffron comet: follow-up."),
+        ("outbound", "Same-session continuity marker saffron comet: recorded."),
+    ):
+        sessions.append_message(session_id=session.id, role=role, body=body)
+    old_timestamp = "2025-01-01T00:00:00+00:00"
+    connection.execute(
+        "UPDATE messages SET created_at = ? WHERE session_id = ?",
+        (old_timestamp, session.id),
+    )
+    connection.commit()
+
+    retrieve_config = load_retrieve_config(home_root=tmp_path)
+    retrieve_ctl = RetrieveCtl(retrieve_config)
+    context_service = SessionContextService(
+        sessions,
+        keep_recent_messages=2,
+        max_compact_per_turn=50,
+        retrieve_ctl=retrieve_ctl,
+    )
+    compacted = context_service.compact_session(session_id=session.id)
+    assert compacted.compacted_count == 2
+    retrieve_ctl.ingest_source(
+        source_type="episode",
+        source_ref="session:foreign#rowid:1-2",
+        text="Foreign-only marker saffron comet must stay isolated.",
+        scope="session:foreign",
+        tags=["session", "compact"],
+        created_at=old_timestamp,
+    )
+    retrieve_ctl.close()
+    connection.close()
+
+    restarted_retrieve_ctl = RetrieveCtl(retrieve_config)
+    try:
+        ordinary = restarted_retrieve_ctl.retrieve(
+            query="saffron comet",
+            purpose="act",
+            scope={"session_id": session.id},
+            k=10,
+            strategy="contextual",
+            filters={
+                "scope_keys": [f"session:{session.id}"],
+                "types": ["episode"],
+                "time_window_hours": 168,
+            },
+        )
+        assert ordinary == []
+
+        registry = ContextPluginRegistry()
+        registry.register_retriever(
+            CompactedEpisodeRetriever(RetrievectlAdapter(restarted_retrieve_ctl))
+        )
+        memory, memory_adapter = _memory_runtime(tmp_path / "memory.db", tmp_path)
+        context = ContextCtlService(
+            identityctl=_ContextIdentity(),
+            sessctl=_ContextSession(),
+            memctl=ContextMemoryClientAdapter(memory_adapter),
+            artifactctl=_ContextArtifacts(),
+            plugin_registry=registry,
+        )
+
+        pack = context.build_pack(
+            BuildPackRequest(
+                session_id=session.id,
+                agent_id="continuity-agent",
+                purpose="act",
+                query="continue",
+                continuity_query="saffron comet",
+            )
+        )
+        rendered = "\n".join(segment.content for segment in pack.segments)
+        assert "Same-session continuity marker saffron comet" in rendered
+        assert "Foreign-only marker" not in rendered
+        assert pack.token_budget_report is not None
+        assert not pack.token_budget_report.over_budget
+        memory.close()
+    finally:
+        restarted_retrieve_ctl.close()
 
 
 def test_focus_compacted_history_survives_restart_for_brain_request(tmp_path) -> None:

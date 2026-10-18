@@ -698,6 +698,14 @@ def build_brain_runner_bundle(service: Any) -> Any:
     vector_adapter = getattr(memory_assembly, "vector_adapter", None)
     artifactctl = None if service.mode == "local" else create_default_artifactctl()
     skill_config = service._get_manager_config("skill")
+    retrieve_api = bridge_module.init_retrieve_adapter(
+        mode=service.mode,
+        home_root=service._context.home_paths.home_root,
+        config=service._get_manager_config("retrieve"),
+        logger=service._logger,
+        retrieve_service=service._retrieve_service,
+        telemetryctl=service._telemetryctl,
+    )
     context_api = bridge_module.create_context_api(
         mode=service.mode,
         session_store=session_api,
@@ -721,6 +729,7 @@ def build_brain_runner_bundle(service: Any) -> Any:
         skill_home_root=service._context.home_paths.home_root,
         artifactctl=artifactctl,
         owns_artifactctl=artifactctl is not None,
+        retrieve_api=retrieve_api,
     )
     memory_api = getattr(memory_assembly, "memctl", None)
     resolved_action_policy = resolve_profile_action_policy(config, default_profile)
@@ -734,15 +743,6 @@ def build_brain_runner_bundle(service: Any) -> Any:
         tool_resources=getattr(runtime_handle, "tool_resources", {}),
     )
     safety_api = bridge_module.create_safety_api(mode=service.mode)
-
-    retrieve_api = bridge_module.init_retrieve_adapter(
-        mode=service.mode,
-        home_root=service._context.home_paths.home_root,
-        config=service._get_manager_config("retrieve"),
-        logger=service._logger,
-        retrieve_service=service._retrieve_service,
-        telemetryctl=service._telemetryctl,
-    )
 
     skill_api = bridge_module.create_skill_api(
         mode=service.mode,

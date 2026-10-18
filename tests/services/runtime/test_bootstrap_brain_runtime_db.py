@@ -198,10 +198,11 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
                 return_value=SimpleNamespace(),
             )
         )
-        stack.enter_context(
+        retrieve_api = SimpleNamespace()
+        retrieve_factory = stack.enter_context(
             mock.patch(
                 "openminion.services.brain.service.init_retrieve_adapter",
-                return_value=SimpleNamespace(),
+                return_value=retrieve_api,
             )
         )
         stack.enter_context(
@@ -313,6 +314,8 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
     assert artifact_factory.call_count == (1 if mode == "auto" else 0)
     assert context_factory.call_args.kwargs["artifactctl"] is expected_artifactctl
     assert context_factory.call_args.kwargs["owns_artifactctl"] is (mode == "auto")
+    assert retrieve_factory.call_count == 1
+    assert context_factory.call_args.kwargs["retrieve_api"] is retrieve_api
     assert tool_api_factory.call_args.kwargs["artifactctl"] is expected_artifactctl
     assert tool_api_factory.call_args.kwargs["sandbox_runner"] is sandbox_runner
     assert (
