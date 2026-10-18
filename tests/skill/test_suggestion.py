@@ -196,6 +196,7 @@ def test_surface_pass_caps_batch_at_fifty(tmp_path: Path) -> None:
             batch_cap=1000,
         )
         assert len(pass_report.surfaced) == 50
+        assert pass_report.pending_remaining == 60
     finally:
         store.close()
 

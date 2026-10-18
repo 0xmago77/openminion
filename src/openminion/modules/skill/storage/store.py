@@ -312,6 +312,20 @@ class _SkillStoreMixin(WorkflowObservationStoreMixin, SkillStore):
             package["status"] = str(target_status)
         return package
 
+    def get_skill_owner(self, *, skill_id: str) -> dict[str, str | None] | None:
+        rows = self._record_store.query_dicts(
+            "SELECT scope, agent_id FROM skills WHERE skill_id = ? LIMIT 1",
+            (skill_id,),
+        )
+        if not rows:
+            return None
+        return {
+            "scope": str(rows[0]["scope"]),
+            "agent_id": (
+                str(rows[0]["agent_id"]) if rows[0].get("agent_id") else None
+            ),
+        }
+
     def list_latest_skills(
         self,
         *,

@@ -283,7 +283,7 @@ def run_suggestion_surface_pass(
             _projected_suggestion(record, signature=signature, first_seen_at=now_iso)
         )
 
-    pending_remaining = max(0, len(pending) - len(dismissed))
+    pending_remaining = int(store.count_suggestion_events()["pending_count"])
     return SuggestionSurfacePass(
         surfaced=surfaced,
         auto_dismissed=dismissed,

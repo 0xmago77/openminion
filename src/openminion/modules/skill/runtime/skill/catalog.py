@@ -88,6 +88,9 @@ class SkillCatalogMixin:
             )
         return SkillPackage.from_dict(payload)
 
+    def get_skill_owner(self, *, skill_id: str) -> dict[str, str | None] | None:
+        return self.store.get_skill_owner(skill_id=skill_id)
+
     def read_skill_resource(
         self,
         *,

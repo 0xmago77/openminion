@@ -346,13 +346,18 @@ def _h_skill_remove(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
         )
 
     try:
-        _model_visible_package(
-            skill,
-            skill_id=skill_id,
-            version_hash=version_hash,
-            agent_id=agent_id,
-            owned_only=True,
-        )
+        if version_hash:
+            _model_visible_package(
+                skill,
+                skill_id=skill_id,
+                version_hash=version_hash,
+                agent_id=agent_id,
+                owned_only=True,
+            )
+        else:
+            owner = skill.get_skill_owner(skill_id=skill_id)
+            if owner != {"scope": "agent", "agent_id": agent_id}:
+                raise SkillError("NOT_FOUND", "Skill not found")
         deleted = skill.delete_skill(skill_id=skill_id, version_hash=version_hash)
     except Exception as exc:
         return _error(str(getattr(exc, "code", "SKILL_REMOVE_FAILED")), str(exc))

@@ -167,9 +167,7 @@ def test_skill_get_reads_requested_resource_with_pinned_version() -> None:
 
 def test_skill_remove_success_deleted_count() -> None:
     api = SimpleNamespace(
-        get_skill=lambda skill_id, version_hash=None: _Pkg(
-            skill_id, "v1", scope="agent", agent_id="agent-a"
-        ),
+        get_skill_owner=lambda **kwargs: {"scope": "agent", "agent_id": "agent-a"},
         delete_skill=lambda skill_id, version_hash=None: {
             "skills": 1,
             "versions": 2,
@@ -189,9 +187,7 @@ def test_skill_remove_error_path() -> None:
         raise _SkillError("SKILL_REMOVE_FAILED", "remove failed")
 
     api = SimpleNamespace(
-        get_skill=lambda skill_id, version_hash=None: _Pkg(
-            skill_id, "v1", scope="agent", agent_id="agent-a"
-        ),
+        get_skill_owner=lambda **kwargs: {"scope": "agent", "agent_id": "agent-a"},
         delete_skill=_raise,
     )
     ctx = SimpleNamespace(skill_api=api, agent_id="agent-a")
@@ -274,13 +270,27 @@ def test_skill_get_hides_pending_and_foreign_versions() -> None:
 
 def test_skill_remove_rejects_global_skill() -> None:
     api = SimpleNamespace(
-        get_skill=lambda skill_id, version_hash=None: _Pkg(skill_id, "v1"),
+        get_skill_owner=lambda **kwargs: {"scope": "global", "agent_id": None},
     )
     result = _h_skill_remove(
         {"skill_id": "shared"},
         SimpleNamespace(skill_api=api, agent_id="agent-a"),
     )
     assert result["error"]["code"] == "NOT_FOUND"
+
+
+def test_skill_remove_all_authorizes_owned_pending_row_without_active_version() -> None:
+    api = SimpleNamespace(
+        get_skill_owner=lambda **kwargs: {"scope": "agent", "agent_id": "agent-a"},
+        delete_skill=lambda **kwargs: {"skills": 1, "versions": 1},
+    )
+
+    result = _h_skill_remove(
+        {"skill_id": "pending-skill"},
+        SimpleNamespace(skill_api=api, agent_id="agent-a"),
+    )
+
+    assert result == {"ok": True, "skill_id": "pending-skill", "deleted": 2}
 
 
 def test_model_url_ingest_requires_and_passes_agent_identity(monkeypatch) -> None:

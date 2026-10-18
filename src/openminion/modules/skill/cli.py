@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -806,7 +807,7 @@ def _dispatch_proposal_cmd(ctl: Skill, args: argparse.Namespace) -> None:
             skill_id=addition.added_skill_id
         )
         admission_command = (
-            "skillctl admit "
+            f"skillctl --config {shlex.quote(str(args.config))} admit "
             f"--skill-id {addition.added_skill_id} "
             f"--version-hash {addition.version_hash} "
             f"--expected-active-version-hash {expected_active or 'none'} "

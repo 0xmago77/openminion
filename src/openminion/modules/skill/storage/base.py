@@ -100,6 +100,10 @@ class SkillStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_skill_owner(self, *, skill_id: str) -> dict[str, str | None] | None:
+        raise NotImplementedError
+
+    @abstractmethod
     def list_latest_skills(
         self,
         *,
