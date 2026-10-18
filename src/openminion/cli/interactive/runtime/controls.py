@@ -23,6 +23,7 @@ from openminion.modules.memory.interfaces import (
 )
 from openminion.modules.llm.config import resolve_provider_identity_translation
 from openminion.modules.skill import Skill
+from openminion.modules.skill.errors import SkillError
 
 from .skill_status import skill_learning_summary
 
@@ -725,7 +726,7 @@ class RuntimeControlsMixin:
         rows = self._catalog_skill_rows()
         catalog_ids = {str(row["id"]) for row in rows}
         rows.extend(
-            {"id": skill_id, "source": "config"}
+            {"id": skill_id, "source": "config (unavailable)"}
             for skill_id in self._configured_skill_ids()
             if skill_id not in catalog_ids
         )
@@ -741,6 +742,13 @@ class RuntimeControlsMixin:
             )
             try:
                 package = skill.get_skill(requested_id)
+            except SkillError as exc:
+                if (
+                    exc.code != "NOT_FOUND"
+                    or requested_id not in self._configured_skill_ids()
+                ):
+                    raise
+                return f"Skill: {requested_id}\n  status   unavailable\n  source   configured only\n\nThis skill is configured but is not installed in the catalog."
             finally:
                 skill.close()
             lines = [
@@ -775,6 +783,8 @@ class RuntimeControlsMixin:
             lines.append("  (none)")
         for row in rows[:20]:
             lines.append(f"  - {row.get('id')} · {row.get('source', 'config')}")
+        if len(rows) > 20:
+            lines.append(f"  showing 20 of {len(rows)} skills")
         if learning_summary:
             lines.extend(("", *learning_summary))
         lines.append("Use /skills <skill_id> to view details.")

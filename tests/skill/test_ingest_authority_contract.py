@@ -85,6 +85,30 @@ def test_pending_version_is_explicitly_readable_but_not_catalog_visible(
         ctl.close()
 
 
+def test_ingest_rejects_cross_agent_skill_id_takeover_without_fallback(
+    tmp_path: Path,
+) -> None:
+    ctl = Skill(_config(tmp_path))
+    try:
+        ctl.ingest_text(
+            "Deploy",
+            _markdown("Run A"),
+            scope="agent",
+            agent_id="agent-a",
+        )
+        with pytest.raises(SkillError) as conflict:
+            ctl.ingest_text(
+                "Deploy",
+                _markdown("Run B"),
+                scope="agent",
+                agent_id="agent-b",
+            )
+        assert conflict.value.code == "SKILL_SCOPE_OWNER_CONFLICT"
+        assert not any((tmp_path / "fallback").rglob("*"))
+    finally:
+        ctl.close()
+
+
 def test_operator_admission_replacement_and_rollback(tmp_path: Path) -> None:
     ctl = Skill(_config(tmp_path))
     authority = _operator()

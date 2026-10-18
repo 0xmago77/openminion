@@ -96,6 +96,7 @@ def _draft_from_shape(shape: Any) -> SkillProposalDraft:
     strategy_id = str(_shape_field(shape, "strategy_id") or "").strip()
     capability_category = str(_shape_field(shape, "capability_category") or "").strip()
     intent_category = str(_shape_field(shape, "intent_category") or "").strip()
+    risk_class = str(_shape_field(shape, "risk_level") or RISK_CLASS_LOW)
     display_name = (
         f"{_titleize(strategy_id)} {_titleize(intent_category)} Playbook".strip()
     )
@@ -107,7 +108,7 @@ def _draft_from_shape(shape: Any) -> SkillProposalDraft:
             f"{intent_category}."
         ).strip(),
         tags=normalize_text_list([strategy_id, capability_category, intent_category]),
-        risk_class=RISK_CLASS_LOW,
+        risk_class=risk_class,
         applies_to={"intents": normalize_text_list([intent_category]), "steps": []},
     )
 

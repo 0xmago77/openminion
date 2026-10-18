@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -802,10 +803,21 @@ def _dispatch_proposal_cmd(ctl: Skill, args: argparse.Namespace) -> None:
             )
         except ProposalQueueError as exc:
             raise SkillError("INVALID_ARGUMENT", str(exc)) from exc
+        expected_active = ctl.store.get_active_skill_version_hash(
+            skill_id=addition.added_skill_id
+        )
+        admission_command = (
+            f"skillctl --config {shlex.quote(str(args.config))} admit "
+            f"--skill-id {addition.added_skill_id} "
+            f"--version-hash {addition.version_hash} "
+            f"--expected-active-version-hash {expected_active or 'none'} "
+            '--target-status verified --reason "Reviewed and approved proposal"'
+        )
         _print_json(
             {
                 "ok": True,
                 "addition": addition.model_dump(mode="json"),
+                "operator_admission_command": admission_command,
             }
         )
         return
