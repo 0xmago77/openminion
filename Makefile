@@ -274,6 +274,8 @@ test-e2e-ci: $(DEV_STAMP)
 	PYTHONPATH="$(REPO_ROOT)/src" \
 	$(PYTEST) -q \
 		"$(REPO_ROOT)/tests/e2e/cli/focus/test_local.py" \
+		"$(REPO_ROOT)/tests/e2e/cli/focus/test_codex_first_flow.py" \
+		"$(REPO_ROOT)/tests/e2e/cli/focus/test_permission_policy_convergence.py" \
 		"$(REPO_ROOT)/tests/e2e/project_worker/test_completion.py" \
 		"$(REPO_ROOT)/tests/e2e/test_memory_capture_recall_reliability.py" \
 		"$(REPO_ROOT)/tests/e2e/test_tool_transcript_continuity.py" \

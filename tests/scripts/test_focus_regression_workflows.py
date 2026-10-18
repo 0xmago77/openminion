@@ -20,6 +20,18 @@ def test_focus_ci_is_independent_and_preserves_harness_coverage() -> None:
         step.get("run") == "make test-e2e-ci"
         for step in workflow["jobs"]["test"]["steps"]
     )
+    mac_job = workflow["jobs"]["focus-pty-macos"]
+    assert mac_job["runs-on"] == "macos-latest"
+    assert "needs" not in mac_job
+    assert "if" not in mac_job
+    mac_steps = "\n".join(str(step.get("run", "")) for step in mac_job["steps"])
+    for case in (
+        "test_focus_full_slash_menu_preserves_visible_transcript",
+        "test_focus_pty_keeps_top_down_transcript_with_inline_input_across_resize",
+        "test_focus_pty_multiline_paste_waits_for_enter_and_submits_once[plain-cr]",
+        "test_focus_pty_multiline_paste_waits_for_enter_and_submits_once[bracketed]",
+    ):
+        assert f"test_local.py::{case}" in mac_steps
     target = (
         (ROOT / "Makefile")
         .read_text()
@@ -28,6 +40,8 @@ def test_focus_ci_is_independent_and_preserves_harness_coverage() -> None:
     )
     for owner in (
         "cli/focus/test_local.py",
+        "cli/focus/test_codex_first_flow.py",
+        "cli/focus/test_permission_policy_convergence.py",
         "project_worker/test_completion.py",
         "test_memory_capture_recall_reliability.py",
         "test_tool_transcript_continuity.py",

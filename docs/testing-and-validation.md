@@ -1,7 +1,7 @@
 # OpenMinion Testing And Validation
 
 Status: active
-Last updated: 2026-09-18
+Last updated: 2026-10-18
 
 Purpose: give package users and maintainers one package-local reference for the
 basic validation commands that prove `openminion` installs and runs correctly.
@@ -94,9 +94,12 @@ repository currently requires that check for merge.
 ## Focus regression confidence
 
 The `focus-e2e` Actions job runs `make test-e2e-ci` independently of the package
-suite. It includes the real provider-free terminal smoke and the Focus
-runner/assertion/provider-report controls; an earlier job failure does not
-suppress this evidence. Required merge checks remain a repository setting,
+suite. It includes provider-free terminal, approval, permission-policy, and
+queue journeys alongside Focus runner/assertion/provider-report controls; an
+earlier job failure does not suppress this evidence. A separate
+`focus-pty-macos` job checks the existing slash-menu, top-down layout/resize,
+and multiline-paste cases on macOS. These are PTY checks, not native
+Terminal.app coverage. Required merge checks remain a repository setting,
 verified separately from workflow presence.
 
 For an authorized real-provider baseline, the existing runner selects exactly
