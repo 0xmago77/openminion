@@ -49,6 +49,15 @@ class OllamaFixtureHandler(BaseHTTPRequestHandler):
                     '"confidence":1.0}'
                 ),
             }
+        elif schema_title == "FailureMemoryReport":
+            response_message = {
+                "role": "assistant",
+                "content": (
+                    '{"session_id":"fixture-session","agent_id":"fixture",'
+                    '"outcome":"failure","termination_reason":"fixture",'
+                    '"command_ids":[],"items":[]}'
+                ),
+            }
         elif schema_title == "ClosureJudgment":
             final_content = str(
                 type(self).last_turn_response_message.get("content", "")
