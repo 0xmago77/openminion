@@ -119,6 +119,7 @@ def _build_tool_runtime_context(
     tool: Any,
     tool_name: str,
     context: ToolExecutionContext,
+    artifactctl: Any,
 ) -> Any:
     from openminion.modules.tool.runtime import (
         RuntimeContext,
@@ -148,7 +149,7 @@ def _build_tool_runtime_context(
             runtime_env=resolve_runtime_env(context=context)
         ),
         repositories=build_runtime_repositories(context_metadata=metadata),
-        artifactctl=resolve_artifactctl(),
+        artifactctl=artifactctl,
         tool_resources=context.tool_resources,
         subject_id=context.subject_id,
         memory_service=context.memory_service,
@@ -272,54 +273,64 @@ def execute_tool_spec_call(
     if isinstance(validated_args, ToolExecutionResult):
         return validated_args
     enforce_watch_target_binding(validated_args, context.metadata)
-    runtime_ctx = _build_tool_runtime_context(
-        tool=tool,
-        tool_name=tool_name,
-        context=context,
-    )
-
-    handler = getattr(tool, "handler", None)
-    if not callable(handler):
-        return ToolExecutionResult(
-            tool_name=tool_name,
-            ok=False,
-            content="",
-            verified=False,
-            error="tool handler is not callable",
-            data={},
-        )
-
+    owned_artifactctl = None
+    artifactctl = context.artifactctl
+    if artifactctl is None:
+        owned_artifactctl = resolve_artifactctl()
+        artifactctl = owned_artifactctl
     try:
-        from openminion.modules.tool.runtime.dependencies import (
-            enforce_tool_dependencies,
+        runtime_ctx = _build_tool_runtime_context(
+            tool=tool,
+            tool_name=tool_name,
+            context=context,
+            artifactctl=artifactctl,
         )
 
-        enforce_tool_dependencies(tool, runtime_context=runtime_ctx)
-        payload = invoke_tool_spec_handler(
-            handler=handler,
-            arguments=validated_args,
-            runtime_ctx=runtime_ctx,
-        )
-    except ToolRuntimeError as exc:
-        return ToolExecutionResult(
-            tool_name=tool_name,
-            ok=False,
-            content="",
-            verified=False,
-            error=exc.message,
-            data={"error_code": exc.code, "details": dict(exc.details or {})},
-        )
-    except Exception as exc:
-        return ToolExecutionResult(
-            tool_name=tool_name,
-            ok=False,
-            content="",
-            verified=False,
-            error=f"{type(exc).__name__}: {exc}",
-            data={},
-        )
+        handler = getattr(tool, "handler", None)
+        if not callable(handler):
+            return ToolExecutionResult(
+                tool_name=tool_name,
+                ok=False,
+                content="",
+                verified=False,
+                error="tool handler is not callable",
+                data={},
+            )
 
-    return _tool_result_from_payload(tool_name=tool_name, payload=payload)
+        try:
+            from openminion.modules.tool.runtime.dependencies import (
+                enforce_tool_dependencies,
+            )
+
+            enforce_tool_dependencies(tool, runtime_context=runtime_ctx)
+            payload = invoke_tool_spec_handler(
+                handler=handler,
+                arguments=validated_args,
+                runtime_ctx=runtime_ctx,
+            )
+        except ToolRuntimeError as exc:
+            return ToolExecutionResult(
+                tool_name=tool_name,
+                ok=False,
+                content="",
+                verified=False,
+                error=exc.message,
+                data={"error_code": exc.code, "details": dict(exc.details or {})},
+            )
+        except Exception as exc:
+            return ToolExecutionResult(
+                tool_name=tool_name,
+                ok=False,
+                content="",
+                verified=False,
+                error=f"{type(exc).__name__}: {exc}",
+                data={},
+            )
+
+        return _tool_result_from_payload(tool_name=tool_name, payload=payload)
+    finally:
+        if owned_artifactctl is not None:
+            owned_artifactctl.close()
 
 
 def invoke_tool_spec_handler(
@@ -409,11 +420,8 @@ def resolve_runtime_env(*, context: ToolExecutionContext) -> dict[str, Any]:
     return {}
 
 
-def resolve_artifactctl() -> Any | None:
-    try:
-        return create_default_artifactctl()
-    except Exception:
-        return None
+def resolve_artifactctl() -> Any:
+    return create_default_artifactctl()
 
 
 def resolve_run_root(*, workspace: Path, context: ToolExecutionContext) -> Path:

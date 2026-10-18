@@ -192,7 +192,7 @@ def test_turn_executor_injects_sandbox_runner_into_tool_execution_context():
     assert built.sandbox_runner is sentinel_runner
 
 
-def test_api_tools_run_route_injects_runtime_env(monkeypatch):
+def test_api_tools_run_route_injects_runtime_env(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
 
     class _FakeSessions:
@@ -225,6 +225,8 @@ def test_api_tools_run_route_injects_runtime_env(monkeypatch):
     config.runtime.tool_workspace_root = "/configured/tool-workspace"
     fake_runtime = SimpleNamespace(
         config=config,
+        home_root=tmp_path,
+        data_root=tmp_path / ".openminion",
         tool_workspace_root=config.runtime.tool_workspace_root,
         tools=_FakeTools(),
         sessions=_FakeSessions(),

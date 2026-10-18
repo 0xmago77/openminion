@@ -45,3 +45,13 @@ def test_delete_removes_blob(tmp_path):
 
     store.delete(sha)
     assert not store.exists(sha)
+
+
+def test_list_sha256_is_sorted_and_ignores_metadata(tmp_path):
+    store = FileSystemCASBlobStore(tmp_path)
+    second = _sha(b"second")
+    first = _sha(b"first")
+    store.put_bytes(second, b"second")
+    store.put_bytes(first, b"first")
+
+    assert store.list_sha256() == sorted([first, second])

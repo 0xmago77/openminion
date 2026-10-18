@@ -42,6 +42,17 @@ class FileSystemCASBlobStore(BlobStore):
     def path_for(self, sha256: str) -> str:
         return self._core.path_for(sha256)
 
+    def list_sha256(self) -> list[str]:
+        shas = {
+            path.name[:64]
+            for path in self._core.blob_root.rglob("*")
+            if path.is_file()
+            and not path.name.endswith(".meta.json")
+            and len(path.name) >= 64
+            and all(ch in "0123456789abcdef" for ch in path.name[:64])
+        }
+        return sorted(shas)
+
 
 def _hash_file(path: Path) -> str:
     digest = hashlib.sha256()

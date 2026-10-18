@@ -20,20 +20,18 @@ from openminion.modules.artifact.constants import (
     VALID_OWNER_TYPES,
 )
 from openminion.modules.artifact.errors import ArtifactCtlError
+from openminion.modules.artifact.integrity import build_verify_report
 from openminion.modules.artifact.interfaces import ARTIFACT_INTERFACE_VERSION
 from openminion.modules.artifact.models import (
     ArtifactMeta,
     ArtifactRef,
     GCReport,
     PurgeReport,
-    VerifyIssue,
     VerifyReport,
     ViewRecord,
     parse_ref_or_sha,
 )
 from openminion.modules.artifact.storage import (
-    ArtifactIndex,
-    BlobStore,
     FileSystemCASBlobStore,
     SQLiteArtifactIndex,
 )
@@ -82,10 +80,10 @@ class ArtifactCtl:
                 f"Unsupported index backend: {self.config.index.backend}",
             )
 
-        self.blob_store: BlobStore = FileSystemCASBlobStore(
+        self.blob_store: FileSystemCASBlobStore = FileSystemCASBlobStore(
             self.config.blob_store.root_dir
         )
-        self.index: ArtifactIndex = SQLiteArtifactIndex(
+        self.index: SQLiteArtifactIndex = SQLiteArtifactIndex(
             sqlite_path=self.config.index.sqlite_path,
             wal=self.config.index.wal,
         )
@@ -498,35 +496,22 @@ class ArtifactCtl:
         return deletable
 
     def verify(self, target: str = "all") -> VerifyReport:
-        if (target or "all") == "all":
+        verify_all = (target or "all") == "all"
+        if verify_all:
             rows = self.index.all_artifacts(include_deleted=False)
         else:
             rows = [self.get(target)]
 
-        issues: list[VerifyIssue] = []
-
-        for row in rows:
-            if not self.blob_store.exists(row.sha256):
-                issues.append(VerifyIssue(sha256=row.sha256, issue="missing_blob"))
-                continue
-
-            actual, _ = _hash_file(Path(self.blob_store.path_for(row.sha256)))
-            if actual != row.sha256:
-                issues.append(
-                    VerifyIssue(
-                        sha256=row.sha256,
-                        issue="digest_mismatch",
-                        expected_sha256=row.sha256,
-                        actual_sha256=actual,
-                    )
-                )
-                continue
-
-        return VerifyReport(
-            checked=len(rows),
-            ok=len(rows) - len(issues),
-            failed=len(issues),
-            issues=issues,
+        orphan_shas: list[str] = []
+        if verify_all:
+            indexed_shas = {
+                row.sha256 for row in self.index.all_artifacts(include_deleted=True)
+            }
+            orphan_shas = sorted(set(self.blob_store.list_sha256()) - indexed_shas)
+        return build_verify_report(
+            rows,
+            blob_store=self.blob_store,
+            orphan_shas=orphan_shas,
         )
 
     def ref_add(self, owner_type: str, owner_id: str, ref_or_sha: str) -> None:
@@ -538,6 +523,10 @@ class ArtifactCtl:
         self._validate_owner_type(owner_type)
         sha = self._resolve_sha(ref_or_sha)
         self.index.remove_reference(owner_type, owner_id, sha)
+
+    def ref_remove_owner(self, owner_type: str, owner_id: str) -> None:
+        self._validate_owner_type(owner_type)
+        self.index.remove_references_for_owner(owner_type, owner_id)
 
     def close(self) -> None:
         self.index.close()

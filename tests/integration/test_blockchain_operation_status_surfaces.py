@@ -179,6 +179,7 @@ def test_operation_status_facts_survive_supported_surfaces(
         request_id="request-1",
         session_id=session_id,
         result=result,
+        artifactctl=None,
     )
     assert status == 200
     assert returned_session_id == session_id
