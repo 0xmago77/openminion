@@ -99,7 +99,6 @@ def test_lifecycle_state_transitions_and_terminal_guard(tmp_path: Path) -> None:
         payload={"kind": "agentTurn", "message": "flow"},
         agent_id="agent-a",
     )
-
     paused = manager.transition_task(
         task_id=created.task_id, to_state=TaskLifecycleState.PAUSED
     )
@@ -195,6 +194,41 @@ def test_one_time_terminal_outcome_updates_lifecycle_and_retains_job(
     reopened_record = reopened.get_task(created.task_id)
     assert reopened_record is not None
     assert reopened_record.state == TaskLifecycleState.DONE
+
+
+def test_terminal_watch_outcome_completes_lifecycle_and_retains_history(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    created = manager.schedule_task(
+        name="terminal-watch",
+        schedule={"kind": "every", "every_ms": 60_000},
+        payload={
+            "kind": "agentTurn",
+            "message": "check health",
+            "_openminion_watch": {"description": "health"},
+        },
+        agent_id="agent-a",
+    )
+    repository = getattr(manager, "_cron_repository")
+    run_id = repository.trigger_cron_run(created.cron_job_id)
+    repository.finish_cron_run(
+        run_id,
+        state="finished",
+        summary="Condition met.",
+        output={"watch_terminal": True, "watch_terminal_reason": "condition_met"},
+    )
+
+    assert manager.reconcile_scheduled_outcomes(created.cron_job_id) == 1
+    record = manager.get_task(created.task_id)
+    assert record is not None
+    assert record.state == TaskLifecycleState.DONE
+    job = manager.get_scheduled_job(created.cron_job_id)
+    assert job is not None
+    assert job["enabled"] is False
+    runs = manager.list_scheduled_runs(job_id=created.cron_job_id, limit=10)
+    assert runs[0]["run_id"] == run_id
+    assert runs[0]["state"] == "finished"
 
 
 @pytest.mark.parametrize(
@@ -438,6 +472,146 @@ def test_pause_resume_updates_lifecycle_without_deleting_job(tmp_path: Path) -> 
     assert resumed_job["next_due_at"] is not None
 
 
+def test_pause_restores_cron_state_when_lifecycle_transition_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = _manager(tmp_path)
+    created = manager.schedule_task(
+        name="pause-failure",
+        schedule={"kind": "every", "every_ms": 60_000},
+        payload={"kind": "agentTurn", "message": "pause"},
+        agent_id="agent-a",
+    )
+    run_id = getattr(manager, "_cron_repository").trigger_cron_run(created.cron_job_id)
+    original_due_at = manager.get_scheduled_job(created.cron_job_id)["next_due_at"]
+
+    def _fail_transition(**_kwargs):
+        raise RuntimeError("lifecycle unavailable")
+
+    monkeypatch.setattr(manager, "transition_task", _fail_transition)
+    with pytest.raises(RuntimeError, match="lifecycle unavailable"):
+        manager.pause_task(created.task_id)
+
+    job = manager.get_scheduled_job(created.cron_job_id)
+    assert job is not None
+    assert job["enabled"] is True
+    assert job["next_due_at"] == original_due_at
+    run = manager.list_scheduled_runs(job_id=created.cron_job_id, limit=1)[0]
+    assert run["run_id"] == run_id
+    assert run["state"] == "queued"
+
+
+def test_cancel_restores_cron_state_when_lifecycle_transition_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = _manager(tmp_path)
+    created = manager.schedule_task(
+        name="cancel-failure",
+        schedule={"kind": "every", "every_ms": 60_000},
+        payload={"kind": "agentTurn", "message": "cancel"},
+        agent_id="agent-a",
+    )
+    original_due_at = manager.get_scheduled_job(created.cron_job_id)["next_due_at"]
+    run_id = getattr(manager, "_cron_repository").trigger_cron_run(created.cron_job_id)
+
+    def _fail_transition(**_kwargs):
+        raise RuntimeError("lifecycle unavailable")
+
+    monkeypatch.setattr(manager, "transition_task", _fail_transition)
+    with pytest.raises(RuntimeError, match="lifecycle unavailable"):
+        manager.cancel_task(created.task_id)
+
+    job = manager.get_scheduled_job(created.cron_job_id)
+    assert job is not None
+    assert job["enabled"] is True
+    assert job["next_due_at"] == original_due_at
+    run = manager.list_scheduled_runs(job_id=created.cron_job_id, limit=1)[0]
+    assert run["run_id"] == run_id
+    assert run["state"] == "queued"
+
+
+def test_cancel_failure_preserves_paused_job_state(tmp_path: Path, monkeypatch) -> None:
+    manager = _manager(tmp_path)
+    created = manager.schedule_task(
+        name="paused-cancel-failure",
+        schedule={"kind": "every", "every_ms": 60_000},
+        payload={"kind": "agentTurn", "message": "cancel"},
+        agent_id="agent-a",
+    )
+    manager.pause_task(created.task_id)
+
+    def _fail_transition(**_kwargs):
+        raise RuntimeError("lifecycle unavailable")
+
+    monkeypatch.setattr(manager, "transition_task", _fail_transition)
+    with pytest.raises(RuntimeError, match="lifecycle unavailable"):
+        manager.cancel_task(created.task_id)
+
+    job = manager.get_scheduled_job(created.cron_job_id)
+    assert job is not None
+    assert job["enabled"] is False
+    assert job["next_due_at"] is None
+
+
+def test_cancel_rejection_preserves_terminal_job_state(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    created = manager.schedule_task(
+        name="terminal-cancel-rejection",
+        schedule={"kind": "every", "every_ms": 60_000},
+        payload={"kind": "agentTurn", "message": "cancel"},
+        agent_id="agent-a",
+    )
+    manager.transition_task(
+        task_id=created.task_id,
+        to_state=TaskLifecycleState.DONE,
+    )
+    manager.set_scheduled_job_enabled(created.task_id, enabled=False)
+
+    with pytest.raises(ValueError, match="invalid task state transition"):
+        manager.cancel_task(created.task_id)
+
+    job = manager.get_scheduled_job(created.cron_job_id)
+    assert job is not None
+    assert job["enabled"] is False
+    assert job["next_due_at"] is None
+
+
+def test_resume_restores_cron_state_when_lifecycle_transition_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = _manager(tmp_path)
+    created = manager.schedule_task(
+        name="resume-failure",
+        schedule={"kind": "every", "every_ms": 60_000},
+        payload={
+            "kind": "agentTurn",
+            "message": "resume",
+            "_openminion_pause_reason": "operator",
+            "_openminion_pause_source": "cli",
+        },
+        agent_id="agent-a",
+        enabled=False,
+    )
+    manager.transition_task(
+        task_id=created.task_id,
+        to_state=TaskLifecycleState.PAUSED,
+    )
+    before = manager.get_scheduled_job(created.cron_job_id)
+    assert before is not None
+
+    def _fail_transition(**_kwargs):
+        raise RuntimeError("lifecycle unavailable")
+
+    monkeypatch.setattr(manager, "transition_task", _fail_transition)
+    with pytest.raises(RuntimeError, match="lifecycle unavailable"):
+        manager.resume_task(created.task_id)
+
+    job = manager.get_scheduled_job(created.cron_job_id)
+    assert job is not None
+    assert job["enabled"] is False
+    assert job["payload"] == before["payload"]
+
+
 def test_lifecycle_and_cron_queries_filter_before_limit(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
     owned = manager.schedule_task(
@@ -543,6 +717,34 @@ def test_reconcile_selects_oldest_unresolved_run_before_limit(tmp_path: Path) ->
     assert reconciled.state == TaskLifecycleState.DONE
     assert reconciled.metadata["last_run"]["run_id"] == oldest_run
     assert manager.reconcile_scheduled_outcomes(oldest.cron_job_id) == 0
+
+
+def test_reconcile_pages_past_one_thousand_completed_jobs(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    repository = getattr(manager, "_cron_repository")
+    records = []
+    for index in range(1001):
+        record = manager.schedule_task(
+            name=f"paged-{index}",
+            schedule={"kind": "every", "every_ms": 60_000},
+            payload={"kind": "agentTurn", "message": f"paged-{index}"},
+            agent_id="agent-a",
+        )
+        records.append(record)
+        run_id = repository.trigger_cron_run(record.cron_job_id)
+        repository.finish_cron_run(
+            run_id,
+            state="finished",
+            summary=f"result-{index}",
+            now_iso=f"2026-01-{1 + index // 864:02d}T{(index // 36) % 24:02d}:"
+            f"{(index // 6) % 60:02d}:{(index * 10) % 60:02d}+00:00",
+        )
+
+    assert manager.reconcile_scheduled_outcomes(limit=1000) == 1000
+    assert manager.reconcile_scheduled_outcomes(limit=1) == 1
+    last = manager.get_task(records[-1].task_id)
+    assert last is not None
+    assert last.metadata["last_run"]["summary"] == "result-1000"
 
 
 def test_schedule_rolls_back_cron_job_when_lifecycle_insert_fails(
