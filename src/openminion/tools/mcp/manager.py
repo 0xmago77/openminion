@@ -24,6 +24,7 @@ from .errors import (
 )
 from .elicitation import OpenMinionElicitationHandler
 from .interfaces import (
+    MCPCapabilityApplyResult,
     MCPCapabilityChangeListener,
     MCPClientCapabilityState,
     MCPProgressListener,
@@ -106,6 +107,7 @@ class MCPFleetManager:
             for server in enabled_servers
         }
         self._refresh_pending: set[tuple[str, str]] = set()
+        self._refresh_dirty: set[tuple[str, str]] = set()
         self._refresh_executor = (
             ThreadPoolExecutor(
                 max_workers=min(len(self._sessions), 4),
@@ -179,6 +181,11 @@ class MCPFleetManager:
         set_url_supported = getattr(handler, "set_url_supported", None)
         if callable(set_url_supported):
             set_url_supported(bool(url_supported))
+
+    def bind_capability_change_listener(
+        self, listener: MCPCapabilityChangeListener | None
+    ) -> None:
+        self._capability_change_listener = listener
 
     def mcp_sampling_events(self) -> list[dict[str, Any]]:
         handler = self._client_capability_state.sampling_handler
@@ -594,7 +601,10 @@ class MCPFleetManager:
         key = (server_name, primitive)
         with self._state_lock:
             executor = self._refresh_executor
-            if executor is None or key in self._refresh_pending:
+            if executor is None:
+                return
+            if key in self._refresh_pending:
+                self._refresh_dirty.add(key)
                 return
             self._refresh_pending.add(key)
             executor.submit(
@@ -604,51 +614,106 @@ class MCPFleetManager:
             )
 
     def _run_capability_refresh(self, *, server_name: str, primitive: str) -> None:
+        key = (server_name, primitive)
+        pending_released = False
         try:
-            self._refresh_capability_change(
-                server_name=server_name,
-                primitive=primitive,
-            )
+            while True:
+                with self._state_lock:
+                    self._refresh_dirty.discard(key)
+                self._refresh_capability_change(
+                    server_name=server_name,
+                    primitive=primitive,
+                )
+                with self._state_lock:
+                    if key in self._refresh_dirty:
+                        continue
+                    self._refresh_pending.discard(key)
+                    pending_released = True
+                    return
         finally:
-            with self._state_lock:
-                self._refresh_pending.discard((server_name, primitive))
+            if not pending_released:
+                with self._state_lock:
+                    executor = self._refresh_executor
+                    if key in self._refresh_dirty and executor is not None:
+                        self._refresh_dirty.discard(key)
+                        executor.submit(
+                            self._run_capability_refresh,
+                            server_name=server_name,
+                            primitive=primitive,
+                        )
+                    else:
+                        self._refresh_dirty.discard(key)
+                        self._refresh_pending.discard(key)
 
     def _refresh_capability_change(self, *, server_name: str, primitive: str) -> None:
         session = self._sessions.get(server_name)
         if session is None:
             return
-        self.invalidate_discovery_cache(primitive)
-        old_catalog = set(self._catalog_for(primitive, server_name))
-        try:
-            items = self._discover_for_session(primitive=primitive, session=session)
-        except (MCPServerUnavailableError, MCPTimeoutError, MCPProtocolError) as exc:
-            self._record_failed_server(
+        primitives = (
+            ("resources", "resource_templates")
+            if primitive == "resources"
+            else (primitive,)
+        )
+        snapshots: dict[str, tuple[Any, ...]] = {}
+        added_by_primitive: dict[str, tuple[str, ...]] = {}
+        removed_by_primitive: dict[str, tuple[str, ...]] = {}
+        for refreshed_primitive in primitives:
+            self.invalidate_discovery_cache(refreshed_primitive)
+            old_catalog = set(self._catalog_for(refreshed_primitive, server_name))
+            try:
+                items = self._discover_for_session(
+                    primitive=refreshed_primitive,
+                    session=session,
+                )
+            except (
+                MCPServerUnavailableError,
+                MCPTimeoutError,
+                MCPProtocolError,
+            ) as exc:
+                self._record_failed_server(
+                    server_name=server_name,
+                    primitive=refreshed_primitive,
+                    exc=exc,
+                )
+                return
+            self._update_catalog(
+                primitive=refreshed_primitive,
                 server_name=server_name,
-                primitive=primitive,
-                exc=exc,
+                items=items,
             )
-            return
-        self._update_catalog(primitive=primitive, server_name=server_name, items=items)
-        self._clear_failed_server(server_name, primitive=primitive)
-        new_catalog = set(self._catalog_for(primitive, server_name))
-        added = tuple(sorted(new_catalog - old_catalog))
-        removed = tuple(sorted(old_catalog - new_catalog))
-        event = {
-            "server_name": server_name,
-            "primitive": primitive,
-            "added": list(added),
-            "removed": list(removed),
-        }
-        with self._state_lock:
-            self._capability_change_events.append(event)
+            self._clear_failed_server(server_name, primitive=refreshed_primitive)
+            new_catalog = set(self._catalog_for(refreshed_primitive, server_name))
+            snapshots[refreshed_primitive] = tuple(items)
+            added_by_primitive[refreshed_primitive] = tuple(
+                sorted(new_catalog - old_catalog)
+            )
+            removed_by_primitive[refreshed_primitive] = tuple(
+                sorted(old_catalog - new_catalog)
+            )
+
         listener = self._capability_change_listener
-        if listener is not None:
+        apply_result = (
             listener.capability_changed(
                 server_name=server_name,
-                primitive=primitive,
-                added=added,
-                removed=removed,
+                snapshots=snapshots,
+                added=added_by_primitive,
+                removed=removed_by_primitive,
             )
+            if listener is not None
+            else MCPCapabilityApplyResult(status="discovery_only")
+        )
+        with self._state_lock:
+            for refreshed_primitive in primitives:
+                self._capability_change_events.append(
+                    {
+                        "server_name": server_name,
+                        "primitive": refreshed_primitive,
+                        "added": list(added_by_primitive[refreshed_primitive]),
+                        "removed": list(removed_by_primitive[refreshed_primitive]),
+                        "apply_status": apply_result.status,
+                        "apply_error": apply_result.error,
+                    }
+                )
 
     def _catalog_for(self, primitive: str, server_name: str) -> tuple[str, ...]:
         with self._state_lock:

@@ -21,6 +21,7 @@ from openminion.modules.tool.runtime.blast_radius import (
     TOOL_RESULT_BLAST_RADIUS_KEY,
     classify_tool_blast_radius,
 )
+from openminion.modules.tool.runtime.call_normalization import normalize_tool_call
 from openminion.modules.tool.runtime.dispatch import (
     adapt_arguments_for_runtime_call,
     reorder_runtime_chain,
@@ -98,36 +99,27 @@ def _runtime_env_from_metadata(
     return None
 
 
-def normalize_tool_call(call: ProviderToolCall) -> ProviderToolCall:
-    tool_name = str(getattr(call, "name", "") or "").strip()
-    raw_arguments = getattr(call, "arguments", {})
-    arguments: dict[str, Any] = (
-        dict(raw_arguments) if isinstance(raw_arguments, Mapping) else {}
-    )
+def _registry_snapshot(registry: Any) -> tuple[dict[str, Any], Any]:
+    from openminion.modules.tool.registry.runtime import binding_manager
 
-    nested_name = str(arguments.get("name", "") or "").strip()
-    nested_arguments = arguments.get("arguments")
-    if isinstance(nested_arguments, Mapping):
-        if nested_name and (not tool_name or nested_name == tool_name):
-            tool_name = nested_name
-            arguments = dict(nested_arguments)
-        elif not nested_name:
-            arguments = dict(nested_arguments)
+    def snapshot() -> tuple[dict[str, Any], Any]:
+        tools = getattr(registry, "_tools", None)
+        if not isinstance(tools, Mapping):
+            list_tools = getattr(registry, "list", None)
+            tools = list_tools() if callable(list_tools) else {}
+        return (
+            dict(tools) if isinstance(tools, Mapping) else {},
+            binding_manager(registry),
+        )
 
-    if (
-        "input" in arguments
-        and isinstance(arguments.get("input"), Mapping)
-        and len(arguments) == 1
-    ):
-        arguments = dict(arguments["input"])
-
-    return ProviderToolCall(
-        name=tool_name,
-        arguments=arguments,
-        id=str(getattr(call, "id", "") or ""),
-        source=str(getattr(call, "source", "") or ""),
-        depends_on=_normalized_depends_on(call),
-    )
+    read_lock = getattr(registry, "registration_read_lock", None)
+    lock = read_lock() if callable(read_lock) else None
+    if lock is None:
+        lock = getattr(registry, "temporary_registration_lock", None)
+    if lock is None or not hasattr(type(lock), "__enter__"):
+        return snapshot()
+    with lock:
+        return snapshot()
 
 
 def is_retry_eligible_for_fallback(
@@ -266,26 +258,6 @@ def _hidden_tool_result(
             "target_id": str(getattr(decision, "target_id", "") or ""),
         },
     )
-
-
-def _normalized_depends_on(call: ProviderToolCall) -> list[str]:
-    raw_depends_on = getattr(call, "depends_on", []) or []
-    if isinstance(raw_depends_on, str):
-        values = [raw_depends_on]
-    elif isinstance(raw_depends_on, (list, tuple, set)):
-        values = list(raw_depends_on)
-    else:
-        values = []
-
-    seen: set[str] = set()
-    normalized: list[str] = []
-    for dep in values:
-        token = str(dep).strip()
-        if not token or token in seen:
-            continue
-        seen.add(token)
-        normalized.append(token)
-    return normalized
 
 
 def _stamp_execution_facts(
@@ -452,11 +424,28 @@ def _emit_tool_execution_started(
     )
 
 
+def _start_tool_execution(
+    context: ToolExecutionContext,
+    call: ProviderToolCall,
+) -> tuple[float, str]:
+    started_at = time.time()
+    raw_tool_name = str(call.name).strip()
+    _emit_tool_execution_started(context, call=call)
+    _emit_tool_execution_counter(
+        context,
+        counter_name="tool_execution_started",
+        status="ok",
+        extra={"tool_name": raw_tool_name or "unknown"},
+    )
+    return started_at, raw_tool_name
+
+
 def _runtime_direct_allowed(
     registry: "ToolRegistry",
     *,
     context: ToolExecutionContext,
     raw_tool_name: str,
+    available_tools: Mapping[str, Any] | None = None,
 ) -> bool:
     metadata = context.metadata
     if not isinstance(metadata, Mapping):
@@ -464,7 +453,8 @@ def _runtime_direct_allowed(
     origin = str(metadata.get("tool_call_origin", "") or "").strip().lower()
     if origin != "model":
         return True
-    tool = registry._tools.get(raw_tool_name)
+    tools = available_tools if available_tools is not None else registry._tools
+    tool = tools.get(raw_tool_name)
     if isinstance(tool, ToolSpec) and bool(
         getattr(tool, "prompt_visible_runtime_name", False)
     ):
@@ -524,23 +514,21 @@ def execute_single_call(
     context: ToolExecutionContext,
     available_tool_names: tuple[str, ...],
     runtime_binding_policies: Any,
+    available_tools: Mapping[str, Any] | None = None,
+    binding_manager: Any = None,
 ) -> ToolExecutionResult:
-    started_at = time.time()
-    raw_tool_name = str(call.name).strip()
-    _emit_tool_execution_started(context, call=call)
-    _emit_tool_execution_counter(
-        context,
-        counter_name="tool_execution_started",
-        status="ok",
-        extra={"tool_name": raw_tool_name or "unknown"},
-    )
+    if available_tools is None or binding_manager is None:
+        available_tools, binding_manager = _registry_snapshot(registry)
+    started_at, raw_tool_name = _start_tool_execution(context, call)
     resolution = resolve_binding_for_call(
         raw_tool_name=raw_tool_name,
         available_tool_names=available_tool_names,
+        manager=binding_manager,
         allow_runtime_direct=_runtime_direct_allowed(
             registry,
             context=context,
             raw_tool_name=raw_tool_name,
+            available_tools=available_tools,
         ),
     )
     if resolution is None:
@@ -620,7 +608,7 @@ def execute_single_call(
 
     last_result: ToolExecutionResult | None = None
     for idx, runtime_tool_name in enumerate(fallback_chain):
-        tool = registry._tools.get(runtime_tool_name)
+        tool = available_tools.get(runtime_tool_name)
         if tool is None:
             continue
 
@@ -726,7 +714,11 @@ def execute_calls_with_dependencies(
     context: ToolExecutionContext,
     available_tool_names: tuple[str, ...],
     runtime_binding_policies: Any,
+    available_tools: Mapping[str, Any] | None = None,
+    binding_manager: Any = None,
 ) -> list[ToolExecutionResult]:
+    if available_tools is None or binding_manager is None:
+        available_tools, binding_manager = _registry_snapshot(registry)
     graph = _dependency_graph_for_calls(calls)
     pending = [
         node_id for node_id in graph.node_order if node_id not in graph.result_by_node
@@ -752,6 +744,8 @@ def execute_calls_with_dependencies(
                 context=context,
                 available_tool_names=available_tool_names,
                 runtime_binding_policies=runtime_binding_policies,
+                available_tools=available_tools,
+                binding_manager=binding_manager,
             )
             pending.remove(node_id)
 
@@ -888,6 +882,8 @@ def _execute_ready_dependency_node(
     context: ToolExecutionContext,
     available_tool_names: tuple[str, ...],
     runtime_binding_policies: Any,
+    available_tools: Mapping[str, Any],
+    binding_manager: Any,
 ) -> None:
     call = graph.call_by_node[node_id]
     failed_refs = _failed_dependency_refs(graph, graph.deps_by_node.get(node_id, []))
@@ -906,6 +902,8 @@ def _execute_ready_dependency_node(
         context=context,
         available_tool_names=available_tool_names,
         runtime_binding_policies=runtime_binding_policies,
+        available_tools=available_tools,
+        binding_manager=binding_manager,
     )
 
 
@@ -957,7 +955,8 @@ def execute_calls(
     if not normalized_calls:
         return ToolExecutionBatch(results=[])
 
-    available_tool_names = tuple(registry._tools)
+    available_tools, binding_manager = _registry_snapshot(registry)
+    available_tool_names = tuple(available_tools)
     runtime_binding_policies = None
     if isinstance(getattr(context, "metadata", None), Mapping):
         runtime_binding_policies = context.metadata.get("runtime_binding_policies")
@@ -976,6 +975,8 @@ def execute_calls(
                     context=context,
                     available_tool_names=available_tool_names,
                     runtime_binding_policies=runtime_binding_policies,
+                    available_tools=available_tools,
+                    binding_manager=binding_manager,
                 )
             )
 
@@ -988,5 +989,7 @@ def execute_calls(
             context=context,
             available_tool_names=available_tool_names,
             runtime_binding_policies=runtime_binding_policies,
+            available_tools=available_tools,
+            binding_manager=binding_manager,
         )
     )

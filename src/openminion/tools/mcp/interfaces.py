@@ -48,6 +48,10 @@ class MCPFleetHandle(Protocol):
 
     def server_config(self, server_name: str) -> MCPServerConfig | None: ...
 
+    def bind_capability_change_listener(
+        self, listener: "MCPCapabilityChangeListener | None"
+    ) -> None: ...
+
     def discover_tools(self, *, parallel: bool = False) -> list[MCPListedTool]: ...
     def discover_prompts(self, *, parallel: bool = False) -> list[MCPListedPrompt]: ...
     def discover_resources(
@@ -193,10 +197,16 @@ class MCPCapabilityChangeListener(Protocol):
         self,
         *,
         server_name: str,
-        primitive: str,
-        added: tuple[str, ...] = (),
-        removed: tuple[str, ...] = (),
-    ) -> None: ...
+        snapshots: dict[str, tuple[Any, ...]],
+        added: dict[str, tuple[str, ...]],
+        removed: dict[str, tuple[str, ...]],
+    ) -> "MCPCapabilityApplyResult": ...
+
+
+@dataclass(frozen=True)
+class MCPCapabilityApplyResult:
+    status: str
+    error: str = ""
 
 
 @runtime_checkable

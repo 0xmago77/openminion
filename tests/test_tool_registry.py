@@ -1,8 +1,11 @@
 import importlib
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 import json
 import os
 import subprocess
 import sys
+import threading
 import unittest
 from unittest import mock
 
@@ -114,6 +117,24 @@ class _WeatherCurrentTool(Tool):
         )
 
 
+class _ConcurrentTool(Tool):
+    description = "concurrency test tool"
+
+    def __init__(self, name: str, barrier: threading.Barrier) -> None:
+        self.name = name
+        self._barrier = barrier
+
+    def execute(self, arguments, context: ToolExecutionContext) -> ToolExecutionResult:
+        del arguments, context
+        self._barrier.wait(timeout=2)
+        return ToolExecutionResult(
+            tool_name=self.name,
+            ok=True,
+            content="ok",
+            verified=True,
+        )
+
+
 class _RejectCanonicalNameSpec(ToolSpec):
     def __setattr__(self, name, value):
         if name == "name" and "name" in self.__dict__:
@@ -122,6 +143,31 @@ class _RejectCanonicalNameSpec(ToolSpec):
 
 
 class ToolRegistryTests(unittest.TestCase):
+    def test_independent_tool_executions_do_not_share_registration_lock(self) -> None:
+        barrier = threading.Barrier(2)
+        registry = ToolRegistry(
+            [
+                _ConcurrentTool("concurrent.one", barrier),
+                _ConcurrentTool("concurrent.two", barrier),
+            ]
+        )
+
+        def run(name: str) -> ToolExecutionResult:
+            batch = registry.execute_calls(
+                [ProviderToolCall(name=name, arguments={})],
+                context=ToolExecutionContext(
+                    channel="console",
+                    target="unit-test",
+                    session_id=name,
+                ),
+            )
+            return batch.results[0]
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(run, ("concurrent.one", "concurrent.two")))
+
+        self.assertTrue(all(result.ok for result in results))
+
     def test_register_uses_trimmed_key_without_rewriting_spec_name(self) -> None:
         def handler(args, context):
             del args, context
@@ -966,3 +1012,27 @@ def test_registration_debug_report_contract_shape() -> None:
         "runtime_bindings",
     ):
         assert key in manager
+
+
+def test_temporary_registration_scope_preserves_cross_thread_isolation() -> None:
+    registry = ToolRegistry()
+    started = threading.Event()
+    finished = threading.Event()
+
+    def unrelated_read() -> dict[str, object]:
+        started.set()
+        result = registry.list()
+        finished.set()
+        return result
+
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
+        with registry.temporary_registration_scope():
+            owner = pool.submit(copy_context().run, registry.list)
+            assert owner.result(timeout=1) == {}
+            unrelated = pool.submit(unrelated_read)
+            assert started.wait(timeout=1)
+            assert not finished.wait(timeout=0.05)
+        assert unrelated.result(timeout=1) == {}
+    finally:
+        pool.shutdown(wait=True)

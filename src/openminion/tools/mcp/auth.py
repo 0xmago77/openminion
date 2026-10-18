@@ -7,7 +7,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib import parse as urllib_parse
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -137,6 +137,13 @@ class MCPOAuthMetadata:
 
 
 @dataclass(frozen=True)
+class MCPOAuthClientSelection:
+    method: Literal["provided", "cimd", "dcr"]
+    client_id: str
+    issuer: str
+
+
+@dataclass(frozen=True)
 class MCPOAuthPKCEChallenge:
     code_verifier: str
     code_challenge: str
@@ -184,6 +191,7 @@ def discover_oauth_metadata(
     issuer = _discover_authorization_server(
         resource=resource,
         resource_metadata_url=resource_metadata_url,
+        selected_issuer=config.client_issuer,
         timeout_seconds=timeout_seconds,
     )
     metadata_urls = (
@@ -223,17 +231,20 @@ def _validate_configured_oauth_metadata(
 def _oauth_metadata_from_payload(
     payload: dict[str, Any], *, expected_issuer: str = ""
 ) -> MCPOAuthMetadata:
-    issuer = str(payload.get("issuer", "") or "").strip()
+    issuer = _require_https_url(
+        payload.get("issuer", ""),
+        field_name="OAuth metadata issuer",
+    )
     if expected_issuer and issuer != expected_issuer:
         raise ValueError("OAuth metadata issuer does not match selected issuer")
-    authorization_endpoint = str(
-        payload.get("authorization_endpoint", "") or ""
-    ).strip()
-    token_endpoint = str(payload.get("token_endpoint", "") or "").strip()
-    if not authorization_endpoint or not token_endpoint:
-        raise ValueError(
-            "OAuth metadata must include authorization_endpoint and token_endpoint"
-        )
+    authorization_endpoint = _require_https_url(
+        payload.get("authorization_endpoint", ""),
+        field_name="OAuth authorization_endpoint",
+    )
+    token_endpoint = _require_https_url(
+        payload.get("token_endpoint", ""),
+        field_name="OAuth token_endpoint",
+    )
     code_challenge_methods = tuple(
         str(item).strip()
         for item in payload.get("code_challenge_methods_supported", [])
@@ -244,10 +255,14 @@ def _oauth_metadata_from_payload(
     return MCPOAuthMetadata(
         authorization_endpoint=authorization_endpoint,
         token_endpoint=token_endpoint,
-        registration_endpoint=str(
-            payload.get("registration_endpoint", "") or ""
-        ).strip(),
-        revocation_endpoint=str(payload.get("revocation_endpoint", "") or "").strip(),
+        registration_endpoint=_optional_https_url(
+            payload.get("registration_endpoint", ""),
+            field_name="OAuth registration_endpoint",
+        ),
+        revocation_endpoint=_optional_https_url(
+            payload.get("revocation_endpoint", ""),
+            field_name="OAuth revocation_endpoint",
+        ),
         issuer=issuer,
         code_challenge_methods_supported=code_challenge_methods,
         client_id_metadata_document_supported=(
@@ -260,7 +275,11 @@ def _oauth_metadata_from_payload(
 
 
 def _discover_authorization_server(
-    *, resource: str, resource_metadata_url: str, timeout_seconds: float
+    *,
+    resource: str,
+    resource_metadata_url: str,
+    selected_issuer: str,
+    timeout_seconds: float,
 ) -> str:
     urls = (
         [resource_metadata_url]
@@ -281,15 +300,33 @@ def _discover_authorization_server(
             raise ValueError("protected resource metadata must include resource")
         if advertised_resource != resource:
             raise ValueError("protected resource metadata resource does not match")
-        issuers = payload.get("authorization_servers")
-        if not isinstance(issuers, list) or not issuers:
+        raw_issuers = payload.get("authorization_servers")
+        if not isinstance(raw_issuers, list) or not raw_issuers:
             raise ValueError(
                 "protected resource metadata must include authorization_servers"
             )
-        issuer = str(issuers[0] or "").strip()
-        if not issuer:
-            raise ValueError("protected resource metadata contains an empty issuer")
-        return issuer
+        issuers = list(
+            dict.fromkeys(
+                _require_https_url(
+                    item,
+                    field_name="protected resource authorization server",
+                )
+                for item in raw_issuers
+            )
+        )
+        requested = str(selected_issuer or "").strip()
+        if requested:
+            if requested not in issuers:
+                raise ValueError(
+                    "configured OAuth client issuer is not advertised by the resource"
+                )
+            return requested
+        if len(issuers) != 1:
+            raise ValueError(
+                "protected resource advertises multiple authorization servers; "
+                "configure client_issuer"
+            )
+        return issuers[0]
     raise ValueError("protected resource metadata is unavailable")
 
 
@@ -307,9 +344,9 @@ def _protected_resource_metadata_urls(resource: str) -> list[str]:
 
 
 def _authorization_metadata_urls(issuer: str) -> list[str]:
-    parsed = urllib_parse.urlsplit(issuer)
-    if not parsed.scheme or not parsed.netloc:
-        raise ValueError("authorization server issuer must be an absolute URL")
+    parsed = urllib_parse.urlsplit(
+        _require_https_url(issuer, field_name="authorization server issuer")
+    )
     origin = f"{parsed.scheme}://{parsed.netloc}"
     path = parsed.path.rstrip("/")
     if path:
@@ -325,6 +362,7 @@ def _authorization_metadata_urls(issuer: str) -> list[str]:
 
 
 def _load_json_object(url: str, timeout_seconds: float) -> dict[str, Any]:
+    url = _require_https_url(url, field_name="OAuth metadata URL")
     request = urllib_request.Request(
         url,
         headers={"Accept": "application/json"},
@@ -344,6 +382,40 @@ def build_pkce_challenge() -> MCPOAuthPKCEChallenge:
     return MCPOAuthPKCEChallenge(code_verifier=verifier, code_challenge=challenge)
 
 
+def select_oauth_client(
+    config: MCPAuthorizationConfig,
+    metadata: MCPOAuthMetadata,
+) -> MCPOAuthClientSelection:
+    """Select the public OAuth client registration mode for one issuer."""
+
+    issuer = _require_https_url(metadata.issuer, field_name="OAuth metadata issuer")
+    if config.client_issuer and config.client_issuer != issuer:
+        raise ValueError("OAuth client issuer does not match selected issuer")
+
+    client_id = config.client_id.strip()
+    if client_id:
+        parsed = urllib_parse.urlsplit(client_id)
+        if "://" in client_id or parsed.scheme in {"http", "https"}:
+            if not _is_valid_cimd_client_id(client_id):
+                raise ValueError(
+                    "CIMD client_id must be an HTTPS URL with a non-root path"
+                )
+            if not metadata.client_id_metadata_document_supported:
+                raise ValueError("authorization server does not advertise CIMD support")
+            return MCPOAuthClientSelection("cimd", client_id, issuer)
+        return MCPOAuthClientSelection("provided", client_id, issuer)
+
+    if metadata.registration_endpoint:
+        _require_https_url(
+            metadata.registration_endpoint,
+            field_name="OAuth registration_endpoint",
+        )
+        return MCPOAuthClientSelection("dcr", "", issuer)
+    raise ValueError(
+        "OAuth client_id is not configured and dynamic registration is unavailable"
+    )
+
+
 def build_authorization_url(
     *,
     config: MCPAuthorizationConfig,
@@ -353,6 +425,10 @@ def build_authorization_url(
     resource: str = "",
     scope: str = "",
 ) -> str:
+    authorization_endpoint = _require_https_url(
+        metadata.authorization_endpoint,
+        field_name="OAuth authorization_endpoint",
+    )
     query = {
         "response_type": "code",
         "client_id": config.client_id,
@@ -366,7 +442,7 @@ def build_authorization_url(
         query["scope"] = requested_scope
     if resource:
         query["resource"] = resource
-    return f"{metadata.authorization_endpoint}?{urllib_parse.urlencode(query)}"
+    return f"{authorization_endpoint}?{urllib_parse.urlencode(query)}"
 
 
 def exchange_authorization_code(
@@ -380,7 +456,7 @@ def exchange_authorization_code(
     scope: str = "",
     timeout_seconds: float = 10.0,
 ) -> MCPOAuthTokenState:
-    _validate_authorization_issuer(
+    validate_authorization_issuer(
         expected=metadata.issuer,
         received=authorization_issuer,
         required=metadata.authorization_response_iss_parameter_supported,
@@ -452,15 +528,31 @@ def register_oauth_client(
         },
         separators=(",", ":"),
     ).encode("utf-8")
-    request = urllib_request.Request(
+    registration_endpoint = _require_https_url(
         metadata.registration_endpoint,
+        field_name="OAuth registration_endpoint",
+    )
+    request = urllib_request.Request(
+        registration_endpoint,
         data=payload,
         headers={"Accept": "application/json", "Content-Type": "application/json"},
         method="POST",
     )
     with urllib_request.urlopen(request, timeout=float(timeout_seconds)) as response:
         decoded = json.loads(response.read().decode("utf-8"))
-    return dict(decoded) if isinstance(decoded, dict) else {}
+    if not isinstance(decoded, dict):
+        raise ValueError("OAuth client registration response must be a JSON object")
+    client_id = str(decoded.get("client_id", "") or "").strip()
+    if not client_id:
+        raise ValueError("OAuth client registration response omitted client_id")
+    auth_method = str(decoded.get("token_endpoint_auth_method", "") or "").strip()
+    if auth_method and auth_method != "none":
+        raise ValueError(
+            "OAuth client registration requires a public token endpoint auth method"
+        )
+    if "client_secret" in decoded:
+        raise ValueError("OAuth client registration returned a client secret")
+    return dict(decoded)
 
 
 def revoke_oauth_token(
@@ -471,9 +563,13 @@ def revoke_oauth_token(
 ) -> bool:
     if not metadata.revocation_endpoint:
         return False
+    revocation_endpoint = _require_https_url(
+        metadata.revocation_endpoint,
+        field_name="OAuth revocation_endpoint",
+    )
     body = urllib_parse.urlencode({"token": token}).encode("utf-8")
     request = urllib_request.Request(
-        metadata.revocation_endpoint,
+        revocation_endpoint,
         data=body,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
@@ -489,6 +585,7 @@ def _request_token(
     issuer: str,
     timeout_seconds: float,
 ) -> MCPOAuthTokenState:
+    endpoint = _require_https_url(endpoint, field_name="OAuth token_endpoint")
     body = urllib_parse.urlencode(fields).encode("utf-8")
     request = urllib_request.Request(
         endpoint,
@@ -515,6 +612,29 @@ def _request_token(
         expires_at=(time.time() + expires_in if expires_in > 0 else 0.0),
         scope=str(payload.get("scope", "") or "").strip(),
         issuer=issuer.strip(),
+    )
+
+
+def _require_https_url(value: object, *, field_name: str) -> str:
+    url = str(value or "").strip()
+    parsed = urllib_parse.urlsplit(url)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.fragment:
+        raise ValueError(f"{field_name} must use HTTPS")
+    return url
+
+
+def _optional_https_url(value: object, *, field_name: str) -> str:
+    url = str(value or "").strip()
+    return _require_https_url(url, field_name=field_name) if url else ""
+
+
+def _is_valid_cimd_client_id(client_id: str) -> bool:
+    parsed = urllib_parse.urlsplit(client_id)
+    return bool(
+        parsed.scheme == "https"
+        and parsed.netloc
+        and parsed.path not in {"", "/"}
+        and not parsed.fragment
     )
 
 
@@ -621,7 +741,7 @@ def _oauth_transaction_ref(server_name: str, state: str) -> str:
     return f"oauth_transaction.{server_name.strip()}.{state.strip()}"
 
 
-def _validate_authorization_issuer(
+def validate_authorization_issuer(
     *, expected: str, received: str, required: bool
 ) -> None:
     received = received.strip()
@@ -636,6 +756,7 @@ def _validate_authorization_issuer(
 
 __all__ = [
     "InMemoryMCPTokenStore",
+    "MCPOAuthClientSelection",
     "MCPOAuthMetadata",
     "MCPOAuthPKCEChallenge",
     "MCPOAuthTokenState",
@@ -651,5 +772,7 @@ __all__ = [
     "refresh_oauth_access_token",
     "register_oauth_client",
     "revoke_oauth_token",
+    "select_oauth_client",
     "store_oauth_transaction",
+    "validate_authorization_issuer",
 ]

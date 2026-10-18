@@ -7,17 +7,20 @@ from urllib import error as urllib_error
 
 import pytest
 
-from openminion.base.config.mcp import MCPAuthorizationConfig
+from openminion.base.config.base import ConfigError
+from openminion.base.config.mcp import MCPAuthorizationConfig, MCPServerConfig
 from openminion.tools.mcp.auth import (
-    _validate_authorization_issuer,
     consume_oauth_transaction,
     discover_oauth_metadata,
     InMemoryMCPTokenStore,
+    MCPOAuthClientSelection,
     MCPOAuthMetadata,
     MCPOAuthTransaction,
+    register_oauth_client,
+    select_oauth_client,
+    validate_authorization_issuer,
     store_oauth_transaction,
 )
-from openminion.base.config.mcp import MCPServerConfig
 from openminion.tools.mcp.transport import (
     probe_oauth_challenge,
     StreamableHTTPMCPTransport,
@@ -46,6 +49,304 @@ def _metadata(issuer: str) -> dict:
         "code_challenge_methods_supported": ["S256"],
         "authorization_response_iss_parameter_supported": True,
     }
+
+
+def test_oauth_prelogin_config_allows_missing_client_id_and_persists_issuer() -> None:
+    server = MCPServerConfig(
+        name="remote",
+        transport="streamable_http",
+        url="https://mcp.example/mcp",
+        authorization={
+            "mode": "oauth_pkce",
+            "client_issuer": "https://auth.example/tenant",
+            "authorization_server_metadata_url": (
+                "https://auth.example/.well-known/oauth-authorization-server/tenant"
+            ),
+        },
+    )
+
+    assert server.authorization.client_id == ""
+    assert server.authorization.client_issuer == "https://auth.example/tenant"
+    assert server.authorization.redacted_dict()["client_issuer"] == (
+        "https://auth.example/tenant"
+    )
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "client_issuer",
+        "authorization_server_metadata_url",
+        "authorization_endpoint",
+        "token_endpoint",
+        "registration_endpoint",
+        "revocation_endpoint",
+    ],
+)
+def test_oauth_config_rejects_plain_http_remote_endpoints(field_name: str) -> None:
+    with pytest.raises(ConfigError, match="HTTPS"):
+        MCPAuthorizationConfig(
+            mode="oauth_pkce",
+            **{field_name: "http://auth.example/endpoint"},
+        )
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://127.0.0.1:8080/authorize",
+        "http://localhost:8080/authorize",
+        "http://[::1]:8080/authorize",
+    ],
+)
+def test_oauth_config_rejects_plain_http_loopback_endpoints(endpoint: str) -> None:
+    with pytest.raises(ConfigError, match="HTTPS"):
+        MCPAuthorizationConfig(
+            mode="oauth_pkce",
+            authorization_endpoint=endpoint,
+        )
+
+
+def test_oauth_discovery_rejects_ambiguous_authorization_servers(
+    monkeypatch,
+) -> None:
+    resource = "https://mcp.example/mcp"
+
+    monkeypatch.setattr(
+        "openminion.tools.mcp.auth.urllib_request.urlopen",
+        lambda request, *, timeout: _JSONResponse(
+            {
+                "resource": resource,
+                "authorization_servers": [
+                    "https://auth-a.example",
+                    "https://auth-b.example",
+                ],
+            }
+        ),
+    )
+
+    with pytest.raises(ValueError, match="multiple authorization servers"):
+        discover_oauth_metadata(
+            MCPAuthorizationConfig(mode="oauth_pkce"), resource=resource
+        )
+
+
+def test_oauth_discovery_selects_explicit_advertised_issuer(monkeypatch) -> None:
+    resource = "https://mcp.example/mcp"
+    selected = "https://auth-b.example/tenant"
+
+    def open_url(request, *, timeout):
+        del timeout
+        if "oauth-protected-resource" in request.full_url:
+            return _JSONResponse(
+                {
+                    "resource": resource,
+                    "authorization_servers": [
+                        "https://auth-a.example",
+                        selected,
+                    ],
+                }
+            )
+        return _JSONResponse(_metadata(selected))
+
+    monkeypatch.setattr("openminion.tools.mcp.auth.urllib_request.urlopen", open_url)
+
+    metadata = discover_oauth_metadata(
+        MCPAuthorizationConfig(mode="oauth_pkce", client_issuer=selected),
+        resource=resource,
+    )
+
+    assert metadata.issuer == selected
+
+
+def test_oauth_discovery_rejects_unadvertised_explicit_issuer(monkeypatch) -> None:
+    resource = "https://mcp.example/mcp"
+    monkeypatch.setattr(
+        "openminion.tools.mcp.auth.urllib_request.urlopen",
+        lambda request, *, timeout: _JSONResponse(
+            {
+                "resource": resource,
+                "authorization_servers": ["https://auth.example"],
+            }
+        ),
+    )
+
+    with pytest.raises(ValueError, match="not advertised"):
+        discover_oauth_metadata(
+            MCPAuthorizationConfig(
+                mode="oauth_pkce",
+                client_issuer="https://other.example",
+            ),
+            resource=resource,
+        )
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "authorization_endpoint",
+        "token_endpoint",
+        "registration_endpoint",
+        "revocation_endpoint",
+    ],
+)
+def test_oauth_discovery_rejects_plain_http_metadata_endpoints(
+    monkeypatch,
+    field_name: str,
+) -> None:
+    resource = "https://mcp.example/mcp"
+    issuer = "https://auth.example"
+    metadata_payload = _metadata(issuer)
+    metadata_payload[field_name] = "http://auth.example/endpoint"
+
+    def open_url(request, *, timeout):
+        del timeout
+        if "oauth-protected-resource" in request.full_url:
+            return _JSONResponse(
+                {"resource": resource, "authorization_servers": [issuer]}
+            )
+        return _JSONResponse(metadata_payload)
+
+    monkeypatch.setattr("openminion.tools.mcp.auth.urllib_request.urlopen", open_url)
+
+    with pytest.raises(ValueError, match="HTTPS"):
+        discover_oauth_metadata(
+            MCPAuthorizationConfig(mode="oauth_pkce"), resource=resource
+        )
+
+
+def test_select_oauth_client_supports_provided_cimd_and_dcr() -> None:
+    issuer = "https://auth.example"
+    base_metadata = MCPOAuthMetadata(
+        authorization_endpoint=f"{issuer}/authorize",
+        token_endpoint=f"{issuer}/token",
+        issuer=issuer,
+    )
+    assert select_oauth_client(
+        MCPAuthorizationConfig(mode="oauth_pkce", client_id="provided-client"),
+        base_metadata,
+    ) == MCPOAuthClientSelection("provided", "provided-client", issuer)
+
+    cimd_client_id = "https://client.example/openminion.json"
+    assert select_oauth_client(
+        MCPAuthorizationConfig(mode="oauth_pkce", client_id=cimd_client_id),
+        MCPOAuthMetadata(
+            authorization_endpoint=f"{issuer}/authorize",
+            token_endpoint=f"{issuer}/token",
+            issuer=issuer,
+            client_id_metadata_document_supported=True,
+        ),
+    ) == MCPOAuthClientSelection("cimd", cimd_client_id, issuer)
+
+    assert select_oauth_client(
+        MCPAuthorizationConfig(mode="oauth_pkce"),
+        MCPOAuthMetadata(
+            authorization_endpoint=f"{issuer}/authorize",
+            token_endpoint=f"{issuer}/token",
+            registration_endpoint=f"{issuer}/register",
+            issuer=issuer,
+        ),
+    ) == MCPOAuthClientSelection("dcr", "", issuer)
+
+
+@pytest.mark.parametrize(
+    ("client_id", "supports_cimd", "message"),
+    [
+        ("http://client.example/openminion.json", True, "HTTPS URL"),
+        ("https://client.example/", True, "non-root path"),
+        (
+            "https://client.example/openminion.json",
+            False,
+            "does not advertise CIMD",
+        ),
+    ],
+)
+def test_select_oauth_client_rejects_invalid_cimd(
+    client_id: str,
+    supports_cimd: bool,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        select_oauth_client(
+            MCPAuthorizationConfig(mode="oauth_pkce", client_id=client_id),
+            MCPOAuthMetadata(
+                authorization_endpoint="https://auth.example/authorize",
+                token_endpoint="https://auth.example/token",
+                issuer="https://auth.example",
+                client_id_metadata_document_supported=supports_cimd,
+            ),
+        )
+
+
+def test_select_oauth_client_requires_configured_or_dynamic_client() -> None:
+    with pytest.raises(ValueError, match="dynamic registration is unavailable"):
+        select_oauth_client(
+            MCPAuthorizationConfig(mode="oauth_pkce"),
+            MCPOAuthMetadata(
+                authorization_endpoint="https://auth.example/authorize",
+                token_endpoint="https://auth.example/token",
+                issuer="https://auth.example",
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {},
+        {"client_id": ""},
+        {"client_id": "client", "token_endpoint_auth_method": "client_secret_basic"},
+        {"client_id": "client", "client_secret": "secret"},
+    ],
+)
+def test_register_oauth_client_rejects_non_public_responses(
+    monkeypatch,
+    response: dict,
+) -> None:
+    monkeypatch.setattr(
+        "openminion.tools.mcp.auth.urllib_request.urlopen",
+        lambda request, *, timeout: _JSONResponse(response),
+    )
+    metadata = MCPOAuthMetadata(
+        authorization_endpoint="https://auth.example/authorize",
+        token_endpoint="https://auth.example/token",
+        registration_endpoint="https://auth.example/register",
+        issuer="https://auth.example",
+    )
+
+    with pytest.raises(ValueError):
+        register_oauth_client(
+            metadata=metadata,
+            client_name="OpenMinion",
+            redirect_uris=["http://127.0.0.1/callback"],
+        )
+
+
+@pytest.mark.parametrize("auth_method", [None, "none"])
+def test_register_oauth_client_accepts_public_response(
+    monkeypatch,
+    auth_method: str | None,
+) -> None:
+    response = {"client_id": "registered-client"}
+    if auth_method is not None:
+        response["token_endpoint_auth_method"] = auth_method
+    monkeypatch.setattr(
+        "openminion.tools.mcp.auth.urllib_request.urlopen",
+        lambda request, *, timeout: _JSONResponse(response),
+    )
+
+    result = register_oauth_client(
+        metadata=MCPOAuthMetadata(
+            authorization_endpoint="https://auth.example/authorize",
+            token_endpoint="https://auth.example/token",
+            registration_endpoint="https://auth.example/register",
+            issuer="https://auth.example",
+        ),
+        client_name="OpenMinion",
+        redirect_uris=["http://127.0.0.1/callback"],
+    )
+
+    assert result["client_id"] == "registered-client"
 
 
 def test_oauth_discovery_prefers_challenge_resource_metadata(monkeypatch) -> None:
@@ -310,13 +611,13 @@ def test_authorization_response_issuer_matrix(
 ) -> None:
     if raises:
         with pytest.raises(ValueError, match="issuer"):
-            _validate_authorization_issuer(
+            validate_authorization_issuer(
                 expected="https://auth.example",
                 received=received,
                 required=required,
             )
         return
-    _validate_authorization_issuer(
+    validate_authorization_issuer(
         expected="https://auth.example",
         received=received,
         required=required,
@@ -325,7 +626,7 @@ def test_authorization_response_issuer_matrix(
 
 def test_authorization_response_issuer_rejects_mismatch() -> None:
     with pytest.raises(ValueError, match="issuer does not match"):
-        _validate_authorization_issuer(
+        validate_authorization_issuer(
             expected="https://auth.example",
             received="https://other.example",
             required=False,

@@ -84,6 +84,9 @@ class MCPScopedToolRegistryView(ToolRegistry):
     def temporary_registration_lock(self) -> Any:
         return self._base_registry.temporary_registration_lock
 
+    def registration_read_lock(self) -> Any:
+        return self._base_registry.registration_read_lock()
+
     def register(self, tool: Any) -> None:
         raise RuntimeError("MCPScopedToolRegistryView is read-only")
 

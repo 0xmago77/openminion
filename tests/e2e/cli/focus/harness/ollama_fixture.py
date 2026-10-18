@@ -38,6 +38,20 @@ class OllamaFixtureHandler(BaseHTTPRequestHandler):
             }
         elif schema_title == "UserMessageCandidateReport":
             response_message = {"role": "assistant", "content": '{"items":[]}'}
+        elif schema_title == "FailureMemoryReport":
+            response_message = {
+                "role": "assistant",
+                "content": json.dumps(
+                    {
+                        "session_id": "fixture-session",
+                        "agent_id": "fixture",
+                        "outcome": "failure",
+                        "termination_reason": "fixture tool failure",
+                        "command_ids": [],
+                        "items": [],
+                    }
+                ),
+            }
         elif schema_title == "FreshnessContract":
             response_message = {
                 "role": "assistant",

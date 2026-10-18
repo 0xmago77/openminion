@@ -10,8 +10,8 @@ from openminion.modules.tool.config import (
 from openminion.modules.tool.contracts.provider_types import ProviderToolSpec
 from openminion.modules.tool.runtime.policy import ToolBindingPolicyManager
 from openminion.modules.tool.contracts import normalize_raw_model_tool_name
-from openminion.modules.tool.dispatch import get_registry_manager
 from openminion.modules.tool.registry import ToolRegistry
+from openminion.modules.tool.registry.runtime import binding_manager
 from openminion.modules.tool.exposure import get_model_exposure_specs
 
 from .records import (
@@ -31,7 +31,6 @@ from .records import (
     stub_to_provider_spec as _stub_to_provider_spec,
 )
 
-_REGISTRY_MANAGER_WARMED = False
 _LOG = logging.getLogger("openminion.modules.tool.selection")
 create_validation_error, stub_to_provider_spec = (
     _create_validation_error,
@@ -508,22 +507,10 @@ class ToolSelectionService:
         return list(dict.fromkeys(tool for tool in runtime_tools if tool))
 
     def _normalize_model_tool_token(self, token: str) -> str | None:
-        global _REGISTRY_MANAGER_WARMED
         normalized = str(token or "").strip()
         if not normalized:
             return None
-        canonical = get_registry_manager().normalize_raw_name(normalized)
-        if not canonical and not _REGISTRY_MANAGER_WARMED:
-            try:
-                from openminion.modules.tool.bootstrap import (
-                    wire_default_tool_registry_manager,
-                )
-
-                wire_default_tool_registry_manager()
-            except Exception:
-                pass
-            _REGISTRY_MANAGER_WARMED = True
-            canonical = get_registry_manager().normalize_raw_name(normalized)
+        canonical = binding_manager(self._registry).normalize_raw_name(normalized)
         if canonical:
             return canonical
         return normalize_raw_model_tool_name(normalized)

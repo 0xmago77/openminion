@@ -2,7 +2,7 @@
 
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
@@ -88,12 +88,20 @@ def _normalize_non_empty_string_map(value: object) -> dict[str, str]:
     return dict(sorted(normalized.items()))
 
 
-def _normalize_mcp_url(value: object) -> str:
+def _normalize_mcp_url(value: object, field_path: str = "") -> str:
     url = str(value or "").strip()
     if not url:
         return ""
     parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    redirect = field_path.endswith("redirect_uri")
+    http_allowed = not field_path or redirect and parsed.hostname == "127.0.0.1"
+    valid = bool(parsed.netloc) and (
+        parsed.scheme == "https" or parsed.scheme == "http" and http_allowed
+    )
+    if field_path and (not valid or parsed.fragment):
+        suffix = " or http://127.0.0.1" if redirect else ""
+        raise ConfigError(f"{field_path} must use HTTPS{suffix}.")
+    if not valid:
         raise ConfigError("runtime.mcp_servers[].url must be an absolute http(s) URL.")
     if parsed.fragment:
         raise ConfigError("runtime.mcp_servers[].url must not include a fragment.")
@@ -126,6 +134,7 @@ class MCPAuthorizationConfig:
     bearer_token: str = ""
     bearer_token_ref: str = ""
     client_id: str = ""
+    client_issuer: str = ""
     client_secret_ref: str = ""
     authorization_server_metadata_url: str = ""
     authorization_endpoint: str = ""
@@ -150,14 +159,26 @@ class MCPAuthorizationConfig:
         self.bearer_token_ref = str(self.bearer_token_ref or "").strip()
         self.client_id = str(self.client_id or "").strip()
         self.client_secret_ref = str(self.client_secret_ref or "").strip()
-        self.authorization_server_metadata_url = _normalize_mcp_url(
-            self.authorization_server_metadata_url
+        for name in (
+            "client_issuer",
+            "authorization_server_metadata_url",
+            "authorization_endpoint",
+            "token_endpoint",
+            "registration_endpoint",
+            "revocation_endpoint",
+        ):
+            setattr(
+                self,
+                name,
+                _normalize_mcp_url(
+                    getattr(self, name),
+                    f"runtime.mcp_servers[].authorization.{name}",
+                ),
+            )
+        self.redirect_uri = _normalize_mcp_url(
+            self.redirect_uri,
+            "runtime.mcp_servers[].authorization.redirect_uri",
         )
-        self.authorization_endpoint = _normalize_mcp_url(self.authorization_endpoint)
-        self.token_endpoint = _normalize_mcp_url(self.token_endpoint)
-        self.registration_endpoint = _normalize_mcp_url(self.registration_endpoint)
-        self.revocation_endpoint = _normalize_mcp_url(self.revocation_endpoint)
-        self.redirect_uri = str(self.redirect_uri or "").strip()
         self.scope = str(self.scope or "").strip()
         self.access_token = str(self.access_token or "").strip()
         self.access_token_ref = str(self.access_token_ref or "").strip()
@@ -166,8 +187,6 @@ class MCPAuthorizationConfig:
             self.bearer_token_ref
         ):
             raise ConfigError("MCP bearer mode requires exactly one token source.")
-        if self.mode == "oauth_pkce" and not self.client_id:
-            raise ConfigError("MCP oauth_pkce mode requires client_id.")
 
     def redacted_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"mode": self.mode}
@@ -179,6 +198,7 @@ class MCPAuthorizationConfig:
             payload.update(
                 {
                     "client_id": self.client_id,
+                    "client_issuer": self.client_issuer,
                     "client_secret_ref": self.client_secret_ref,
                     "authorization_server_metadata_url": (
                         self.authorization_server_metadata_url
@@ -204,23 +224,10 @@ def _coerce_mcp_authorization_config(value: object) -> MCPAuthorizationConfig:
         return value
     if isinstance(value, Mapping):
         return MCPAuthorizationConfig(
-            mode=value.get("mode", "none"),
-            bearer_token=value.get("bearer_token", ""),
-            bearer_token_ref=value.get("bearer_token_ref", ""),
-            client_id=value.get("client_id", ""),
-            client_secret_ref=value.get("client_secret_ref", ""),
-            authorization_server_metadata_url=value.get(
-                "authorization_server_metadata_url", ""
-            ),
-            authorization_endpoint=value.get("authorization_endpoint", ""),
-            token_endpoint=value.get("token_endpoint", ""),
-            registration_endpoint=value.get("registration_endpoint", ""),
-            revocation_endpoint=value.get("revocation_endpoint", ""),
-            redirect_uri=value.get("redirect_uri", ""),
-            scope=value.get("scope", ""),
-            access_token=value.get("access_token", ""),
-            access_token_ref=value.get("access_token_ref", ""),
-            refresh_token_ref=value.get("refresh_token_ref", ""),
+            **{
+                item.name: value.get(item.name, item.default)
+                for item in fields(MCPAuthorizationConfig)
+            }
         )
     raise ConfigError("runtime.mcp_servers[].authorization must be an object.")
 
@@ -332,9 +339,8 @@ class MCPStdioSandboxConfig:
 
     def __post_init__(self) -> None:
         self.require_trust = bool(self.require_trust)
-        self.cwd_allowlist = _normalize_string_list(self.cwd_allowlist)
-        self.env_allowlist = _normalize_string_list(self.env_allowlist)
-        self.inherit_env_allowlist = _normalize_string_list(self.inherit_env_allowlist)
+        for name in ("cwd_allowlist", "env_allowlist", "inherit_env_allowlist"):
+            setattr(self, name, _normalize_string_list(getattr(self, name)))
         self.package_name = str(self.package_name or "").strip()
         self.package_version = str(self.package_version or "").strip()
         self.trust_reason = str(self.trust_reason or "").strip()
@@ -438,26 +444,19 @@ class MCPExposureConfig:
     exclude_tools: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        include_servers = _normalize_pattern_list(
-            self.include_servers, field_path="agents.<id>.mcp_exposure.include_servers"
-        )
-        exclude_servers = _normalize_pattern_list(
-            self.exclude_servers, field_path="agents.<id>.mcp_exposure.exclude_servers"
-        )
-        self.include_servers = [
-            normalize_mcp_server_name(item) for item in include_servers
-        ]
-        self.exclude_servers = [
-            normalize_mcp_server_name(item) for item in exclude_servers
-        ]
-        self.include_tools = _normalize_pattern_list(
-            self.include_tools,
-            field_path="agents.<id>.mcp_exposure.include_tools",
-        )
-        self.exclude_tools = _normalize_pattern_list(
-            self.exclude_tools,
-            field_path="agents.<id>.mcp_exposure.exclude_tools",
-        )
+        for name in ("include_servers", "exclude_servers"):
+            values = _normalize_pattern_list(
+                getattr(self, name), field_path=f"agents.<id>.mcp_exposure.{name}"
+            )
+            setattr(self, name, [normalize_mcp_server_name(item) for item in values])
+        for name in ("include_tools", "exclude_tools"):
+            setattr(
+                self,
+                name,
+                _normalize_pattern_list(
+                    getattr(self, name), field_path=f"agents.<id>.mcp_exposure.{name}"
+                ),
+            )
 
     @property
     def is_empty(self) -> bool:
@@ -486,16 +485,16 @@ def coerce_mcp_exposure_config(value: object) -> MCPExposureConfig:
 
 def mcp_exposure_config_to_dict(config: MCPExposureConfig | None) -> dict[str, Any]:
     exposure = coerce_mcp_exposure_config(config)
-    payload: dict[str, Any] = {}
-    if exposure.include_servers:
-        payload["include_servers"] = list(exposure.include_servers)
-    if exposure.exclude_servers:
-        payload["exclude_servers"] = list(exposure.exclude_servers)
-    if exposure.include_tools:
-        payload["include_tools"] = list(exposure.include_tools)
-    if exposure.exclude_tools:
-        payload["exclude_tools"] = list(exposure.exclude_tools)
-    return payload
+    return {
+        name: list(value)
+        for name in (
+            "include_servers",
+            "exclude_servers",
+            "include_tools",
+            "exclude_tools",
+        )
+        if (value := getattr(exposure, name))
+    }
 
 
 @dataclass

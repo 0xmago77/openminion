@@ -10,6 +10,9 @@ from urllib import parse as urllib_parse
 
 import pytest
 
+import openminion.base.config.mcp as mcp_config_module
+import openminion.tools.mcp.auth as mcp_auth_module
+
 from openminion.base.config.mcp import MCPAuthorizationConfig, MCPServerConfig
 from openminion.base.config.base import ConfigError
 from openminion.base.config import OpenMinionConfig
@@ -39,6 +42,22 @@ from openminion.tools.mcp.transport import (
     StreamableHTTPMCPTransport,
     parse_www_authenticate,
 )
+
+
+@pytest.fixture
+def allow_loopback_oauth_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep transport breadth local while production OAuth URLs require HTTPS."""
+    normalize_url = mcp_config_module._normalize_mcp_url
+    monkeypatch.setattr(
+        mcp_config_module,
+        "_normalize_mcp_url",
+        lambda value, *_args, **_kwargs: normalize_url(value),
+    )
+    monkeypatch.setattr(
+        mcp_auth_module,
+        "_require_https_url",
+        lambda value, **_kwargs: str(value or "").strip(),
+    )
 
 
 class _RemoteMCPHandler(BaseHTTPRequestHandler):
@@ -730,7 +749,9 @@ def test_streamable_http_transport_uses_oauth_pkce_access_token_header() -> None
             manager.close()
 
 
-def test_oauth_pkce_metadata_dcr_callback_and_revocation_helpers() -> None:
+def test_oauth_pkce_metadata_dcr_callback_and_revocation_helpers(
+    allow_loopback_oauth_fixture: None,
+) -> None:
     with _remote_mcp_server() as server:
         base_url = f"http://127.0.0.1:{server.server_port}"
         config = MCPAuthorizationConfig(
@@ -812,7 +833,9 @@ def test_oauth_pkce_metadata_dcr_callback_and_revocation_helpers() -> None:
             )
 
 
-def test_oauth_pkce_refreshes_revoked_access_token_via_token_store() -> None:
+def test_oauth_pkce_refreshes_revoked_access_token_via_token_store(
+    allow_loopback_oauth_fixture: None,
+) -> None:
     with _remote_mcp_server(
         expected_bearer_token="fresh-token",
         auth_challenge='Bearer realm="mcp-fixture", scope="mcp.current"',
