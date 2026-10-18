@@ -144,14 +144,6 @@ def test_codex_first_shell_journey_is_compact_truthful_and_persistent(
         {
             "role": "assistant",
             "content": (
-                "SCRIPTED_FIRST_DONE\n\n"
-                '<finalization_status>{"status":"final_answer",'
-                '"reasoning":"scripted first turn complete"}</finalization_status>'
-            ),
-        },
-        {
-            "role": "assistant",
-            "content": (
                 "SCRIPTED_QUEUE_DONE\n\n"
                 '<finalization_status>{"status":"final_answer",'
                 '"reasoning":"queued turn complete"}</finalization_status>'
@@ -267,8 +259,7 @@ def test_codex_first_shell_journey_is_compact_truthful_and_persistent(
                     approval_denied = True
                     continue
                 if (
-                    "SCRIPTED_FIRST_DONE" in transcript
-                    and "SCRIPTED_QUEUE_DONE" in transcript
+                    "SCRIPTED_QUEUE_DONE" in transcript
                     and transcript.count("Done in") >= 2
                 ):
                     break

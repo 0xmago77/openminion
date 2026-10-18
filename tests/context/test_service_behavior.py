@@ -353,6 +353,67 @@ class EffectiveRetrievalQueryTests(unittest.TestCase):
 
         self.assertEqual(queries, ["continue", "continue"])
 
+    def test_plugin_retriever_receives_explicit_query_roles(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        class Retriever:
+            contract_version = "v1"
+            name = "capture"
+
+            def retrieve(self, *, query, filters, **kwargs):
+                del kwargs
+                calls.append((query, filters["query_role"]))
+                return []
+
+        registry = PluginRegistry()
+        registry.register_retriever(Retriever())
+        service = _make_service(plugin_registry=registry)
+
+        service.build_pack(
+            _make_request(query="continue", continuity_query="release target")
+        )
+        service.build_pack(
+            _make_request(query=" continue ", continuity_query="continue")
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                ("continue", "current"),
+                ("release target", "continuity"),
+                (" continue ", "current"),
+            ],
+        )
+
+    def test_plugin_retriever_failure_warns_and_context_still_builds(self) -> None:
+        class Retriever:
+            contract_version = "v1"
+            name = "failing"
+
+            def retrieve(self, **kwargs):
+                del kwargs
+                raise RuntimeError("retrieve unavailable")
+
+        registry = PluginRegistry()
+        registry.register_retriever(Retriever())
+        service = _make_service(plugin_registry=registry)
+
+        with self.assertLogs(
+            "openminion.modules.context.service", level="WARNING"
+        ) as captured:
+            pack = service.build_pack(
+                _make_request(query="continue", continuity_query="release target")
+            )
+
+        self.assertTrue(pack.segments)
+        self.assertEqual(
+            sum(
+                "context retriever failed name=failing" in line
+                for line in captured.output
+            ),
+            2,
+        )
+
     def test_empty_current_query_preserves_existing_retrieval_contracts(self) -> None:
         queries: list[tuple[str, str]] = []
 

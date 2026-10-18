@@ -108,7 +108,16 @@ def create_context_api(
     skill_home_root: Any | None = None,
     artifactctl: Any | None = None,
     owns_artifactctl: bool = False,
+    retrieve_api: Any | None = None,
 ) -> Any:
+    plugin_registry = None
+    if retrieve_api is not None:
+        from openminion.modules.context.contracts import PluginRegistry
+        from openminion.services.context.adapter import CompactedEpisodeRetriever
+
+        plugin_registry = PluginRegistry()
+        plugin_registry.register_retriever(CompactedEpisodeRetriever(retrieve_api))
+
     return create_context_adapter(
         mode=mode,
         session_store=session_store,
@@ -122,6 +131,7 @@ def create_context_api(
         skill_home_root=skill_home_root,
         artifactctl=artifactctl,
         owns_artifactctl=owns_artifactctl,
+        plugin_registry=plugin_registry,
     )
 
 

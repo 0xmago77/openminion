@@ -15,6 +15,8 @@ from openminion.services.context.constants import (
 )
 from openminion.modules.context.pack.semantics import resolve_context_total_token_budget
 from openminion.modules.context.memory_client import NullMemoryClient
+from openminion.modules.context.contracts import CONTEXT_CLIENT_INTERFACE_VERSION
+from openminion.modules.context.schemas import EvidenceItem
 from openminion.modules.context.slices import (
     RuntimeMappedSessionClient as _RuntimeMappedSessionClient,
 )
@@ -26,6 +28,55 @@ _logger = logging.getLogger(__name__)
 class ContextCtlMessage:
     role: str
     content: str
+
+
+class CompactedEpisodeRetriever:
+    contract_version = CONTEXT_CLIENT_INTERFACE_VERSION
+    name = "compacted_session_episodes"
+
+    def __init__(self, retrieve_api: Any) -> None:
+        self._retrieve_api = retrieve_api
+
+    def retrieve(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        k: int,
+        filters: dict[str, Any],
+    ) -> list[EvidenceItem]:
+        normalized_session_id = str(session_id or "").strip()
+        normalized_query = str(query or "").strip()
+        if (
+            filters.get("query_role") != "continuity"
+            or not normalized_session_id
+            or not normalized_query
+        ):
+            return []
+        items = self._retrieve_api.retrieve(
+            normalized_query,
+            purpose="act",
+            scope={"session_id": normalized_session_id},
+            k=k,
+            strategy="contextual",
+            filters={
+                "scope_keys": [f"session:{normalized_session_id}"],
+                "types": ["episode"],
+            },
+        )
+        return [
+            EvidenceItem(
+                ref=item["ref_id"],
+                content=item["text_snippet"],
+                score=item["score"],
+                source=self.name,
+                metadata={
+                    "ref_type": item["ref_type"],
+                    "retrieval_strategy": item["retrieval_strategy"],
+                },
+            )
+            for item in items
+        ]
 
 
 class ContextCtlGatewayAdapter:
