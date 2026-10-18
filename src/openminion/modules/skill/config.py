@@ -301,9 +301,7 @@ def _runtime_tunables(root: dict[str, Any]) -> _RuntimeTunables:
     return {
         "selection_rag_threshold": int(root.get("selection_rag_threshold", 10)),
         "selection_rag_topk": int(root.get("selection_rag_topk", 5)),
-        "promotion_cadence_enabled": _strict_bool(
-            root, "promotion_cadence_enabled"
-        ),
+        "promotion_cadence_enabled": _strict_bool(root, "promotion_cadence_enabled"),
         "runtime_workflow_observation_enabled": _strict_bool(
             root, "runtime_workflow_observation_enabled"
         ),
@@ -317,9 +315,7 @@ def _runtime_tunables(root: dict[str, Any]) -> _RuntimeTunables:
         "suggestion_cooldown_seconds": int(
             root.get("suggestion_cooldown_seconds", 7 * 24 * 60 * 60)
         ),
-        "suggestion_min_age_seconds": int(
-            root.get("suggestion_min_age_seconds", 0)
-        ),
+        "suggestion_min_age_seconds": int(root.get("suggestion_min_age_seconds", 0)),
     }
 
 

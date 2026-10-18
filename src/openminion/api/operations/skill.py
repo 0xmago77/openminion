@@ -285,9 +285,7 @@ def suggestion_surface(
         report = run_suggestion_surface_pass(
             ctl.store,
             batch_cap=(
-                batch_cap
-                if batch_cap is not None
-                else ctl.config.suggestion_batch_cap
+                batch_cap if batch_cap is not None else ctl.config.suggestion_batch_cap
             ),
             cooldown_seconds=(
                 cooldown_seconds

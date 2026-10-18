@@ -374,6 +374,7 @@ def _add_suggestion_subcommands(sub: Any) -> None:
         help="Override the minimum proposal age in seconds.",
     )
 
+
 def _add_learning_subcommands(sub: Any) -> None:
     observation_list = sub.add_parser(
         "learning-observation-list",
