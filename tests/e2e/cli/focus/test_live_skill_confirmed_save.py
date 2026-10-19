@@ -160,22 +160,36 @@ def _write_summary(root: Path, name: str, payload: dict) -> None:
 
 def _normalized_step(value: str) -> str:
     without_number = re.sub(
-        r"^\s*\**(?:step\s+)?\d+(?:[.):]\**\s*|\s+)", "", value, flags=re.I
+        r"^\s*\**(?:step\s+)?\d+(?:[.):]\**\s*|\s+)(?:[-–—:]\s*)?",
+        "",
+        value,
+        flags=re.I,
     )
-    return re.sub(r"[*_`]", "", without_number).strip().lower()
+    without_markup = re.sub(r"[*_`]", "", without_number)
+    return re.sub(r"\s*[:–—]\s*", " ", without_markup).strip().lower()
 
 
 @pytest.mark.parametrize(
-    "rendered",
+    ("rendered", "expected"),
     (
-        "1 Inspect the target",
-        "1. Inspect the target",
-        "1) Inspect the target",
-        "**Step 1:** Inspect the target",
+        ("1 Inspect the target", "inspect the target"),
+        ("1. Inspect the target", "inspect the target"),
+        ("1) Inspect the target", "inspect the target"),
+        ("**Step 1:** Inspect the target", "inspect the target"),
+        (
+            "**Step 1 — Inspect the target:** Gather metadata",
+            "inspect the target gather metadata",
+        ),
+        (
+            "1. Inspect the target — Gather metadata",
+            "inspect the target gather metadata",
+        ),
     ),
 )
-def test_normalized_step_accepts_common_numbered_list_markers(rendered: str) -> None:
-    assert _normalized_step(rendered) == "inspect the target"
+def test_normalized_step_accepts_common_numbered_list_markers(
+    rendered: str, expected: str
+) -> None:
+    assert _normalized_step(rendered) == expected
 
 
 def _tree_evidence(probe: FocusProbe) -> dict[str, str]:
