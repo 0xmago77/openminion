@@ -201,9 +201,7 @@ def _dispatch(ctl: ArtifactCtl, args: argparse.Namespace) -> None:
 
     if args.cmd == "purge":
         grace_days = (
-            _parse_duration_to_days(args.grace)
-            if args.grace is not None
-            else None
+            _parse_duration_to_days(args.grace) if args.grace is not None else None
         )
         purge_report = ctl.purge(grace_days=grace_days)
         _print_json({"ok": True, "report": purge_report.to_dict()})
