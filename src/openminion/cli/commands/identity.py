@@ -70,7 +70,12 @@ def run_identity_show(agent_id: str, *, ctl: IdentityCtl | None = None) -> None:
     print(yaml.dump(profile_data, default_flow_style=False, indent=2))
 
 
-def run_identity_upsert(yaml_path: str, *, ctl: IdentityCtl | None = None) -> None:
+def run_identity_upsert(
+    yaml_path: str,
+    *,
+    ctl: IdentityCtl | None = None,
+    identity_root: Path | None = None,
+) -> None:
     ctl = ctl or _get_identityctl()
     file_path = Path(yaml_path).expanduser().resolve()
 
@@ -78,7 +83,7 @@ def run_identity_upsert(yaml_path: str, *, ctl: IdentityCtl | None = None) -> No
         print(f"ERROR: Path '{yaml_path}' does not exist", file=sys.stderr)
         sys.exit(1)
 
-    agent_ids = ctl.load_profiles_from_path(file_path)
+    agent_ids = ctl.load_profiles_from_path(file_path, identity_root=identity_root)
     summaries = {item.agent_id: item for item in ctl.list_profiles()}
     for aid in agent_ids:
         summary = summaries.get(aid)
@@ -873,7 +878,7 @@ def _run_registered_identity_command(args: argparse.Namespace) -> int:
     elif command == "show":
         run_identity_show(str(args.agent_id), ctl=ctl)
     elif command == "upsert":
-        run_identity_upsert(str(args.yaml_path), ctl=ctl)
+        run_identity_upsert(str(args.yaml_path), ctl=ctl, identity_root=identity_root)
     elif command == "import":
         run_identity_import_from_bundle(
             str(args.from_bundle),

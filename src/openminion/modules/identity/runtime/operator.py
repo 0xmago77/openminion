@@ -242,7 +242,7 @@ def _write_and_sync_profile(
         yaml.safe_dump(payload, sort_keys=False, default_flow_style=False),
     )
     try:
-        loaded = ctl.load_profiles_from_path(target)
+        loaded = ctl.load_profiles_from_path(target, identity_root=target.parent.parent)
         if profile.agent_id not in loaded:
             raise RuntimeError(
                 f"identity sync did not load profile: {profile.agent_id}"
@@ -331,10 +331,16 @@ def reload_runtime_identity(
     identity_root: Path,
     agent_id: str,
 ) -> None:
-    profile_path = identity_root / agent_id / "profile.yaml"
+    profile = ctl.get_profile(agent_id)
+    recorded_path = str((profile.meta or {}).get("source_path", "") if profile else "")
+    profile_path = (
+        Path(recorded_path).expanduser()
+        if recorded_path.strip()
+        else identity_root / agent_id / "profile.yaml"
+    )
     if not profile_path.is_file():
-        raise FileNotFoundError(f"canonical identity profile not found: {profile_path}")
-    ctl.load_profiles_from_path(profile_path)
+        raise FileNotFoundError(f"identity profile source not found: {profile_path}")
+    ctl.load_profiles_from_path(profile_path, identity_root=identity_root)
 
 
 def _inspect_profile(

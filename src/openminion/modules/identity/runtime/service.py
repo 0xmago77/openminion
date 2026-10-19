@@ -377,8 +377,9 @@ class IdentityCtl:
         path: str | Path,
         *,
         skip_unchanged: bool = False,
+        identity_root: str | Path | None = None,
     ) -> list[str]:
-        profile_inputs = self._load_profile_inputs(path)
+        profile_inputs = self._load_profile_inputs(path, identity_root=identity_root)
         loaded: list[str] = []
 
         resolved_profiles: dict[str, AgentProfile] = {}
@@ -454,7 +455,9 @@ class IdentityCtl:
 
         return loaded
 
-    def _load_profile_inputs(self, path: str | Path) -> dict[str, _ProfileInputFile]:
+    def _load_profile_inputs(
+        self, path: str | Path, *, identity_root: str | Path | None
+    ) -> dict[str, _ProfileInputFile]:
         requested_path = Path(path).expanduser().absolute()
         if requested_path.is_symlink() or requested_path.parent.is_symlink():
             raise ValueError(f"profile path must not be a symlink: {requested_path}")
@@ -472,6 +475,13 @@ class IdentityCtl:
                     *src_path.glob("*/profile.yaml"),
                 }
             )
+        generated_root = (
+            Path(identity_root).expanduser().resolve(strict=False)
+            if identity_root is not None
+            else src_path
+            if src_path.is_dir()
+            else None
+        )
 
         profile_inputs: dict[str, _ProfileInputFile] = {}
         for file_path in files:
@@ -479,11 +489,16 @@ class IdentityCtl:
                 raise ValueError(f"profile path must not be a symlink: {file_path}")
             raw = load_yaml_file(file_path)
             payloads = self._extract_profile_payloads(raw)
-            materialize_bundle = file_path.name == "profile.yaml" and len(payloads) == 1
+            materialize_bundle = bool(
+                generated_root is not None
+                and file_path.name == "profile.yaml"
+                and file_path.parent.parent == generated_root
+                and len(payloads) == 1
+            )
             for payload in payloads:
                 parsed = AgentProfileInput.model_validate(payload)
                 if (
-                    file_path.name == "profile.yaml"
+                    materialize_bundle
                     and parsed.agent_id
                     and parsed.agent_id.strip() != file_path.parent.name
                 ):

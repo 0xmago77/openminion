@@ -16,6 +16,7 @@ from openminion.modules.identity.runtime.operator import (
     IdentityOperatorError,
     apply_identity_candidate,
     inspect_identity,
+    reload_runtime_identity,
     runtime_identity_snapshot,
     validate_identity_candidate,
 )
@@ -614,6 +615,24 @@ def test_inspect_rejects_canonical_source_symlink_escape(tmp_path: Path) -> None
     assert inspected["verification"]["source_status"] == "missing"
 
 
+def test_reload_runtime_identity_uses_recorded_external_yaml(tmp_path: Path) -> None:
+    ctl = _ctl(tmp_path)
+    identity_root = tmp_path / "identity"
+    external_root = tmp_path / "external"
+    external_root.mkdir()
+    source = external_root / "profile.yaml"
+    _write_profile(source, _profile_payload(mission="Original external mission."))
+    ctl.load_profiles_from_path(source, identity_root=identity_root)
+    _write_profile(source, _profile_payload(mission="Reloaded external mission."))
+
+    reload_runtime_identity(ctl, identity_root=identity_root, agent_id="ops-agent")
+
+    profile = ctl.get_profile("ops-agent")
+    assert profile is not None
+    assert profile.role.mission == "Reloaded external mission."
+    assert not (external_root / "AGENT.md").exists()
+
+
 @pytest.mark.parametrize(
     "relative_path", ["../external.md", "/tmp/external.md", "linked.md"]
 )
@@ -789,6 +808,42 @@ def test_inspect_rejects_invalid_generated_manifest_integrity(
 
     assert inspected["generated_sidecars"]["status"] == "drifted"
     assert expected_drift in inspected["generated_sidecars"]["drifted_files"]
+    assert inspected["verification"]["ok"] is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {
+            "generated_from_profile_version": "version",
+            "files": [
+                {"relative_path": "AGENT.md", "sha256": "a", "size_bytes": 1},
+                {"relative_path": "AGENT.md", "sha256": "a", "size_bytes": 1},
+            ],
+        },
+    ],
+)
+def test_inspect_marks_malformed_generated_lockfile_invalid(
+    tmp_path: Path, payload: object
+) -> None:
+    ctl = _ctl(tmp_path)
+    identity_root = tmp_path / "identity"
+    candidate = tmp_path / "candidate.yaml"
+    _write_profile(candidate, _profile_payload())
+    apply_identity_candidate(
+        ctl,
+        identity_root=identity_root,
+        candidate_path=candidate,
+        expected_profile_version="missing",
+        expected_source_sha256="missing",
+    )
+    lock_path = identity_root / "ops-agent" / ".identity-lock.json"
+    lock_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    inspected = inspect_identity(ctl, identity_root=identity_root, agent_id="ops-agent")
+
+    assert inspected["generated_sidecars"]["status"] == "invalid"
     assert inspected["verification"]["ok"] is False
 
 

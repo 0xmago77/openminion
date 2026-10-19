@@ -178,7 +178,9 @@ def load_profiles_cmd(
     try:
         with _open_identity(config) as (identity, cfg):
             target = path or Path(cfg.profiles.directory)
-            loaded = identity.load_profiles_from_path(target)
+            loaded = identity.load_profiles_from_path(
+                target, identity_root=cfg.profiles.directory
+            )
             _print_json({"ok": True, "loaded": loaded, "count": len(loaded)})
     except Exception as exc:  # pragma: no cover - CLI guard
         _print_json({"ok": False, "error": {"message": str(exc)}})
@@ -194,8 +196,10 @@ def upsert_cmd(
         payload = load_yaml_file(file)
         if "profiles" in payload:
             raise ValueError("identityctl upsert requires exactly one profile")
-        with _open_identity(config) as (identity, _):
-            loaded = identity.load_profiles_from_path(file)
+        with _open_identity(config) as (identity, cfg):
+            loaded = identity.load_profiles_from_path(
+                file, identity_root=cfg.profiles.directory
+            )
             if len(loaded) != 1:
                 raise ValueError("identityctl upsert requires exactly one profile")
             agent_id = loaded[0]

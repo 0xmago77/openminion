@@ -108,7 +108,11 @@ def write_identity_lockfile(
 def read_identity_lockfile(lockfile_path: str | Path) -> IdentityLockfile:
     path = Path(lockfile_path).expanduser().resolve()
     payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("identity lockfile must contain an object")
     files = payload.get("files", [])
+    if not isinstance(files, list) or any(not isinstance(item, dict) for item in files):
+        raise ValueError("identity lockfile files must contain objects")
     entries = tuple(
         IdentityLockManifestEntry(
             relative_path=str(item.get("relative_path", "")),
@@ -117,6 +121,9 @@ def read_identity_lockfile(lockfile_path: str | Path) -> IdentityLockfile:
         )
         for item in files
     )
+    paths = [item.relative_path for item in entries]
+    if len(paths) != len(set(paths)):
+        raise ValueError("identity lockfile contains duplicate file paths")
     return IdentityLockfile(
         generated_from_profile_version=str(
             payload.get("generated_from_profile_version", "")
