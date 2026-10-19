@@ -211,7 +211,7 @@ def build_retrieval_stats(
         if hasattr(retrieve_svc, "_last_error"):
             last_err = retrieve_svc._last_error
             if last_err:
-                snapshot.last_error = str(last_err)[:200]
+                snapshot.last_error = "retrieval_error_recorded"
 
         if hasattr(retrieve_svc, "_session_stats"):
             stats = retrieve_svc._session_stats
@@ -224,9 +224,11 @@ def build_retrieval_stats(
                     if count > 0:
                         snapshot.avg_hits_per_query = round(hits / count, 2)
 
-    except Exception as exc:
-        snapshot.retrieve_available = False
-        snapshot.last_error = f"retrieval_stats_error: {str(exc)[:100]}"
+    except Exception:
+        return RetrievalStatsSnapshot(
+            last_error="retrieval_stats_query_failed",
+            snapshot_timestamp=snapshot.snapshot_timestamp,
+        )
 
     return snapshot
 
