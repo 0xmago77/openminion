@@ -262,6 +262,58 @@ class TestRetrievalStatsSnapshot:
 
         assert snapshot.retrieve_available is False
 
+    def test_build_retrieval_stats_keeps_recorded_errors_content_free(self) -> None:
+        from openminion.modules.memory.diagnostics.introspection import (
+            build_retrieval_stats,
+        )
+
+        snapshot = build_retrieval_stats(
+            retrieve_svc=SimpleNamespace(
+                _last_strategy="semantic",
+                _last_hit_count=3,
+                _last_query="project status",
+                _last_latency_ms=12.5,
+                _error_count=1,
+                _last_error="secret-provider-token",
+                _session_stats={
+                    "test-session": {"count": 2, "total_hits": 3},
+                },
+            ),
+            session_id="test-session",
+        )
+
+        assert snapshot.retrieve_available is True
+        assert snapshot.last_strategy == "semantic"
+        assert snapshot.last_hit_count == 3
+        assert snapshot.total_retrievals_session == 2
+        assert snapshot.avg_hits_per_query == 1.5
+        assert snapshot.last_error == "retrieval_error_recorded"
+        assert "secret" not in snapshot.model_dump_json()
+
+    def test_build_retrieval_stats_failure_is_atomic_and_content_free(self) -> None:
+        from openminion.modules.memory.diagnostics.introspection import (
+            build_retrieval_stats,
+        )
+
+        class _FailingStats:
+            _last_strategy = "semantic"
+
+            @property
+            def _last_hit_count(self) -> int:
+                raise RuntimeError("secret-stats-token")
+
+        snapshot = build_retrieval_stats(
+            retrieve_svc=_FailingStats(),
+            session_id="test-session",
+        )
+
+        assert snapshot.retrieve_available is False
+        assert snapshot.last_strategy == "none"
+        assert snapshot.last_hit_count == 0
+        assert snapshot.total_retrievals_session == 0
+        assert snapshot.last_error == "retrieval_stats_query_failed"
+        assert "secret" not in snapshot.model_dump_json()
+
 
 class TestRuntimeIntrospectionDigest:
     def test_format_introspection_digest_with_caps(self) -> None:
