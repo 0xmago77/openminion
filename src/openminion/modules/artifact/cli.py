@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -41,12 +42,11 @@ def main(argv: list[str] | None = None) -> int:
 
     ctl = ArtifactCtl(args.config)
     try:
-        _dispatch(ctl, args)
+        with ctl:
+            _dispatch(ctl, args)
     except ArtifactCtlError as exc:
         _print_json({"ok": False, "error": exc.to_dict()})
         raise SystemExit(1)
-    finally:
-        ctl.close()
     return 0
 
 
@@ -111,7 +111,7 @@ def _build_parser() -> argparse.ArgumentParser:
     purge = sub.add_parser(
         "purge", help="Physically remove deleted files after grace period"
     )
-    purge.add_argument("--grace", default=None, help="e.g. 7d, 12h, 3600s")
+    purge.add_argument("--grace", default=None, help="whole days, e.g. 7 or 7d")
 
     verify = sub.add_parser("verify", help="Verify blob integrity")
     verify.add_argument("target", nargs="?", default=None)
@@ -181,7 +181,7 @@ def _dispatch(ctl: ArtifactCtl, args: argparse.Namespace) -> None:
             "agent_id": args.agent,
             "mime": args.mime,
         }
-        rows = ctl.search(args.query, filters=filters)[: max(1, int(args.limit))]
+        rows = ctl.search(args.query, filters=filters, limit=int(args.limit))
         _print_json({"ok": True, "results": [row.to_dict() for row in rows]})
         return
 
@@ -200,7 +200,9 @@ def _dispatch(ctl: ArtifactCtl, args: argparse.Namespace) -> None:
         return
 
     if args.cmd == "purge":
-        grace_days = _parse_duration_to_days(args.grace) if args.grace else None
+        grace_days = (
+            _parse_duration_to_days(args.grace) if args.grace is not None else None
+        )
         purge_report = ctl.purge(grace_days=grace_days)
         _print_json({"ok": True, "report": purge_report.to_dict()})
         return
@@ -262,12 +264,18 @@ def _parse_json_obj(raw: str) -> dict[str, Any]:
 
 def _parse_duration_to_days(raw: str) -> int:
     text = raw.strip().lower()
-    if text.endswith("d"):
-        return int(float(text[:-1]))
-    for suffix, units_per_day in (("h", 24.0), ("m", 1440.0), ("s", 86400.0)):
-        if text.endswith(suffix):
-            return max(0, int(float(text[:-1]) / units_per_day))
-    return int(float(text))
+    digits = text[:-1] if text.endswith("d") else text
+    try:
+        if not digits.isdecimal():
+            raise ValueError
+        days = int(digits)
+        datetime.now(timezone.utc) - timedelta(days=days)
+    except (OverflowError, ValueError) as exc:
+        raise ArtifactCtlError(
+            "INVALID_ARGUMENT",
+            "Grace must be a non-negative whole number of days, such as 7 or 7d",
+        ) from exc
+    return days
 
 
 def _print_json(payload: dict[str, Any]) -> None:
