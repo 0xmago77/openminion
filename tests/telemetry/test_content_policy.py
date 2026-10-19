@@ -36,6 +36,7 @@ _EXTERNAL_CONTENT = {
             "content": "canonical-input-content",
             "text": "canonical-input-text",
             "final_text": "nested-output-under-canonical-input",
+            "metadata": {"content": "never-message-metadata-content"},
         }
     ],
     "gen_ai.output.messages": [
@@ -44,6 +45,7 @@ _EXTERNAL_CONTENT = {
             "content": "canonical-output-content",
             "text": "canonical-output-text",
             "user_message": "nested-input-under-canonical-output",
+            "metadata": {"content": "never-message-metadata-content"},
         }
     ],
     "user_message": "input-user",
@@ -52,6 +54,7 @@ _EXTERNAL_CONTENT = {
             "role": "user",
             "content": "input-list",
             "assistant_text": "nested-output-under-input-list",
+            "metadata": {"content": "never-message-metadata-content"},
         }
     ],
     "prompt": {
@@ -59,6 +62,7 @@ _EXTERNAL_CONTENT = {
         "final_text": "nested-output-under-input",
         "response": "nested-output-under-input",
         "result": {"content": "nested-tool-under-input"},
+        "metadata": {"content": "never-descendant-content"},
         "system_prompt": "nested-system-under-input",
     },
     "raw_prompt": "input-raw-prompt",
@@ -68,16 +72,19 @@ _EXTERNAL_CONTENT = {
             "role": "assistant",
             "content": "output-list",
             "user_message": "nested-input-under-output-list",
+            "metadata": {"content": "never-message-metadata-content"},
         }
     ],
     "response": {
         "arguments": {"query": "nested-tool-under-output"},
         "content": "output-response",
         "history": "nested-input-under-output",
+        "metadata": {"content": "never-descendant-content"},
         "system_prompt": "nested-system-under-output",
     },
     "raw_response": "output-raw-response",
     "content": "assistant-body",
+    "request": {"content": "never-unscoped-content"},
     "result": {
         "content": "tool-result",
         "reasoning_content": "never-reasoning",
@@ -199,6 +206,9 @@ def test_external_content_flags_are_independent_through_exporter(
     assert "never-credentials" not in exported
     assert "never-api-key" not in exported
     assert "never-summary" not in exported
+    assert "never-unscoped-content" not in exported
+    assert "never-descendant-content" not in exported
+    assert "never-message-metadata-content" not in exported
 
 
 def test_default_policy_omits_content_and_prohibited_fields() -> None:

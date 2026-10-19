@@ -263,7 +263,7 @@ def apply_content_policy(
                 if field in _PROHIBITED_FIELDS or field.endswith("_secret"):
                     removed.append(item_path)
                     continue
-                field_allowed = field in allowed_sensitive_fields
+                field_allowed = item_path.lower() in allowed_sensitive_fields
                 parent_allows_field = (
                     parent_sensitive_allowed and field in _INHERITED_SENSITIVE_FIELDS
                 )
@@ -278,7 +278,7 @@ def apply_content_policy(
                 result[key] = clean(
                     item,
                     item_path,
-                    parent_sensitive_allowed=parent_sensitive_allowed or field_allowed,
+                    parent_sensitive_allowed=field_allowed or parent_allows_field,
                 )
             return result
         if isinstance(value, list):

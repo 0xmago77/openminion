@@ -1,5 +1,7 @@
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
@@ -77,14 +79,9 @@ class RuntimeTokenUsageMixin:
             format_interactive_token_history,
             format_interactive_token_summary,
         )
-        from openminion.modules.telemetry.usage import (
-            StatsService,
-            usage_event_session_id,
-        )
+        from openminion.modules.telemetry.usage import usage_event_session_id
 
-        store, owns_store = self._token_usage_store()
-        try:
-            service = StatsService(store)
+        with self._token_stats_service() as service:
             if recent is None:
                 return str(
                     format_interactive_token_summary(
@@ -99,26 +96,18 @@ class RuntimeTokenUsageMixin:
                 for session in self._recent_surface_sessions(recent)
             )
             return str(format_interactive_token_history(summaries, requested=recent))
-        finally:
-            if owns_store:
-                store.close()
 
     def token_cost_report(self) -> str:
         if not self.is_bound:
             return "No active session."
         from openminion.cli.presentation.tokens import format_interactive_cost_summary
-        from openminion.modules.telemetry.usage import StatsService
 
-        store, owns_store = self._token_usage_store()
-        try:
+        with self._token_stats_service() as service:
             return str(
                 format_interactive_cost_summary(
-                    StatsService(store).get_session_token_usage(self._turn_session_id())
+                    service.get_session_token_usage(self._turn_session_id())
                 )
             )
-        finally:
-            if owns_store:
-                store.close()
 
     def _token_usage_store(self) -> tuple[Any, bool]:
         if store := getattr(self._rt, "context_trace_store", None):
@@ -147,6 +136,17 @@ class RuntimeTokenUsageMixin:
             ),
             True,
         )
+
+    @contextmanager
+    def _token_stats_service(self) -> Iterator[Any]:
+        from openminion.modules.telemetry.usage import StatsService
+
+        store, owns_store = self._token_usage_store()
+        try:
+            yield StatsService(store)
+        finally:
+            if owns_store:
+                store.close()
 
     def _recent_surface_sessions(self, limit: int) -> tuple[Any, ...]:
         return tuple(
@@ -232,18 +232,10 @@ class RuntimeTokenUsageMixin:
         self._usage_updated_at_monotonic = None
 
     def _restore_token_usage_accounting(self) -> None:
-        from openminion.modules.telemetry.usage import StatsService
-
         self._reset_token_usage_accounting()
         try:
-            store, owns_store = self._token_usage_store()
-            try:
-                summary = StatsService(store).get_session_token_usage(
-                    self._turn_session_id()
-                )
-            finally:
-                if owns_store:
-                    store.close()
+            with self._token_stats_service() as service:
+                summary = service.get_session_token_usage(self._turn_session_id())
         except (OSError, RuntimeError, sqlite3.Error):
             return
         if not summary.records:
