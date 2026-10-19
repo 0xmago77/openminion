@@ -1,7 +1,7 @@
 {
   "command": ".venv/bin/python3.11 -m mypy src/openminion --config-file <editable-mirror-isolation> --explicit-package-bases --hide-error-context --no-error-summary --show-error-codes",
   "config_sha256": "aa81a3dccd60cf0c9026defb3d90a26275c79dc04ff5ffb4e300197f5f63625b",
-  "generated_at": "2026-10-18T13:04:38Z",
+  "generated_at": "2026-10-19T01:57:44Z",
   "historical_floor": {
     "package_errors": {
       "api": 125,
@@ -27,7 +27,7 @@
     "cli": 309,
     "modules": 3346,
     "root": 1,
-    "services": 359,
+    "services": 358,
     "tools": 223
   },
   "python_version": "3.11.15",
@@ -41,9 +41,9 @@
       "tools": 0
     },
     "review_artifact": "scripts/baselines/mypy_resets/july-2026-reset-recovery.json",
-    "total_errors": 296
+    "total_errors": 295
   },
-  "source_commit": "22f6b96d2aea9fca0780705c1521730b13e92476",
-  "source_snapshot_sha256": "6a52603aef062a0cd813deb232890b7753693c3cb5f7192dcc4348ae09c0832d",
-  "total_errors": 4315
+  "source_commit": "aa1ddf7e3ad6671402568dec41c8331e27d905ed",
+  "source_snapshot_sha256": "6e47b8116353a19c5706d0e4fa0d7b6e891b94e09fc8057776470c6477817bfc",
+  "total_errors": 4314
 }

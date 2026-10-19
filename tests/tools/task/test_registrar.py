@@ -156,7 +156,7 @@ def test_task_registrar_registers_runtime_candidates() -> None:
     assert "task.details" not in names
 
 
-def test_destructive_task_controls_require_confirmation_at_write_safe_scope() -> None:
+def test_destructive_task_controls_require_elevated_scope_and_confirmation() -> None:
     registry = ToolRegistry()
     REGISTRAR.register(registry, ToolRegisterContext(module_id="task"))
 
@@ -167,5 +167,8 @@ def test_destructive_task_controls_require_confirmation_at_write_safe_scope() ->
     ):
         spec = registry.get(tool_name)
         assert spec is not None
-        assert spec.min_scope == "WRITE_SAFE"
+        assert spec.min_scope == "POWER_USER"
         assert spec.dangerous is True
+        assert registry.policy_for(tool_name).required_scopes_all == frozenset(
+            {"tool.execute", "tool.execute.elevated"}
+        )
