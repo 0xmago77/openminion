@@ -34,6 +34,9 @@ from openminion.modules.tool.contracts.schemas import TOOL_ERROR_CONFIRM_REQUIRE
 from openminion.modules.tool.runtime.routing import (
     build_runtime_tool_routing_metadata,
 )
+from openminion.modules.tool.runtime.argument_repair import (
+    repair_model_tool_arguments,
+)
 from .command_metadata import (
     _confirmation_replay_metadata,
     _extract_runtime_message_ref,
@@ -498,7 +501,12 @@ class ToolAdapter:
         try:
             args_model = spec.args_model
             if hasattr(args_model, "model_validate"):
-                validated_args = args_model.model_validate(args).model_dump()
+                repaired_args = repair_model_tool_arguments(
+                    args,
+                    args_model=args_model,
+                    channel_name=f"brain_tool_adapter:{tool_name}.args",
+                )
+                validated_args = args_model.model_validate(repaired_args).model_dump()
             else:
                 validated_args = dict(args)
         except (TypeError, ValueError) as exc:

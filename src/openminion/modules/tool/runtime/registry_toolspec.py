@@ -11,7 +11,7 @@ from openminion.base.config import resolve_data_root, resolve_home_root
 from openminion.modules.artifact.refs import create_default_artifactctl
 from openminion.modules.tool.base import ToolExecutionContext, ToolExecutionResult
 from openminion.modules.tool.runtime.argument_repair import (
-    repair_structured_tool_arguments,
+    repair_model_tool_arguments,
 )
 from openminion.modules.tool.runtime.result_cleaner import strip_tool_result_noise
 from openminion.modules.tool.runtime.grounding_footer import with_source_footer
@@ -54,10 +54,10 @@ def _validated_tool_arguments(
         if not hasattr(args_model, "model_validate"):
             return dict(arguments)
         validation = validate_payload(
-            repair_structured_tool_arguments(
+            repair_model_tool_arguments(
                 dict(arguments),
+                args_model=args_model,
                 channel_name=f"tool_spec:{tool_name}.args",
-                alias_map=_model_alias_map(args_model),
             ),
             model=args_model,
             ctx=TCRPContext(
@@ -394,19 +394,6 @@ def _normalized_workspace_metadata(
     if not str(normalized.get("cwd", "") or "").strip() and raw_working_dir:
         normalized["cwd"] = raw_working_dir
     return normalized
-
-
-def _model_alias_map(args_model: Any) -> dict[str, str]:
-    fields = getattr(args_model, "model_fields", None)
-    if not isinstance(fields, Mapping):
-        return {}
-    alias_map: dict[str, str] = {}
-    for field_name, field_info in fields.items():
-        alias = str(getattr(field_info, "alias", "") or "").strip()
-        canonical = str(field_name or "").strip()
-        if alias and canonical and alias != canonical:
-            alias_map[alias] = canonical
-    return alias_map
 
 
 def resolve_runtime_env(*, context: ToolExecutionContext) -> dict[str, Any]:

@@ -615,6 +615,93 @@ class ToolRegistryTests(unittest.TestCase):
             "tool_arg_validation_failed",
         )
 
+    def test_execute_calls_toolspec_decodes_declared_structured_fields(self) -> None:
+        from pydantic import BaseModel
+
+        from openminion.modules.tool.registry import ToolSpec
+
+        class _StructuredArgs(BaseModel):
+            options: dict[str, str]
+            items: list[str]
+            note: str
+
+        registry = ToolRegistry([])
+        registry.add(
+            ToolSpec(
+                name="structured.toolspec",
+                args_model=_StructuredArgs,
+                min_scope="READ_ONLY",
+                handler=lambda args, _ctx: {
+                    "ok": True,
+                    "content": args["note"],
+                    "data": args,
+                },
+            )
+        )
+
+        batch = registry.execute_calls(
+            [
+                ProviderToolCall(
+                    name="structured.toolspec",
+                    arguments={
+                        "options": '{"mode":"safe"}',
+                        "items": '["one","two"]',
+                        "note": '["keep","as","text"]',
+                    },
+                )
+            ],
+            context=ToolExecutionContext(
+                channel="console", target="test", session_id="tests-toolspec"
+            ),
+        )
+
+        assert batch.results[0].ok is True
+        assert batch.results[0].data["options"] == {"mode": "safe"}
+        assert batch.results[0].data["items"] == ["one", "two"]
+        assert batch.results[0].data["note"] == '["keep","as","text"]'
+
+    def test_execute_calls_toolspec_decodes_union_structured_fields(self) -> None:
+        from openminion.modules.tool.registry import ToolSpec
+        from openminion.tools.security.schemas import SecurityReportPublishArgs
+
+        registry = ToolRegistry([])
+        registry.add(
+            ToolSpec(
+                name="security.publish_report",
+                args_model=SecurityReportPublishArgs,
+                min_scope="READ_ONLY",
+                handler=lambda args, _ctx: {"ok": True, "data": args},
+            )
+        )
+        evidence_ref = f"artifact://sha256/{'a' * 64}"
+        batch = registry.execute_calls(
+            [
+                ProviderToolCall(
+                    name="security.publish_report",
+                    arguments={
+                        "scope": (
+                            '{"target":".","target_revision":"'
+                            f"{'b' * 40}"
+                            '","objective":"Audit source.",'
+                            '"requested_checks":["code"]}'
+                        ),
+                        "check_evidence": (
+                            f'[{json.dumps({"check": "code", "evidence_ref": evidence_ref})}]'
+                        ),
+                        "findings": "[]",
+                        "summary": "Audit completed.",
+                    },
+                )
+            ],
+            context=ToolExecutionContext(
+                channel="console", target="test", session_id="tests-toolspec"
+            ),
+        )
+
+        assert batch.results[0].ok is True
+        assert batch.results[0].data["scope"]["requested_checks"] == ["code"]
+        assert batch.results[0].data["check_evidence"][0]["evidence_ref"] == evidence_ref
+
     def test_execute_calls_toolspec_non_object_arguments_report_contract_payload(
         self,
     ) -> None:
