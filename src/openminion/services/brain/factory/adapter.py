@@ -41,6 +41,7 @@ def create_tool_api(
     a2a_delegate_api: Any | None = None,
     agent_query: Any | None = None,
     agent_profile: Any | None = None,
+    tool_policy: Mapping[str, Any] | None = None,
     task_manager: Any | None = None,
     scheduler_readiness: Callable[[], dict[str, Any]] | None = None,
     telemetryctl: Any | None = None,
@@ -49,11 +50,15 @@ def create_tool_api(
     security_lab_runner: Any | None = None,
     identity_security_lab_facts: Callable[[], dict[str, Any]] | None = None,
 ) -> Any:
+    if tool_policy is None:
+        profile_policy = getattr(agent_profile, "tool_policy", None)
+        tool_policy = profile_policy if isinstance(profile_policy, Mapping) else None
     return create_tool_adapter(
         mode=mode,
         workspace=workspace_root,
         runtime_config=runtime_config,
         runtime_registry=runtime_registry,
+        policy=tool_policy,
         reactions_enabled=getattr(runtime_config, "reactions_enabled", True),
         agent_id=str(agent_name or "").strip() or None,
         skill_api=skill_api,

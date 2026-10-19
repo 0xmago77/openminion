@@ -166,7 +166,7 @@ def _operational_specs() -> tuple[ToolSpec, ...]:
         ToolSpec(
             name=MODEL_TASK_DELETE_HISTORY,
             args_model=TaskDeleteHistoryArgs,
-            min_scope="WRITE_SAFE",
+            min_scope="POWER_USER",
             handler=_h_task_delete_history,
             dangerous=True,
             idempotent=False,
@@ -187,7 +187,7 @@ def _operational_specs() -> tuple[ToolSpec, ...]:
         ToolSpec(
             name=MODEL_TASK_SCHEDULER_PAUSE,
             args_model=TaskSchedulerPauseArgs,
-            min_scope="WRITE_SAFE",
+            min_scope="POWER_USER",
             handler=_h_task_scheduler_pause,
             dangerous=True,
             idempotent=False,
@@ -198,7 +198,7 @@ def _operational_specs() -> tuple[ToolSpec, ...]:
         ToolSpec(
             name=MODEL_TASK_SCHEDULER_RESUME,
             args_model=TaskSchedulerResumeArgs,
-            min_scope="WRITE_SAFE",
+            min_scope="POWER_USER",
             handler=_h_task_scheduler_resume,
             dangerous=True,
             idempotent=False,

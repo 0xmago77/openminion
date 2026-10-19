@@ -239,6 +239,7 @@ def attach_cron_scheduler(
                 or not runtime.runtime_manager.has_foreground_work()
             ),
             record_task_outcomes=task_manager.reconcile_scheduled_outcomes,
+            cancel_execution=getattr(runtime.runtime_manager, "cancel_turn", None),
         )
         scheduler.start()
         _seed_cron_cleanup_job(cron_store)

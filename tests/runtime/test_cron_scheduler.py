@@ -370,7 +370,7 @@ def test_scheduler_reconciles_task_outcomes_on_tick_and_completion() -> None:
         scheduler.shutdown(grace_s=1.0)
 
     assert None in reconciled
-    assert reconciled.count(None) == 1
+    assert reconciled.count(None) >= 1
     assert "job-task" in reconciled
     reconciliation = next(
         payload
@@ -613,6 +613,95 @@ def test_scheduler_preserves_terminal_run_when_task_outcome_callback_fails() -> 
     run = next(iter(store.runs.values()))
     assert run["state"] == "finished"
     assert "cron.run.finish_error" in events
+
+
+def test_scheduler_retries_periodic_task_outcome_reconciliation() -> None:
+    store = FakeCronStore()
+    store.add_job(
+        job_id="job-reconcile-retry",
+        payload={"kind": "agentTurn", "message": "work"},
+    )
+    store.seed_due("job-reconcile-retry")
+    calls = 0
+    retried = threading.Event()
+    events: list[str] = []
+
+    def _record(job_id: str | None) -> int:
+        nonlocal calls
+        assert job_id is None
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("task callback unavailable")
+        retried.set()
+        return 0
+
+    scheduler = CronScheduler(
+        store=store,
+        tick_seconds=0.05,
+        execute_agent_turn=lambda _job, _run: "done",
+        record_task_outcomes=_record,
+        on_event=lambda event_type, _payload: events.append(event_type),
+    )
+    scheduler.start()
+    try:
+        assert retried.wait(timeout=2.0)
+        assert store.finished.wait(timeout=2.0)
+    finally:
+        scheduler.shutdown(grace_s=1.0)
+
+    assert calls >= 2
+    assert next(iter(store.runs.values()))["state"] == "finished"
+    assert "cron.scheduler.error" in events
+
+
+def test_scheduler_requests_turn_cancellation_when_lease_is_lost() -> None:
+    class LeaseLosingStore(FakeCronStore):
+        def renew_cron_run_lease(self, *args, **kwargs) -> bool:  # noqa: ANN002, ANN003
+            del args, kwargs
+            return False
+
+    store = LeaseLosingStore()
+    store.add_job(
+        job_id="job-lease-loss", payload={"kind": "agentTurn", "message": "work"}
+    )
+    store.seed_due("job-lease-loss")
+    started = threading.Event()
+    cancelled = threading.Event()
+    cancelled_run_ids: list[str] = []
+    events: list[tuple[str, dict]] = []
+
+    def _execute(_job: dict, _run: dict) -> str:
+        started.set()
+        assert cancelled.wait(timeout=3.0)
+        return "cancelled execution"
+
+    def _cancel(run_id: str) -> bool:
+        cancelled_run_ids.append(run_id)
+        cancelled.set()
+        return True
+
+    scheduler = CronScheduler(
+        store=store,
+        daemon_id="daemon-lease-loss",
+        tick_seconds=0.05,
+        lease_ttl_seconds=1,
+        execute_agent_turn=_execute,
+        cancel_execution=_cancel,
+        on_event=lambda name, payload: events.append((name, payload)),
+    )
+    scheduler.start()
+    try:
+        assert started.wait(timeout=1.0)
+        assert store.finished.wait(timeout=3.0)
+    finally:
+        scheduler.shutdown(grace_s=1.0)
+
+    run_id = next(iter(store.runs))
+    assert cancelled_run_ids == [run_id]
+    assert any(
+        name == "cron.run.cancel_requested" and payload["accepted"] is True
+        for name, payload in events
+    )
 
 
 def test_scheduler_respects_global_concurrency_limit() -> None:

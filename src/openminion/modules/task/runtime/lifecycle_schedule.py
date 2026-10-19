@@ -536,7 +536,26 @@ class TaskManagerScheduleMixin:
 
     def delete_terminal_run_history(self, task_id: str) -> int:
         record = self._require_scheduled_record(task_id)
-        return self._cron_repository.delete_terminal_cron_runs(record.cron_job_id)
+        deleted = self._cron_repository.delete_terminal_cron_runs(record.cron_job_id)
+
+        def _remove_last_run(metadata: dict[str, Any]) -> dict[str, Any]:
+            last_run = metadata.get("last_run")
+            run_id = (
+                str(last_run.get("run_id") or "").strip()
+                if isinstance(last_run, Mapping)
+                else ""
+            )
+            remaining = self._cron_repository.list_cron_runs(
+                job_id=record.cron_job_id,
+                limit=1,
+                states=sorted(self._TERMINAL_RUN_STATES),
+            )
+            if not remaining or str(remaining[0].get("run_id") or "").strip() != run_id:
+                metadata.pop("last_run", None)
+            return metadata
+
+        self.mutate_task_metadata(task_id=record.task_id, mutate=_remove_last_run)
+        return deleted
 
     def scheduler_control_status(self) -> dict[str, Any]:
         return self._cron_repository.get_cron_scheduler_control()

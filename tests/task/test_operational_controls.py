@@ -111,6 +111,10 @@ def test_history_deletion_removes_terminal_rows_only(tmp_path) -> None:
     manager._cron_repository.finish_cron_run(
         finished["run_id"], state="finished", summary="done"
     )
+    assert manager.reconcile_scheduled_outcomes(record.cron_job_id) == 1
+    reconciled = manager.get_task(record.task_id)
+    assert reconciled is not None
+    assert reconciled.metadata["last_run"]["summary"] == "done"
     queued = manager.run_task_now(record.task_id)
 
     assert manager.delete_terminal_run_history(record.task_id) == 1
@@ -118,6 +122,36 @@ def test_history_deletion_removes_terminal_rows_only(tmp_path) -> None:
     assert [(run["run_id"], run["state"]) for run in runs] == [
         (queued["run_id"], "queued")
     ]
+    after_delete = manager.get_task(record.task_id)
+    assert after_delete is not None
+    assert "last_run" not in after_delete.metadata
+
+
+def test_history_deletion_preserves_run_recorded_during_delete(
+    tmp_path, monkeypatch
+) -> None:
+    manager = _manager(tmp_path)
+    record, _ = _scheduled(manager)
+    old_run = manager.run_task_now(record.task_id)
+    repository = manager._cron_repository
+    repository.finish_cron_run(old_run["run_id"], state="finished", summary="old")
+    assert manager.reconcile_scheduled_outcomes(record.cron_job_id) == 1
+    new_run = manager.run_task_now(record.task_id)
+    delete_terminal = repository.delete_terminal_cron_runs
+
+    def _delete_then_finish(job_id: str) -> int:
+        deleted = delete_terminal(job_id)
+        repository.finish_cron_run(new_run["run_id"], state="finished", summary="new")
+        assert manager.reconcile_scheduled_outcomes(record.cron_job_id) == 1
+        return deleted
+
+    monkeypatch.setattr(repository, "delete_terminal_cron_runs", _delete_then_finish)
+
+    assert manager.delete_terminal_run_history(record.task_id) == 1
+    retained = manager.get_task(record.task_id)
+    assert retained is not None
+    assert retained.metadata["last_run"]["run_id"] == new_run["run_id"]
+    assert retained.metadata["last_run"]["summary"] == "new"
 
 
 def test_scheduler_control_is_persisted_and_revision_guarded(tmp_path) -> None:

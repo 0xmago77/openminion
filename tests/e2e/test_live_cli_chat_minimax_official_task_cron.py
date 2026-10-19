@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,24 @@ _CONFIG = resolve_live_config_path(
     "per-agent-minimax-official.json",
     framework_root(),
 )
+
+
+@pytest.fixture
+def power_user_config(tmp_path: Path) -> Iterator[Path]:
+    payload = json.loads(_CONFIG.read_text(encoding="utf-8"))
+    brain = payload.setdefault("brain", {})
+    brain["tool_policy"] = {"scope": "POWER_USER"}
+    security = payload.setdefault("security", {})
+    tool_policy = security.setdefault("tool_policy", {})
+    scopes = list(tool_policy.get("internal_actor_scopes") or [])
+    if "tool.execute.elevated" not in scopes:
+        scopes.append("tool.execute.elevated")
+    tool_policy["internal_actor_scopes"] = scopes
+    path = tmp_path / "power-user-config.json"
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    yield path
+    path.unlink(missing_ok=True)
 
 
 def _cron_jobs_db(data_root: Path) -> Path:
@@ -480,18 +499,19 @@ def test_tcoh_08_minimax_schedule_show_pause_list_resume_cancel_live() -> None:
     not _CONFIG.exists(),
     reason=f"missing live config: {_CONFIG}",
 )
-def test_taoc_minimax_operational_controls_live() -> None:
+def test_taoc_minimax_operational_controls_live(power_user_config: Path) -> None:
     require_live_flag()
 
     run_id = "taoc-operational-controls"
     data_root = artifact_dir() / "data-roots" / run_id
     shutil.rmtree(data_root, ignore_errors=True)
     data_root.mkdir(parents=True, exist_ok=True)
+    config_path = power_user_config
 
     schedule_result = run_cli_session(
         session_id_prefix=run_id + "-schedule",
         agent_id=_AGENT_ID,
-        config_path=_CONFIG,
+        config_path=config_path,
         data_root_override=data_root,
         auto_confirm=True,
         user_input=(
@@ -510,11 +530,31 @@ def test_taoc_minimax_operational_controls_live() -> None:
     scheduled_jobs = _read_cron_jobs(db_path)
     assert len(scheduled_jobs) == 1
     task_id = str(scheduled_jobs[0]["job_id"])
-    schedule_revision = str(scheduled_jobs[0]["updated_at"])
+    management_result = run_cli_session(
+        session_id_prefix=run_id + "-management",
+        agent_id=_AGENT_ID,
+        config_path=config_path,
+        data_root_override=data_root,
+        auto_confirm=True,
+        user_input=(
+            "Use task.list with limit 10. Then use task.pause with exact task_id "
+            f"{task_id}, followed by task.resume with that same exact task_id. "
+            "Report the final enabled state."
+        ),
+    )
+    for tool_name in ("task.list", "task.pause", "task.resume"):
+        assert _trace_proves_tool_execution(management_result.trace_root, tool_name), (
+            f"TAOC live management did not execute {tool_name}; transcript: "
+            f"{management_result.transcript_path}"
+        )
+    managed_jobs = _read_cron_jobs(db_path)
+    assert len(managed_jobs) == 1
+    assert int(managed_jobs[0].get("enabled", 0) or 0) == 1
+    schedule_revision = str(managed_jobs[0]["updated_at"])
     lifecycle_result = run_cli_session(
         session_id_prefix=run_id + "-lifecycle",
         agent_id=_AGENT_ID,
-        config_path=_CONFIG,
+        config_path=config_path,
         data_root_override=data_root,
         auto_confirm=True,
         user_input=(
@@ -560,7 +600,7 @@ def test_taoc_minimax_operational_controls_live() -> None:
     scheduler_pause_result = run_cli_session(
         session_id_prefix=run_id + "-scheduler-pause",
         agent_id=_AGENT_ID,
-        config_path=_CONFIG,
+        config_path=config_path,
         data_root_override=data_root,
         auto_confirm=True,
         user_input=(
@@ -584,7 +624,7 @@ def test_taoc_minimax_operational_controls_live() -> None:
     scheduler_resume_result = run_cli_session(
         session_id_prefix=run_id + "-scheduler-resume",
         agent_id=_AGENT_ID,
-        config_path=_CONFIG,
+        config_path=config_path,
         data_root_override=data_root,
         auto_confirm=True,
         user_input=(
@@ -611,7 +651,7 @@ def test_taoc_minimax_operational_controls_live() -> None:
     history_result = run_cli_session(
         session_id_prefix=run_id + "-history",
         agent_id=_AGENT_ID,
-        config_path=_CONFIG,
+        config_path=config_path,
         data_root_override=data_root,
         auto_confirm=True,
         user_input=(

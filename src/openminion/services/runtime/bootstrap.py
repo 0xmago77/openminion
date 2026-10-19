@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, cast
 import logging
@@ -632,6 +633,10 @@ def _copy_optional_config_section(config: Any, name: str) -> Any | None:
     return value.model_copy(deep=True) if value is not None else None
 
 
+def _mapping_policy(value: object) -> Mapping[str, Any] | None:
+    return value if isinstance(value, Mapping) else None
+
+
 def build_brain_runner_bundle(service: Any) -> Any:
     """BBSE-02: canonical bootstrap path for the bridge's runner bundle."""
     import openminion.services.brain.service as bridge_module
@@ -743,7 +748,6 @@ def build_brain_runner_bundle(service: Any) -> Any:
         tool_resources=getattr(runtime_handle, "tool_resources", {}),
     )
     safety_api = bridge_module.create_safety_api(mode=service.mode)
-
     skill_api = bridge_module.create_skill_api(
         mode=service.mode,
         db_dir=db_dir,
@@ -770,6 +774,7 @@ def build_brain_runner_bundle(service: Any) -> Any:
     )
     cron_repository = create_sqlite_cron_repository(db_path=service.db_path)
     task_manager = _build_brain_task_manager(service, cron_repository)
+    pre_resolved_brain_config = service._resolve_brain_config()
     tool_api = bridge_module.create_tool_api(
         mode=service.mode,
         workspace_root=service._context.workspace_root,
@@ -786,6 +791,9 @@ def build_brain_runner_bundle(service: Any) -> Any:
         a2a_delegate_api=a2a_delegate_api,
         agent_query=getattr(runtime_handle, "agent_discovery_snapshot", None),
         agent_profile=default_profile,
+        tool_policy=_mapping_policy(
+            getattr(pre_resolved_brain_config, "tool_policy", None)
+        ),
         task_manager=task_manager,
         scheduler_readiness=getattr(runtime_handle, "scheduler_readiness", None),
         telemetryctl=service._telemetryctl,
@@ -815,18 +823,15 @@ def build_brain_runner_bundle(service: Any) -> Any:
         config,
         override_value=service._resolve_override_value,
     )
-    pre_resolved_brain_config = service._resolve_brain_config()
     profile_pae_config = _copy_optional_config_section(
         pre_resolved_brain_config,
         "proactive_autonomous_entrypoint",
     )
     profile_afe_config = _copy_optional_config_section(
-        pre_resolved_brain_config,
-        "auto_fact_extraction",
+        pre_resolved_brain_config, "auto_fact_extraction"
     )
     profile_aib_config = _copy_optional_config_section(
-        pre_resolved_brain_config,
-        "adaptive_budget",
+        pre_resolved_brain_config, "adaptive_budget"
     )
 
     from openminion.services.brain.service import _runtime_mode_config_from_agent
