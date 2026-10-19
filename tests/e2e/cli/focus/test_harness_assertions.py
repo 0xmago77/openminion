@@ -1232,6 +1232,19 @@ def test_inline_approval_menu_accepts_prompt_with_interleaved_tool_output() -> N
     assert active_approval_visible(screen)
 
 
+def test_inline_approval_menu_accepts_consecutive_write_result_overlap() -> None:
+    screen = (
+        'Approval required: file.write("tests/test_report.py")\n'
+        "Reason: CONFIRM_REQUIRED\n"
+        "[y] Allow once / [N] Deny (default) / [a] Always allow this exact "
+        "file.write call for this shell session: ● Wrote a file. · 1s\n"
+        '  └ {"path": "task_summary/report.py", "ok": true}'
+    )
+
+    assert inline_approval_menu(screen) == "compact"
+    assert active_approval_visible(screen)
+
+
 def test_inline_approval_menu_uses_latest_overlapping_prompt() -> None:
     screen = (
         "[y]es / [N]o / [a]lways: Approval required: file.write(wc.py)\n"

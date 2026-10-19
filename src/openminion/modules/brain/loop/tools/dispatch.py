@@ -27,6 +27,15 @@ def _tool_request_result(
     arguments: dict[str, Any] | None = None,
 ) -> tuple[ActionResult, bool]:
     if arguments is not None:
+        arguments = dict(arguments)
+        terminal_value = arguments.get("terminal_after_success")
+        if isinstance(terminal_value, str) and terminal_value.strip().lower() in {
+            "false",
+            "true",
+        }:
+            arguments["terminal_after_success"] = (
+                terminal_value.strip().lower() == "true"
+            )
         unexpected = sorted(set(arguments) - {"name", "terminal_after_success"})
         terminal_after_success = arguments.get("terminal_after_success", False)
         if (

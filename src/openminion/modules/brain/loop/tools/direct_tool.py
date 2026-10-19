@@ -216,6 +216,12 @@ def _visible_tool_specs_for_direct_tool_turn(
             continue
         restricted.append(specs_by_name[name])
         seen_names.add(name)
+    if (
+        TOOL_REQUEST_TOOL_NAME in specs_by_name
+        and TOOL_REQUEST_TOOL_NAME not in seen_names
+        and not loop_state.scratchpad.get("tool_schema_shortlisting.terminal_tool")
+    ):
+        restricted.append(specs_by_name[TOOL_REQUEST_TOOL_NAME])
     if restricted:
         loop_state.scratchpad["direct_tool_visible_tools_restricted"] = True
         return restricted

@@ -36,10 +36,7 @@ from openminion.modules.brain.constants import (
     BRAIN_DECISION_ROUTE_ACT,
 )
 from openminion.modules.brain.diagnostics.events import CanonicalEventLogger
-from openminion.modules.brain.trailers import (
-    EXPECTED_TRAILERS_METADATA_KEY,
-    TrailerPostprocessService,
-)
+from openminion.modules.brain.trailers import TrailerPostprocessService
 from openminion.modules.brain.bootstrap.route_catalog import decision_route_descriptions
 from openminion.modules.brain.schemas import (
     ActDecision,
@@ -58,6 +55,8 @@ from .entry_routing import (
     _bypass_decision_for_route,
     _entry_coding_decision,
     _entry_decompose_decision,
+    _entry_trailer_metadata,
+    _has_invalid_project_entry_control,
     _entry_query_text,
     _entry_research_decision,
     _is_empty_entry_response,
@@ -645,14 +644,8 @@ def decide(
         "trace_id": state.trace_id,
         "capability_category": normalized_capability_category,
         REQUESTABLE_TOOL_NAMES_METADATA_KEY: _tool_names_json(requestable_tool_specs),
+        **_entry_trailer_metadata(hints),
     }
-    expected_trailers = hints.get(EXPECTED_TRAILERS_METADATA_KEY)
-    if isinstance(expected_trailers, list | tuple) and expected_trailers:
-        entry_metadata[EXPECTED_TRAILERS_METADATA_KEY] = [
-            str(item or "").strip()
-            for item in expected_trailers
-            if str(item or "").strip()
-        ]
 
     _emit_decide_pre_call_status(
         runner,
@@ -663,7 +656,8 @@ def decide(
 
     reconsider_clarification = False
     clarification_reconsidered = False
-    for attempt in range(max_retries + 1):
+    project_control_retried = False
+    for attempt in range(max_retries + 2):
         logger.emit(
             "llm.identity_audit",
             {
@@ -755,6 +749,9 @@ def decide(
                 },
                 trace_id=state.trace_id,
             )
+            continue
+        if not project_control_retried and _has_invalid_project_entry_control(response):
+            project_control_retried = True
             continue
         if not _is_empty_entry_response(response):
             break

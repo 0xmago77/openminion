@@ -223,6 +223,10 @@ def inline_approval_menu(screen_text: str) -> str | None:
                 screen_text,
                 match=latest_compact,
             )
+            or _compact_approval_unrelated_tool_result_follows(
+                screen_text,
+                match=latest_compact,
+            )
             or not _interactive_surface_follows(
                 screen_text, offset=latest_compact.end()
             )
@@ -290,6 +294,21 @@ def _compact_approval_active_tool_follows(
         )
     )
     return bool(tool_statuses and tool_statuses[-1].group("running"))
+
+
+def _compact_approval_unrelated_tool_result_follows(
+    screen_text: str,
+    *,
+    match: re.Match[str],
+) -> bool:
+    targets = list(_APPROVAL_TARGET_RE.finditer(screen_text[: match.start()]))
+    if not targets:
+        return False
+    quoted = re.findall(r'["\']([^"\']+)["\']', targets[-1].group(0))
+    if not quoted:
+        return False
+    trailing = re.sub(r"\s+", "", screen_text[match.end() :])
+    return bool(trailing and quoted[-1] not in trailing)
 
 
 def inline_approval_fingerprint(screen_text: str) -> str | None:
