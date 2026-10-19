@@ -21,6 +21,7 @@ from openminion.modules.brain.schemas import (
     ExecutionTargetPayload,
     WorkingState,
 )
+from openminion.modules.brain.trailers import EXPECTED_TRAILERS_METADATA_KEY
 from openminion.modules.llm.client_call import usage_payload_from_response_usage
 
 from .entry import (
@@ -63,6 +64,16 @@ def _response_usage_payload(response: Any) -> dict[str, Any]:
         for source_key, output_key in field_map.items()
         if source_key in normalized
     }
+
+
+def _entry_trailer_metadata(hints: dict[str, Any]) -> dict[str, list[str]]:
+    raw_trailers = hints.get(EXPECTED_TRAILERS_METADATA_KEY)
+    if not isinstance(raw_trailers, list | tuple):
+        return {}
+    trailers = [
+        str(item or "").strip() for item in raw_trailers if str(item or "").strip()
+    ]
+    return {EXPECTED_TRAILERS_METADATA_KEY: trailers} if trailers else {}
 
 
 def _is_empty_entry_response(response: Any) -> bool:
@@ -152,6 +163,19 @@ def _grounded_project_handoff(
     ).casefold()
     request = " ".join(str(user_input or "").split()).casefold()
     return handoff if quote and quote in request else None
+
+
+def _has_invalid_project_entry_control(response: Any) -> bool:
+    for tool_name in (ENTRY_CODING_TOOL_NAME, ENTRY_RESEARCH_TOOL_NAME):
+        calls = _entry_tool_calls(response, tool_name)
+        if not calls:
+            continue
+        arguments = dict(getattr(calls[0], "arguments", {}) or {})
+        if arguments.get("project_handoff") is not None and not arguments.get(
+            "sub_intents"
+        ):
+            return True
+    return False
 
 
 def _subtasks_from_decompose_payload(

@@ -611,6 +611,40 @@ def test_unified_entry_rejects_project_handoff_without_valid_sub_intents(
     assert decision.reason_code == "entry_coding_invalid_payload"
 
 
+def test_unified_entry_retries_invalid_project_control_payload(
+    tmp_path: Path,
+) -> None:
+    invalid = _tool_response(
+        "coding",
+        {
+            "project_handoff": {
+                "goal": "Fix the calculator",
+                "success_criteria": ["Tests pass"],
+                "verification_commands": ["python -m pytest -q"],
+                "verification_domain": "coding",
+                "user_request_quote": "direct work",
+                "max_iterations": 3,
+            }
+        },
+    )
+    llm = _SequencedEntryLLM([invalid, _tool_response("coding", {})])
+    runner = _build_runner(tmp_path, llm_api=llm)
+
+    decision = runner._decide(
+        state=_state("entry-invalid-coding-retry"),
+        user_input="Do this as direct work without a background project.",
+        logger=fake_logger(),
+    )
+
+    assert len(llm.requests) == 2
+    assert decision.reason_code == "entry_coding_tool_call"
+    assert decision.act_profile == "coding"
+    retry_text = str(llm.requests[1].messages)
+    assert "previous unified entry response was invalid" in retry_text
+    assert "omit project_handoff for foreground work" in retry_text
+    assert "project_handoff requires nonempty sub_intents" in retry_text
+
+
 def test_coding_control_schema_exposes_optional_project_handoff() -> None:
     schema = coding_tool_spec().input_schema
 

@@ -3982,6 +3982,28 @@ def test_tool_request_rejects_malformed_arguments_before_activation() -> None:
         assert active_specs == []
 
 
+def test_tool_request_normalizes_json_boolean_string_before_activation() -> None:
+    requestable = {spec.name: spec for spec in _tool_specs("web.fetch")}
+    active_names: set[str] = set()
+    active_specs: list[ToolSpec] = []
+
+    result, activated = _tool_request_result(
+        requested_name="web.fetch",
+        active_tool_names=active_names,
+        requestable_specs_by_name=requestable,
+        active_tool_specs=active_specs,
+        arguments={"name": "web.fetch", "terminal_after_success": "false"},
+    )
+
+    assert activated is True
+    assert result.status == "success"
+    assert active_names == {"web.fetch"}
+    assert [spec.name for spec in active_specs] == [
+        "web.fetch",
+        TOOL_REQUEST_TOOL_NAME,
+    ]
+
+
 def test_runtime_scope_excludes_loop_control_tools() -> None:
     runtime = _FakeRuntime(
         responses=[

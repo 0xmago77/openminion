@@ -597,6 +597,19 @@ def test_focus_pty_keeps_top_down_transcript_with_inline_input_across_resize(
         assert screen_rows[row + 1] == ""
 
     def assert_flow_layout(session: PtySession, *, rows: int) -> None:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            screen_rows = session.screen_lines
+            occupied_rows = _occupied_rows(session)
+            if (
+                len(screen_rows) == rows
+                and len(occupied_rows) >= 2
+                and occupied_rows[-1].startswith("◆ ")
+                and occupied_rows[-2].startswith("❯ ")
+                and session.cursor_position[0] == len(occupied_rows) - 1
+            ):
+                break
+            time.sleep(0.05)
         assert len(session.screen_lines) == rows
         _assert_inline_composer(session)
         assert "cursor position requests" not in session.visible_transcript
