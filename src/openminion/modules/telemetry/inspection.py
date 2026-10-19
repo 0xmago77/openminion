@@ -12,8 +12,7 @@ import uuid
 from contextlib import contextmanager
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from pathlib import Path
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from openminion.base.config import OTELExporterConfig
@@ -235,7 +234,7 @@ def read_trace_file(
     include_content: bool = False,
 ) -> dict[str, Any]:
     root = trace_root.expanduser()
-    if not _safe_trace_path(root, trace_path):
+    if not _safe_trace_path(root, trace_path, missing_raises=True):
         raise ValueError(
             "trace path must name a readable, non-symlinked trace artifact"
         )
@@ -353,7 +352,6 @@ def build_telemetry_debug_report(
         return argument_error
     if service is None:
         return _empty_debug_report(selector_kind, export_health)
-
     store = service._store
     try:
         global_high_water = store.event_high_water()
@@ -380,7 +378,6 @@ def build_telemetry_debug_report(
         )
     if selected_id is None:
         return _empty_debug_report(selector_kind, export_health, diagnostics)
-
     try:
         high_water = store.event_high_water(invocation_id=selected_id)
         rows = list(
@@ -544,7 +541,6 @@ def _select_invocation(
         if not failed:
             return None, "canonical"
         return max(failed)[1], "canonical"
-
     starts = _iter_event_rows(
         store,
         high_water=high_water,
@@ -711,8 +707,19 @@ def _summarize_invocation(
     usage = aggregate_debug_usage(valid_rows, diagnostics)
     trace_count, trace_paths = _trace_facts(valid_rows, trace_root, diagnostics)
     terminal_data = terminal.event.data if terminal else {}
-    provider = str(terminal_data.get("provider") or "").strip() or None
-    model = str(terminal_data.get("model") or "").strip() or None
+    model_row = max(
+        (row for row in valid_rows if row.event.event_type.startswith("llm.call.")),
+        key=telemetry_event_sort_key,
+        default=None,
+    )
+    model_data = model_row.event.data if model_row else {}
+    provider = (
+        str(terminal_data.get("provider") or model_data.get("provider") or "").strip()
+        or None
+    )
+    model = (
+        str(terminal_data.get("model") or model_data.get("model") or "").strip() or None
+    )
     return (
         TelemetryDebugInvocation(
             invocation_id=invocation_id,
@@ -818,7 +825,9 @@ def _trace_facts(
     return trace_count, verified[:100]
 
 
-def _safe_trace_path(trace_root: Path | None, value: str) -> bool:
+def _safe_trace_path(
+    trace_root: Path | None, value: str, *, missing_raises: bool = False
+) -> bool:
     if not value or "\\" in value:
         return False
     relative = PurePosixPath(value)
@@ -837,7 +846,11 @@ def _safe_trace_path(trace_root: Path | None, value: str) -> bool:
             return False
     try:
         candidate.resolve(strict=True).relative_to(root.resolve(strict=True))
-    except (FileNotFoundError, ValueError, OSError):
+    except FileNotFoundError:
+        if missing_raises:
+            raise
+        return False
+    except (ValueError, OSError):
         return False
     return candidate.is_file() and os.access(candidate, os.R_OK)
 

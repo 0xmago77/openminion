@@ -30,10 +30,53 @@ class _Exporter:
 
 
 _EXTERNAL_CONTENT = {
+    "gen_ai.input.messages": [
+        {
+            "role": "user",
+            "content": "canonical-input-content",
+            "text": "canonical-input-text",
+            "final_text": "nested-output-under-canonical-input",
+        }
+    ],
+    "gen_ai.output.messages": [
+        {
+            "role": "assistant",
+            "content": "canonical-output-content",
+            "text": "canonical-output-text",
+            "user_message": "nested-input-under-canonical-output",
+        }
+    ],
     "user_message": "input-user",
-    "input_messages": [{"role": "user", "content": "input-list"}],
+    "input_messages": [
+        {
+            "role": "user",
+            "content": "input-list",
+            "assistant_text": "nested-output-under-input-list",
+        }
+    ],
+    "prompt": {
+        "content": "input-prompt",
+        "final_text": "nested-output-under-input",
+        "response": "nested-output-under-input",
+        "result": {"content": "nested-tool-under-input"},
+        "system_prompt": "nested-system-under-input",
+    },
+    "raw_prompt": "input-raw-prompt",
     "output_text": "output-text",
-    "output_messages": [{"role": "assistant", "content": "output-list"}],
+    "output_messages": [
+        {
+            "role": "assistant",
+            "content": "output-list",
+            "user_message": "nested-input-under-output-list",
+        }
+    ],
+    "response": {
+        "arguments": {"query": "nested-tool-under-output"},
+        "content": "output-response",
+        "history": "nested-input-under-output",
+        "system_prompt": "nested-system-under-output",
+    },
+    "raw_response": "output-raw-response",
     "content": "assistant-body",
     "result": {
         "content": "tool-result",
@@ -52,13 +95,55 @@ _EXTERNAL_CONTENT = {
     [
         (
             "include_input_messages",
-            ("input-user", "input-list"),
-            ("output-text", "output-list", "assistant-body", "tool-result"),
+            (
+                "canonical-input-content",
+                "canonical-input-text",
+                "input-user",
+                "input-list",
+                "input-prompt",
+                "input-raw-prompt",
+            ),
+            (
+                "canonical-output-content",
+                "canonical-output-text",
+                "nested-output-under-canonical-input",
+                "output-text",
+                "output-list",
+                "output-response",
+                "output-raw-response",
+                "nested-output-under-input",
+                "nested-output-under-input-list",
+                "nested-tool-under-input",
+                "nested-system-under-input",
+                "assistant-body",
+                "tool-result",
+            ),
         ),
         (
             "include_output_messages",
-            ("output-text", "output-list"),
-            ("input-user", "input-list", "assistant-body", "tool-result"),
+            (
+                "canonical-output-content",
+                "canonical-output-text",
+                "output-text",
+                "output-list",
+                "output-response",
+                "output-raw-response",
+            ),
+            (
+                "canonical-input-content",
+                "canonical-input-text",
+                "input-user",
+                "input-list",
+                "input-prompt",
+                "input-raw-prompt",
+                "nested-input-under-output",
+                "nested-input-under-output-list",
+                "nested-input-under-canonical-output",
+                "nested-tool-under-output",
+                "nested-system-under-output",
+                "assistant-body",
+                "tool-result",
+            ),
         ),
         (
             "include_tool_content",
@@ -125,6 +210,10 @@ def test_default_policy_omits_content_and_prohibited_fields() -> None:
             "diff_body": "private patch",
             "itinerary_details": "private itinerary",
             "raw_source": "private source",
+            "prompt": "private prompt",
+            "raw_prompt": "private raw prompt",
+            "response": "private response",
+            "raw_response": "private raw response",
             "api_key": "secret",
             "headers": {"Authorization": "secret"},
             "endpoint": "https://collector.invalid",
@@ -144,6 +233,10 @@ def test_default_policy_omits_content_and_prohibited_fields() -> None:
     assert "diff_body" not in cleaned
     assert "itinerary_details" not in cleaned
     assert "raw_source" not in cleaned
+    assert "prompt" not in cleaned
+    assert "raw_prompt" not in cleaned
+    assert "response" not in cleaned
+    assert "raw_response" not in cleaned
     assert "api_key" not in cleaned
     assert "headers" not in cleaned
     assert "endpoint" not in cleaned
@@ -249,6 +342,48 @@ def test_local_and_external_content_controls_are_independent(tmp_path) -> None:
     assert "api_key" not in external.data
     assert service.export_queue_stats() is None
     service.close_sync()
+
+
+def test_default_local_and_external_policy_omits_common_prompt_aliases(
+    tmp_path,
+) -> None:
+    config = OTELExporterConfig(
+        enabled=True,
+        endpoint="http://collector:4318",
+        noncritical_queue_capacity=0,
+    )
+    sink = RecordingOTELTraceSink()
+    exporter = OpenTelemetryTraceExporter(config, sink=sink)
+    service = TelemetryService(
+        str(tmp_path / ".openminion" / "telemetry.db"),
+        otel_exporter_config=config,
+        external_exporter=exporter,
+    )
+    secrets = ("prompt-secret", "response-secret", "nested-secret")
+    service.record_event_sync(
+        TelemetryEvent(
+            session_id="session-1",
+            turn_id="turn-1",
+            event_type="llm.call.completed",
+            data={
+                "prompt": secrets[0],
+                "raw_prompt": secrets[0],
+                "response": secrets[1],
+                "raw_response": secrets[1],
+                "messages": [{"role": "user", "prompt": secrets[2]}],
+                "usage": {"total_tokens": 3},
+            },
+        )
+    )
+
+    local = str(service._store.fetch_session_events("session-1")[0].data)
+    external = str(sink.records[0].attributes)
+    service.close_sync()
+
+    assert all(secret not in local for secret in secrets)
+    assert all(secret not in external for secret in secrets)
+    assert "total_tokens" in local
+    assert "total_tokens" in external
 
 
 def test_security_researcher_telemetry_is_structural_even_with_local_content(

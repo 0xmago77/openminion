@@ -13,12 +13,17 @@ _PROSE_KEYS = frozenset(
         "content",
         "final_text",
         "message",
+        "prompt",
+        "raw_prompt",
+        "raw_response",
+        "response",
         "summary",
         "system_prompt",
         "text",
         "user_message",
     }
 )
+_INHERITED_PROSE_KEYS = frozenset({"content", "text"})
 
 _GEN_AI_LLM_EVENT_TYPES = frozenset(
     {
@@ -267,6 +272,10 @@ def _flatten_payload(
     parent_sensitive_allowed: bool = False,
 ) -> None:
     key_name = prefix.rsplit(".", 1)[-1].lower()
+    payload_name = prefix[len("openminion.payload") :].lstrip(".").lower()
+    field_allowed = (
+        key_name in allowed_sensitive_fields or payload_name in allowed_sensitive_fields
+    )
     path_parts = tuple(part.lower() for part in prefix.split("."))
     if key_name == "sensitive_content" and "_telemetry_policy" in path_parts:
         return
@@ -281,6 +290,11 @@ def _flatten_payload(
             clean_key = str(key or "").strip()
             if not clean_key:
                 continue
+            child_name = (
+                f"{payload_name}.{clean_key.lower()}"
+                if payload_name
+                else clean_key.lower()
+            )
             _flatten_payload(
                 item,
                 prefix=f"{prefix}.{clean_key}",
@@ -290,24 +304,31 @@ def _flatten_payload(
                 parent_sensitive_allowed=(
                     parent_sensitive_allowed
                     or clean_key.lower() in allowed_sensitive_fields
+                    or child_name in allowed_sensitive_fields
                 ),
             )
         return
     if isinstance(value, (list, tuple)):
-        field_allowed = key_name in allowed_sensitive_fields
+        parent_allows_field = (
+            parent_sensitive_allowed and key_name in _INHERITED_PROSE_KEYS
+        )
         if (
             not include_assistant_body
             and key_name in _PROSE_KEYS
             and not field_allowed
-            and not parent_sensitive_allowed
+            and not parent_allows_field
         ):
             return
+        inherited_fields = (
+            _INHERITED_PROSE_KEYS
+            if field_allowed or parent_allows_field
+            else frozenset()
+        )
         out[prefix] = json.dumps(
             _normalize_otel_json_value(
                 list(value),
-                include_assistant_body=(
-                    include_assistant_body or field_allowed or parent_sensitive_allowed
-                ),
+                include_assistant_body=include_assistant_body,
+                allowed_prose_fields=allowed_sensitive_fields | inherited_fields,
             ),
             ensure_ascii=True,
             separators=(",", ":"),
@@ -320,11 +341,12 @@ def _flatten_payload(
     if value is None:
         return
     text = str(value)
+    parent_allows_field = parent_sensitive_allowed and key_name in _INHERITED_PROSE_KEYS
     if (
         not include_assistant_body
         and key_name in _PROSE_KEYS
-        and key_name not in allowed_sensitive_fields
-        and not parent_sensitive_allowed
+        and not field_allowed
+        and not parent_allows_field
     ):
         return
     out[prefix] = text
@@ -334,6 +356,7 @@ def _normalize_otel_json_value(
     value: Any,
     *,
     include_assistant_body: bool,
+    allowed_prose_fields: frozenset[str] = frozenset(),
 ) -> Any:
     if isinstance(value, dict):
         normalized: dict[str, Any] = {}
@@ -341,11 +364,16 @@ def _normalize_otel_json_value(
             clean_key = str(key or "").strip()
             if not clean_key:
                 continue
-            if not include_assistant_body and clean_key.lower() in _PROSE_KEYS:
+            if (
+                not include_assistant_body
+                and clean_key.lower() in _PROSE_KEYS
+                and clean_key.lower() not in allowed_prose_fields
+            ):
                 continue
             normalized[clean_key] = _normalize_otel_json_value(
                 item,
                 include_assistant_body=include_assistant_body,
+                allowed_prose_fields=allowed_prose_fields,
             )
         return normalized
     if isinstance(value, (list, tuple)):
@@ -353,6 +381,7 @@ def _normalize_otel_json_value(
             _normalize_otel_json_value(
                 item,
                 include_assistant_body=include_assistant_body,
+                allowed_prose_fields=allowed_prose_fields,
             )
             for item in value
         ]

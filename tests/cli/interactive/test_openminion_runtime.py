@@ -17,6 +17,7 @@ from openminion.cli.parser.contracts import ensure_cli_component_compatibility
 from openminion.cli.interactive.project_context import ProjectContextInfo
 from openminion.cli.interactive.runtime import OpenMinionRuntime
 from openminion.cli.interactive.runtime.messages import room_result_chat_messages
+from openminion.cli.interactive.runtime.token_usage import RuntimeTokenUsageMixin
 from openminion.cli.interactive.terminal.transcript import TerminalTranscript
 from openminion.cli.presentation.models import MessageKind
 from openminion.base.config.core import OpenMinionConfig
@@ -1709,7 +1710,7 @@ def test_openminion_runtime_context_trace_payload_uses_session_store() -> None:
     payload = tui_rt.context_trace_payload(session_id=tui_rt.session_id)
 
     assert payload["count"] == 1
-    assert rt.context_trace_store.requests == [trace_session_id]
+    assert rt.context_trace_store.requests == [trace_session_id, trace_session_id]
     assert payload["traces"] == [
         {
             "event_id": "",
@@ -1794,7 +1795,11 @@ def test_openminion_focus_runtime_reads_conversation_token_usage() -> None:
 
     assert "10 total" in current
     assert "10 model" in history
-    assert rt.context_trace_store.requests == [event_session_id, event_session_id]
+    assert rt.context_trace_store.requests == [
+        event_session_id,
+        event_session_id,
+        event_session_id,
+    ]
 
 
 def test_openminion_runtime_opens_durable_brain_token_store(tmp_path: Path) -> None:
@@ -1815,7 +1820,7 @@ def test_openminion_runtime_opens_durable_brain_token_store(tmp_path: Path) -> N
     tui_rt = OpenMinionRuntime(rt, target="focus")
     event_session_id = f"{tui_rt.session_id}::conv:focus-{tui_rt.session_id}"
     db_path = resolve_brain_sessions_db_path(storage_path=rt.storage_path)
-    db_path.parent.mkdir(parents=True)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     store = SQLiteSessionStore(db_path)
     try:
         store.create_session(session_id=event_session_id)
@@ -1870,10 +1875,73 @@ async def test_openminion_runtime_resets_session_usage_on_new_session_and_bind()
         target="tui",
         session_id="sess-existing",
     )
+    rt.context_trace_store.add_event(
+        other.id,
+        "llm.call.completed",
+        {
+            "provider": "openai",
+            "model": "gpt-test",
+            "usage": {"input_tokens": 8, "output_tokens": 2, "total_tokens": 10},
+        },
+    )
     tui_rt.bind_session(other.id)
-    reset_after_bind = tui_rt.token_usage_snapshot()
-    assert reset_after_bind.turn_total_tokens is None
-    assert reset_after_bind.session_total_tokens is None
+    restored_after_bind = tui_rt.token_usage_snapshot()
+    assert restored_after_bind.turn_total_tokens is None
+    assert restored_after_bind.session_total_tokens == 10
+
+    gateway.metadata = {
+        "total_input_tokens_used": "4",
+        "total_output_tokens_used": "1",
+        "total_tokens_used": "5",
+    }
+    _ = [chunk async for chunk in tui_rt.send_message("continue")]
+    assert tui_rt.token_usage_snapshot().session_total_tokens == 15
+
+    rt.context_trace_store.add_event(
+        other.id,
+        "llm.call.completed",
+        {
+            "provider": "openai",
+            "model": "gpt-test",
+            "usage": {"input_tokens": 4, "output_tokens": 1, "total_tokens": 5},
+        },
+    )
+    tui_rt.bind_session(other.id)
+    assert tui_rt.token_usage_snapshot().session_total_tokens == 15
+
+
+@pytest.mark.parametrize("failure_stage", ["open", "read", "close"])
+def test_openminion_runtime_usage_restore_is_nonfatal(
+    failure_stage: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rt = _FakeRuntime()
+
+    def unavailable(*_args: object, **_kwargs: object) -> list[object]:
+        raise OSError("telemetry unavailable")
+
+    if failure_stage == "open":
+        monkeypatch.setattr(
+            RuntimeTokenUsageMixin,
+            "_token_usage_store",
+            lambda _self: unavailable(),
+        )
+    elif failure_stage == "read":
+        rt.context_trace_store.list_events = unavailable
+    else:
+        store = SimpleNamespace(
+            list_events=lambda *_args, **_kwargs: [],
+            close=unavailable,
+        )
+        monkeypatch.setattr(
+            RuntimeTokenUsageMixin,
+            "_token_usage_store",
+            lambda _self: (store, True),
+        )
+
+    tui_rt = OpenMinionRuntime(rt)
+
+    assert tui_rt.token_usage_snapshot().session_total_tokens is None
 
 
 @pytest.mark.asyncio

@@ -1,3 +1,4 @@
+import sqlite3
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Mapping
@@ -76,7 +77,10 @@ class RuntimeTokenUsageMixin:
             format_interactive_token_history,
             format_interactive_token_summary,
         )
-        from openminion.modules.telemetry.usage import StatsService
+        from openminion.modules.telemetry.usage import (
+            StatsService,
+            usage_event_session_id,
+        )
 
         store, owns_store = self._token_usage_store()
         try:
@@ -89,9 +93,7 @@ class RuntimeTokenUsageMixin:
                 )
             summaries = tuple(
                 replace(
-                    service.get_session_token_usage(
-                        self._usage_event_session_id(session)
-                    ),
+                    service.get_session_token_usage(usage_event_session_id(session)),
                     session_id=str(getattr(session, "id", "") or ""),
                 )
                 for session in self._recent_surface_sessions(recent)
@@ -154,17 +156,6 @@ class RuntimeTokenUsageMixin:
                 channel=self._channel,
                 target=self._target,
             )
-        )
-
-    @staticmethod
-    def _usage_event_session_id(session: Any) -> str:
-        session_id = str(getattr(session, "id", "") or "").strip()
-        metadata = getattr(session, "metadata", {}) or {}
-        conversation_id = str(metadata.get("conversation_id", "") or "").strip()
-        if not conversation_id and str(getattr(session, "target", "")) == "focus":
-            conversation_id = f"focus-{session_id}"
-        return (
-            f"{session_id}::conv:{conversation_id}" if conversation_id else session_id
         )
 
     def _begin_turn_usage_tracking(self) -> None:
@@ -239,6 +230,37 @@ class RuntimeTokenUsageMixin:
         self._last_chat_phase_timing_payload = None
         self._last_live_usage_update_at = None
         self._usage_updated_at_monotonic = None
+
+    def _restore_token_usage_accounting(self) -> None:
+        from openminion.modules.telemetry.usage import StatsService
+
+        self._reset_token_usage_accounting()
+        try:
+            store, owns_store = self._token_usage_store()
+            try:
+                summary = StatsService(store).get_session_token_usage(
+                    self._turn_session_id()
+                )
+            finally:
+                if owns_store:
+                    store.close()
+        except (OSError, RuntimeError, sqlite3.Error):
+            return
+        if not summary.records:
+            return
+        self._completed_session_usage = TokenUsageTotals(
+            prompt_tokens=summary.total_input_tokens,
+            completion_tokens=summary.total_output_tokens,
+            total_tokens=(summary.total_provider_tokens + summary.total_derived_tokens),
+            cached_tokens=summary.total_cache_read_tokens,
+            max_single_call_prompt_tokens=max(
+                record.input_tokens for record in summary.records
+            ),
+            max_single_call_total_tokens=max(
+                record.total_tokens for record in summary.records
+            ),
+            llm_calls=summary.coverage.observed_llm_call_events,
+        )
 
     def _context_limit_tokens(self) -> int | None:
         runtime_cfg = getattr(getattr(self._rt, "config", None), "runtime", None)

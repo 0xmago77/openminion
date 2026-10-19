@@ -8,10 +8,21 @@ from typing import Any, cast
 
 _SENSITIVE_FIELDS = frozenset(
     {
+        "assistant_body",
+        "assistant_text",
+        "body",
         "content",
         "error_text",
+        "final_text",
+        "message",
+        "prompt",
+        "raw_prompt",
+        "raw_response",
+        "response",
+        "summary",
         "system_prompt",
         "system_instructions",
+        "text",
         "user_message",
         "history",
         "input_messages",
@@ -34,6 +45,7 @@ _SENSITIVE_FIELDS = frozenset(
         "gen_ai.tool.definitions",
     }
 )
+_INHERITED_SENSITIVE_FIELDS = frozenset({"content", "text"})
 _PROHIBITED_FIELDS = frozenset(
     {
         "api_key",
@@ -252,11 +264,14 @@ def apply_content_policy(
                     removed.append(item_path)
                     continue
                 field_allowed = field in allowed_sensitive_fields
+                parent_allows_field = (
+                    parent_sensitive_allowed and field in _INHERITED_SENSITIVE_FIELDS
+                )
                 if (
                     field in _SENSITIVE_FIELDS
                     and not allow_sensitive_content
                     and not field_allowed
-                    and not parent_sensitive_allowed
+                    and not parent_allows_field
                 ):
                     removed.append(item_path)
                     continue
