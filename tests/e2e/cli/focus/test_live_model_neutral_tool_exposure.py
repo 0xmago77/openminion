@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import sys
 import time
 import uuid
 
@@ -774,7 +775,7 @@ def test_live_minimax_approved_project_research_code_git_and_denial(
     source_text = (workspace / "source_info.py").read_text(encoding="utf-8")
     verification = subprocess.run(
         [
-            str(Path(__file__).resolve().parents[4] / ".venv/bin/python3.11"),
+            sys.executable,
             "-m",
             "pytest",
             "-q",

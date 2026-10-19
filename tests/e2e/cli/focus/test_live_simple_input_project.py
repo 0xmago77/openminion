@@ -704,6 +704,44 @@ def _run_live_scenario(
                     "accepted_step_sha256_before_restart": _digest(accepted_step_value),
                     "accepted_step_mtime_ns_before_restart": (accepted_step_mtime_ns),
                 }
+            elif scenario_id == "research-then-code":
+                interrupted_run, _ = _wait_for_run(
+                    probe,
+                    run_id,
+                    lambda run, _checkpoint: run.status
+                    in {
+                        AutonomyRunStatus.WAITING_FOR_INPUT,
+                        AutonomyRunStatus.COMPLETED,
+                    },
+                )
+                if interrupted_run.status == AutonomyRunStatus.WAITING_FOR_INPUT:
+                    assert interrupted_run.operator_summary.startswith(
+                        "Policy confirmation required."
+                    )
+                    answered = probe.run_slash_turn(
+                        session,
+                        (
+                            f"/project answer {run_id} "
+                            "--input-request-id policy-confirmation-1 "
+                            "--answer session"
+                        ),
+                        marker=r"operator_answers: 1",
+                        timeout=120,
+                    )
+                    resumed = probe.run_slash_turn(
+                        session,
+                        f"/project resume {run_id}",
+                        marker=r"task_state: active|status: running",
+                        timeout=120,
+                    )
+                    visible_status["after_policy_answer"] = answered
+                    visible_status["after_policy_resume"] = resumed
+                    transcript_parts.extend((answered, resumed))
+                    write_transcript(
+                        root,
+                        scenario_id,
+                        "\n\n--- status ---\n".join(transcript_parts),
+                    )
         run, checkpoint = _wait_for_run(
             probe,
             run_id,
