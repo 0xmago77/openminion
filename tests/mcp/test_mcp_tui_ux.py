@@ -119,3 +119,33 @@ def test_runtime_provider_status_uses_snapshot_without_live_discovery() -> None:
     assert len(rows) == 1
     assert rows[0].status == "ready"
     assert rows[0].tool_names == ("echo",)
+
+
+def test_runtime_provider_status_fallback_separates_auxiliary_tools() -> None:
+    runtime = object.__new__(OpenMinionRuntime)
+    runtime._rt = SimpleNamespace(  # noqa: SLF001
+        config=SimpleNamespace(
+            runtime=SimpleNamespace(
+                mcp_servers=[MCPServerConfig(name="Fixture", command=["fixture"])]
+            )
+        ),
+        tools=SimpleNamespace(
+            mcp_manager=None,
+            list=lambda: {
+                "mcp.fixture.echo": object(),
+                "mcp.fixture.prompt.daily": object(),
+                "mcp.fixture.resource.card": object(),
+                "mcp.fixture.resource_template.docs": object(),
+            },
+        ),
+    )
+
+    rows = runtime.mcp_status_rows()
+
+    assert len(rows) == 1
+    assert rows[0].status == "registered"
+    assert rows[0].tool_count == 1
+    assert rows[0].prompt_count == 1
+    assert rows[0].resource_count == 1
+    assert rows[0].resource_template_count == 1
+    assert rows[0].tool_names == ("mcp.fixture.echo",)

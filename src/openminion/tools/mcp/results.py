@@ -40,14 +40,26 @@ def coerce_optional_int(value: Any) -> int | None:
 
 
 def normalize_completion_result(result: dict[str, Any]) -> MCPCompletionResult:
-    completion = result.get("completion", {})
+    completion = result.get("completion")
     if not isinstance(completion, dict):
-        completion = {}
-    raw_values = completion.get("values", [])
+        raise _shape_error("completion must be an object")
+    raw_values = completion.get("values")
+    if not isinstance(raw_values, list) or any(
+        not isinstance(item, str) for item in raw_values
+    ):
+        raise _shape_error("completion.values must be an array of strings")
+    raw_total = completion.get("total")
+    if raw_total is not None and (
+        isinstance(raw_total, bool) or not isinstance(raw_total, int)
+    ):
+        raise _shape_error("completion.total must be an integer")
+    raw_has_more = completion.get("hasMore", False)
+    if not isinstance(raw_has_more, bool):
+        raise _shape_error("completion.hasMore must be a boolean")
     return MCPCompletionResult(
-        values=tuple(str(item) for item in raw_values if isinstance(item, str)),
-        total=coerce_optional_int(completion.get("total")),
-        has_more=bool(completion.get("hasMore", False)),
+        values=tuple(raw_values),
+        total=raw_total,
+        has_more=raw_has_more,
     )
 
 
@@ -59,10 +71,11 @@ def normalize_tool_result(
     output_schema: dict[str, Any],
     stderr_tail: str,
 ) -> dict[str, Any]:
-    content_items = result.get("content", [])
-    normalized_content = [
-        dict(item) for item in content_items if isinstance(item, dict)
-    ]
+    normalized_content = _object_list(result, "content")
+    if any(not str(item.get("type", "")).strip() for item in normalized_content):
+        raise _shape_error("content items must include type")
+    if "isError" in result and not isinstance(result["isError"], bool):
+        raise _shape_error("isError must be a boolean")
     text_parts = [
         str(item.get("text", "") or "").strip()
         for item in normalized_content
@@ -118,10 +131,13 @@ def normalize_tool_result(
 def normalize_prompt_result(
     *, server_name: str, remote_name: str, result: dict[str, Any]
 ) -> dict[str, Any]:
-    raw_messages = result.get("messages", [])
-    normalized_messages = [
-        dict(item) for item in raw_messages if isinstance(item, dict)
-    ]
+    normalized_messages = _object_list(result, "messages")
+    if any(
+        str(item.get("role", "")).strip() not in {"user", "assistant"}
+        or "content" not in item
+        for item in normalized_messages
+    ):
+        raise _shape_error("messages items must include role and content")
     text_parts = [
         text
         for item in normalized_messages
@@ -145,10 +161,12 @@ def normalize_prompt_result(
 def normalize_resource_result(
     *, server_name: str, resource_uri: str, result: dict[str, Any]
 ) -> dict[str, Any]:
-    raw_contents = result.get("contents", [])
-    normalized_contents = [
-        dict(item) for item in raw_contents if isinstance(item, dict)
-    ]
+    normalized_contents = _object_list(result, "contents")
+    if any(
+        not str(item.get("uri", "")).strip() or not ({"text", "blob"} & item.keys())
+        for item in normalized_contents
+    ):
+        raise _shape_error("contents items must include uri and text or blob")
     text_parts = [
         str(item.get("text", "") or "").strip()
         for item in normalized_contents
@@ -183,6 +201,20 @@ def _collect_text_fragments(content: Any) -> list[str]:
     if isinstance(content, list):
         return [part for item in content for part in _collect_text_fragments(item)]
     return []
+
+
+def _object_list(result: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    raw = result.get(key)
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
+        raise _shape_error(f"{key} must be an array of objects")
+    return [dict(item) for item in raw]
+
+
+def _shape_error(message: str) -> MCPProtocolError:
+    return MCPProtocolError(
+        f"Malformed MCP result: {message}.",
+        reason_code="mcp_result_shape_invalid",
+    )
 
 
 __all__ = [

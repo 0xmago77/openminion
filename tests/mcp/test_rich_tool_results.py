@@ -6,7 +6,12 @@ import pytest
 
 from openminion.base.config.mcp import MCPServerConfig
 from openminion.tools.mcp.manager import MCPProtocolError, MCPServerSession
-from openminion.tools.mcp.results import normalize_tool_result
+from openminion.tools.mcp.results import (
+    normalize_completion_result,
+    normalize_prompt_result,
+    normalize_resource_result,
+    normalize_tool_result,
+)
 
 
 class _ToolListTransport:
@@ -176,7 +181,7 @@ def test_mcp_tool_result_accepts_all_structured_json_types(
     normalized = normalize_tool_result(
         server_name="fixture",
         remote_name="rich-tool",
-        result={"structuredContent": value, "isError": False},
+        result={"content": [], "structuredContent": value, "isError": False},
         output_schema=schema,
         stderr_tail="",
     )
@@ -190,14 +195,14 @@ def test_mcp_tool_result_distinguishes_absent_structured_content_from_null() -> 
     absent = normalize_tool_result(
         server_name="fixture",
         remote_name="rich-tool",
-        result={"isError": False},
+        result={"content": [], "isError": False},
         output_schema={"type": "null"},
         stderr_tail="",
     )
     explicit_null = normalize_tool_result(
         server_name="fixture",
         remote_name="rich-tool",
-        result={"structuredContent": None, "isError": False},
+        result={"content": [], "structuredContent": None, "isError": False},
         output_schema={"type": "null"},
         stderr_tail="",
     )
@@ -213,9 +218,141 @@ def test_mcp_tool_result_validates_explicit_null_against_output_schema() -> None
         normalize_tool_result(
             server_name="fixture",
             remote_name="rich-tool",
-            result={"structuredContent": None, "isError": False},
+            result={"content": [], "structuredContent": None, "isError": False},
             output_schema={"type": "string"},
             stderr_tail="",
         )
 
     assert excinfo.value.reason_code == "mcp_output_schema_invalid"
+
+
+@pytest.mark.parametrize(
+    ("normalizer", "result"),
+    [
+        (normalize_completion_result, {"completion": {"values": "bad"}}),
+        (normalize_completion_result, {"completion": {"total": "1"}}),
+        (normalize_completion_result, {"completion": {"hasMore": "false"}}),
+    ],
+)
+def test_completion_result_rejects_invalid_payload_types(normalizer, result) -> None:
+    with pytest.raises(MCPProtocolError) as excinfo:
+        normalizer(result)
+
+    assert excinfo.value.reason_code == "mcp_result_shape_invalid"
+
+
+@pytest.mark.parametrize(
+    ("normalizer", "kwargs"),
+    [
+        (
+            normalize_tool_result,
+            {
+                "server_name": "fixture",
+                "remote_name": "tool",
+                "result": {"content": ["bad"]},
+                "output_schema": {},
+                "stderr_tail": "",
+            },
+        ),
+        (
+            normalize_tool_result,
+            {
+                "server_name": "fixture",
+                "remote_name": "tool",
+                "result": {"isError": "false"},
+                "output_schema": {},
+                "stderr_tail": "",
+            },
+        ),
+        (
+            normalize_prompt_result,
+            {
+                "server_name": "fixture",
+                "remote_name": "prompt",
+                "result": {"messages": {}},
+            },
+        ),
+        (
+            normalize_resource_result,
+            {
+                "server_name": "fixture",
+                "resource_uri": "file://fixture",
+                "result": {"contents": ["bad"]},
+            },
+        ),
+    ],
+)
+def test_mcp_results_reject_invalid_object_lists(normalizer, kwargs) -> None:
+    with pytest.raises(MCPProtocolError) as excinfo:
+        normalizer(**kwargs)
+
+    assert excinfo.value.reason_code == "mcp_result_shape_invalid"
+
+
+@pytest.mark.parametrize(
+    ("normalizer", "kwargs"),
+    [
+        (normalize_completion_result, {"result": {"completion": {}}}),
+        (
+            normalize_tool_result,
+            {
+                "server_name": "fixture",
+                "remote_name": "tool",
+                "result": {},
+                "output_schema": {},
+                "stderr_tail": "",
+            },
+        ),
+        (
+            normalize_prompt_result,
+            {"server_name": "fixture", "remote_name": "prompt", "result": {}},
+        ),
+        (
+            normalize_resource_result,
+            {"server_name": "fixture", "resource_uri": "file://fixture", "result": {}},
+        ),
+    ],
+)
+def test_mcp_results_require_protocol_result_fields(normalizer, kwargs) -> None:
+    with pytest.raises(MCPProtocolError) as excinfo:
+        normalizer(**kwargs)
+
+    assert excinfo.value.reason_code == "mcp_result_shape_invalid"
+
+
+@pytest.mark.parametrize(
+    ("normalizer", "kwargs"),
+    [
+        (
+            normalize_tool_result,
+            {
+                "server_name": "fixture",
+                "remote_name": "tool",
+                "result": {"content": [{}]},
+                "output_schema": {},
+                "stderr_tail": "",
+            },
+        ),
+        (
+            normalize_prompt_result,
+            {
+                "server_name": "fixture",
+                "remote_name": "prompt",
+                "result": {"messages": [{}]},
+            },
+        ),
+        (
+            normalize_resource_result,
+            {
+                "server_name": "fixture",
+                "resource_uri": "file://fixture",
+                "result": {"contents": [{}]},
+            },
+        ),
+    ],
+)
+def test_mcp_results_reject_empty_result_items(normalizer, kwargs) -> None:
+    with pytest.raises(MCPProtocolError) as excinfo:
+        normalizer(**kwargs)
+
+    assert excinfo.value.reason_code == "mcp_result_shape_invalid"

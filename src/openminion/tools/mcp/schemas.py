@@ -11,6 +11,8 @@ from jsonschema.exceptions import SchemaError, ValidationError
 
 from openminion.base.config.mcp import normalize_mcp_tool_segment
 
+from .errors import MCPProtocolError
+
 
 @dataclass(frozen=True)
 class MCPToolPosture:
@@ -115,6 +117,17 @@ class MCPSamplingRequest:
     metadata: dict[str, Any] = field(default_factory=dict)
     raw_params: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.max_tokens, bool)
+            or not isinstance(self.max_tokens, int)
+            or self.max_tokens <= 0
+        ):
+            raise MCPProtocolError(
+                "MCP sampling maxTokens must be a positive integer.",
+                reason_code="mcp_sampling_max_tokens_invalid",
+            )
+
 
 @dataclass(frozen=True)
 class MCPSamplingResult:
@@ -205,6 +218,7 @@ def prepare_mcp_registration_schema(
     input_schema: Mapping[str, Any] | None,
 ) -> MCPPreparedSchema:
     schema = dict(input_schema or {})
+    _validate_schema_size(schema)
     try:
         Draft202012Validator.check_schema(schema)
     except SchemaError as exc:
@@ -215,6 +229,28 @@ def prepare_mcp_registration_schema(
         mode="strict",
         parameters_schema=copy.deepcopy(schema),
     )
+
+
+def _validate_schema_size(schema: Mapping[str, Any]) -> None:
+    max_depth = 100
+    max_nodes = 10_000
+    stack: list[tuple[Any, int]] = [(schema, 0)]
+    nodes = 0
+    while stack:
+        value, depth = stack.pop()
+        nodes += 1
+        if nodes > max_nodes:
+            raise MCPUnsupportedSchemaError(
+                f"MCP schema exceeds maximum size {max_nodes}"
+            )
+        if depth > max_depth:
+            raise MCPUnsupportedSchemaError(
+                f"MCP schema exceeds maximum depth {max_depth}"
+            )
+        if not isinstance(value, (Mapping, list)):
+            continue
+        children = value.values() if isinstance(value, Mapping) else value
+        stack.extend((child, depth + 1) for child in children)
 
 
 def extract_mcp_header_bindings(

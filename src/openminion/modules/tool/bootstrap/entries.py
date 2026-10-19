@@ -89,7 +89,7 @@ def _dynamic_tool_bootstrap_entries(
 ) -> tuple[_ToolBootstrapEntry, ...]:
     runtime_entries = list(tool_bootstrap_entries or _TOOL_BOOTSTRAP_ENTRIES)
     servers = list(getattr(config, "mcp_servers", None) or [])
-    if servers:
+    if any(server.enabled for server in servers):
         runtime_entries.append(
             _ToolBootstrapEntry(
                 kind=_MCP_TOOL_BOOTSTRAP_ENTRY.kind,

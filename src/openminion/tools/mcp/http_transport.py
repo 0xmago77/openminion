@@ -1,6 +1,7 @@
 """MCP client transport."""
 
 import json
+import socket
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -42,6 +43,14 @@ from .transport_protocol import MCPSubscriptionValidator
 from .transport_protocol import parse_sse_messages
 from .transport_protocol import parse_www_authenticate
 from .transport_protocol import protocol_version_from_payload
+
+
+def _interrupt_http_response(response: Any) -> None:
+    try:
+        response.fp.raw._sock.shutdown(socket.SHUT_RDWR)  # noqa: SLF001
+    except (AttributeError, OSError):
+        pass
+    response.close()
 
 
 def probe_oauth_challenge(server: MCPServerConfig) -> dict[str, str]:
@@ -150,13 +159,15 @@ class StreamableHTTPMCPTransport:
         self._active_responses: dict[int, Any] = {}
         self._cancelled_requests: set[int] = set()
         self._state_lock = threading.RLock()
+        self._closed = False
 
     @property
     def server_name(self) -> str:
         return self._server.name
 
     def is_running(self) -> bool:
-        return True
+        with self._state_lock:
+            return not self._closed
 
     def stderr_tail(self, *, limit: int = 4096, wait_seconds: float = 0.0) -> str:
         del limit, wait_seconds
@@ -176,6 +187,12 @@ class StreamableHTTPMCPTransport:
         )
 
     def start(self) -> None:
+        with self._state_lock:
+            if self._closed:
+                raise MCPServerUnavailableError(
+                    f"MCP server '{self.server_name}' transport is closed.",
+                    reason_code="mcp_server_unavailable",
+                )
         if not self._server.url:
             raise MCPRemoteTransportError(
                 f"MCP server '{self.server_name}' has no remote URL configured.",
@@ -208,7 +225,7 @@ class StreamableHTTPMCPTransport:
             if response is None:
                 return
             self._cancelled_requests.add(request_id)
-            response.close()
+        _interrupt_http_response(response)
 
     def request(
         self,
@@ -242,15 +259,31 @@ class StreamableHTTPMCPTransport:
 
     def close(self) -> None:
         with self._state_lock:
-            if not self._session.session_id or not self._server.url:
+            if self._closed:
                 return
-            headers = self._base_headers(protocol_version=MCP_PROTOCOL_VERSION)
-            headers.update(self._session.request_headers())
-            auth_header = self._authorization_header()
-            if auth_header:
-                headers["Authorization"] = auth_header
+            self._closed = True
+            active_responses = list(self._active_responses.items())
+            self._active_responses.clear()
+            self._cancelled_requests.update(
+                request_id for request_id, _response in active_responses
+            )
+            session_id = self._session.session_id
+            server_url = self._server.url
+            if not session_id or not server_url:
+                self._session.clear()
+                headers = None
+            else:
+                headers = self._base_headers(protocol_version=MCP_PROTOCOL_VERSION)
+                headers.update(self._session.request_headers())
+                auth_header = self._authorization_header()
+                if auth_header:
+                    headers["Authorization"] = auth_header
+        for _request_id, response in active_responses:
+            _interrupt_http_response(response)
+        if headers is None:
+            return
         request = urllib_request.Request(
-            url=self._server.url,
+            url=server_url,
             method="DELETE",
             headers=headers,
         )
@@ -496,7 +529,18 @@ class StreamableHTTPMCPTransport:
         request_id = payload.get("id")
         if content_type.startswith("text/event-stream") and isinstance(request_id, int):
             with self._state_lock:
-                self._active_responses[request_id] = response
+                if self._closed:
+                    self._cancelled_requests.add(request_id)
+                    late_registration = True
+                else:
+                    self._active_responses[request_id] = response
+                    late_registration = False
+            if late_registration:
+                _interrupt_http_response(response)
+                raise MCPProtocolError(
+                    f"MCP request {request_id} was cancelled.",
+                    reason_code="mcp_request_cancelled",
+                )
         try:
             if content_type.startswith("text/event-stream"):
                 messages = iter_sse_messages(

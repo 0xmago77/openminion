@@ -1,6 +1,7 @@
 """Per-server MCP session lifecycle and normalization."""
 
 import logging
+import threading
 import time
 from collections import deque
 from typing import Any
@@ -56,7 +57,6 @@ from .modern import (
 )
 from .results import (
     MCPCallError,
-    coerce_optional_int,
     normalize_completion_result,
     normalize_prompt_result,
     normalize_resource_result,
@@ -125,6 +125,7 @@ class MCPServerSession:
             client_capability_state or MCPClientCapabilityState()
         )
         self._request_router = _SessionRequestRouter(self)
+        self._lifecycle_lock = threading.RLock()
         self._restart_history: deque[float] = deque()
         self._restart_total = 0
         self._capability_change_handler = capability_change_handler
@@ -163,17 +164,18 @@ class MCPServerSession:
         return self._server_instructions
 
     def start(self) -> None:
-        if self._initialized and self._transport.is_running():
-            return
-        self._transport.start()
-        try:
-            if not self._try_start_modern_protocol():
-                self._start_legacy_protocol()
-        except Exception:
-            self._transport.close()
-            self._initialized = False
-            raise
-        self._initialized = True
+        with self._lifecycle_lock:
+            if self._initialized and self._transport.is_running():
+                return
+            self._transport.start()
+            try:
+                if not self._try_start_modern_protocol():
+                    self._start_legacy_protocol()
+            except Exception:
+                self._transport.close()
+                self._initialized = False
+                raise
+            self._initialized = True
 
     def _try_start_modern_protocol(self) -> bool:
         params = {
@@ -497,7 +499,7 @@ class MCPServerSession:
         if progress_token:
             params["_meta"] = {"progressToken": progress_token.strip()}
         if self._initialized and not self._transport.is_running():
-            self._restart_transport()
+            self._restart_transport(observed_restart_total=self._restart_total)
         try:
             result = self._request_with_recovery(
                 method=MCP_TOOLS_CALL_METHOD,
@@ -677,11 +679,12 @@ class MCPServerSession:
         return list(self._resource_updates)[-max(1, int(limit)) :]
 
     def close(self, *, reset_initialized: bool = True) -> None:
-        self._transport.close()
-        if reset_initialized:
-            self._initialized = False
-            self._modern_protocol = False
-            self._response_cache.clear()
+        with self._lifecycle_lock:
+            self._transport.close()
+            if reset_initialized:
+                self._initialized = False
+                self._modern_protocol = False
+                self._response_cache.clear()
 
     def _with_client_meta(self, params: dict[str, Any]) -> dict[str, Any]:
         client_capabilities = self._client_capability_state.declared_capabilities()
@@ -722,8 +725,10 @@ class MCPServerSession:
         )
         if cached is not None:
             return cached
+        observed_restart_total = self._restart_total
         if self._initialized and not self._transport.is_running():
-            self._restart_transport()
+            self._restart_transport(observed_restart_total=observed_restart_total)
+            observed_restart_total = self._restart_total
         try:
             result = self._transport.request(
                 method=method,
@@ -734,7 +739,7 @@ class MCPServerSession:
         except MCPServerUnavailableError:
             if not retry_on_unavailable:
                 raise
-            self._restart_transport()
+            self._restart_transport(observed_restart_total=observed_restart_total)
             result = self._transport.request(
                 method=method,
                 params=params,
@@ -791,15 +796,18 @@ class MCPServerSession:
             server_request_handler=self._request_router,
         )
 
-    def _restart_transport(self) -> None:
+    def _restart_transport(self, *, observed_restart_total: int) -> None:
         if self._server.transport != "stdio":
             raise MCPServerUnavailableError(
                 f"MCP server '{self.server_name}' is unavailable.",
                 reason_code="mcp_server_unavailable",
             )
-        self._record_restart_attempt()
-        self.close(reset_initialized=True)
-        self.start()
+        with self._lifecycle_lock:
+            if self._restart_total != observed_restart_total:
+                return
+            self._record_restart_attempt()
+            self.close(reset_initialized=True)
+            self.start()
 
     def _record_restart_attempt(self) -> None:
         now = time.monotonic()
@@ -854,7 +862,7 @@ class MCPServerSession:
                         for item in (params.get("messages", []) or [])
                         if isinstance(item, dict)
                     ),
-                    max_tokens=coerce_optional_int(params.get("maxTokens")),
+                    max_tokens=params.get("maxTokens"),
                     system_prompt=str(params.get("systemPrompt", "") or "").strip(),
                     model_preferences=dict(params.get("modelPreferences", {}) or {}),
                     metadata=dict(params.get("metadata", {}) or {}),

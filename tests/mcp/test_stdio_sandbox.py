@@ -36,6 +36,14 @@ def test_stdio_sandbox_blocks_untrusted_server_by_default() -> None:
     assert excinfo.value.reason_code == "mcp_stdio_untrusted"
 
 
+def test_stdio_sandbox_can_disable_trust_requirement() -> None:
+    transport = StdioMCPTransport(
+        _server(stdio_sandbox=MCPStdioSandboxConfig(require_trust=False))
+    )
+
+    transport._enforce_stdio_trust()  # noqa: SLF001
+
+
 def test_stdio_sandbox_blocks_cwd_outside_allowlist(tmp_path: Path) -> None:
     allowed = tmp_path / "allowed"
     denied = tmp_path / "denied"

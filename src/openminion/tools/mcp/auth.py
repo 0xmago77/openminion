@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import math
 import secrets
 import threading
 import time
@@ -16,6 +17,27 @@ from openminion.base.config.mcp import MCPAuthorizationConfig
 from openminion.base.config.runtime import RuntimeConfig
 from openminion.modules.runtime.sync import run_async_compat
 from openminion.modules.secret.schemas import SecretNotFoundError
+
+
+class _HTTPSRedirectHandler(urllib_request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: Any,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> Any:
+        _require_https_url(newurl, field_name="OAuth redirect URL")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_HTTPS_OPENER = urllib_request.build_opener(_HTTPSRedirectHandler())
+
+
+def _open_https(request: urllib_request.Request, *, timeout: float) -> Any:
+    return _HTTPS_OPENER.open(request, timeout=timeout)
 
 
 class MCPTokenStore(Protocol):
@@ -368,7 +390,7 @@ def _load_json_object(url: str, timeout_seconds: float) -> dict[str, Any]:
         headers={"Accept": "application/json"},
         method="GET",
     )
-    with urllib_request.urlopen(request, timeout=float(timeout_seconds)) as response:
+    with _open_https(request, timeout=float(timeout_seconds)) as response:
         payload = json.loads(response.read().decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"OAuth metadata at {url!r} must be a JSON object")
@@ -538,7 +560,7 @@ def register_oauth_client(
         headers={"Accept": "application/json", "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib_request.urlopen(request, timeout=float(timeout_seconds)) as response:
+    with _open_https(request, timeout=float(timeout_seconds)) as response:
         decoded = json.loads(response.read().decode("utf-8"))
     if not isinstance(decoded, dict):
         raise ValueError("OAuth client registration response must be a JSON object")
@@ -574,7 +596,7 @@ def revoke_oauth_token(
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    with urllib_request.urlopen(request, timeout=float(timeout_seconds)) as response:
+    with _open_https(request, timeout=float(timeout_seconds)) as response:
         return int(getattr(response, "status", response.getcode()) or 0) in {200, 202}
 
 
@@ -596,14 +618,26 @@ def _request_token(
         },
         method="POST",
     )
-    with urllib_request.urlopen(request, timeout=float(timeout_seconds)) as response:
+    with _open_https(request, timeout=float(timeout_seconds)) as response:
         payload = json.loads(response.read().decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("OAuth token response must be a JSON object")
     access_token = str(payload.get("access_token", "") or "").strip()
     if not access_token:
         raise ValueError("OAuth token response omitted access_token")
-    expires_in = float(payload.get("expires_in", 0) or 0)
+    if str(payload.get("token_type", "") or "").strip().casefold() != "bearer":
+        raise ValueError("OAuth token response token_type must be Bearer")
+    raw_expires_in = payload.get("expires_in", 0)
+    if isinstance(raw_expires_in, bool):
+        raise ValueError("OAuth token response expires_in must be non-negative")
+    try:
+        expires_in = float(raw_expires_in)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "OAuth token response expires_in must be non-negative"
+        ) from exc
+    if not math.isfinite(expires_in) or expires_in < 0:
+        raise ValueError("OAuth token response expires_in must be non-negative")
     return MCPOAuthTokenState(
         access_token=access_token,
         refresh_token=str(

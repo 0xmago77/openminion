@@ -63,16 +63,15 @@ def normalize_mcp_sampling_mode(value: object) -> str:
 
 
 def _normalize_mcp_command(command: object) -> list[str]:
-    if not isinstance(command, list):
+    if (
+        not isinstance(command, list)
+        or not command
+        or any(not isinstance(item, str) or not item.strip() for item in command)
+    ):
         raise ConfigError(
             "runtime.mcp_servers[].command must be a non-empty string array."
         )
-    normalized = [str(item).strip() for item in command if str(item).strip()]
-    if not normalized:
-        raise ConfigError(
-            "runtime.mcp_servers[].command must be a non-empty string array."
-        )
-    return normalized
+    return [item.strip() for item in command]
 
 
 def _normalize_non_empty_string_map(value: object) -> dict[str, str]:
@@ -108,23 +107,20 @@ def _normalize_mcp_url(value: object, field_path: str = "") -> str:
     return url
 
 
-def _normalize_string_list(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
+def _normalize_boolean(value: object, field_path: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{field_path} must be a boolean.")
+    return value
 
 
-def _normalize_pattern_list(value: object, *, field_path: str) -> list[str]:
-    if value is None:
-        return []
+def _normalize_pattern_list(value: object, field_path: str) -> list[str]:
     if not isinstance(value, list):
         raise ConfigError(f"{field_path} must be an array of non-empty strings.")
     normalized: list[str] = []
     for index, item in enumerate(value):
-        token = str(item or "").strip()
-        if not token:
+        if not isinstance(item, str) or not item.strip():
             raise ConfigError(f"{field_path}[{index}] must be a non-empty string.")
-        normalized.append(token)
+        normalized.append(item.strip())
     return normalized
 
 
@@ -251,10 +247,11 @@ class MCPToolRiskOverrideConfig:
                 "runtime.mcp_servers[].tool_risk_overrides[].min_scope must be one "
                 "of READ_ONLY, WRITE_SAFE, POWER_USER, or UI_AUTOMATION."
             )
+        path = "runtime.mcp_servers[].tool_risk_overrides[]"
         if self.dangerous is not None:
-            self.dangerous = bool(self.dangerous)
+            self.dangerous = _normalize_boolean(self.dangerous, f"{path}.dangerous")
         if self.idempotent is not None:
-            self.idempotent = bool(self.idempotent)
+            self.idempotent = _normalize_boolean(self.idempotent, f"{path}.idempotent")
 
 
 def _coerce_mcp_tool_risk_overrides(
@@ -321,8 +318,8 @@ def _coerce_mcp_approval_config(value: object) -> MCPApprovalConfig:
     if isinstance(value, Mapping):
         return MCPApprovalConfig(
             mode=value.get("mode", "never"),
-            tool_patterns=list(value.get("tool_patterns", []) or []),
-            risk_levels=list(value.get("risk_levels", []) or []),
+            tool_patterns=value.get("tool_patterns", []),
+            risk_levels=value.get("risk_levels", []),
         )
     raise ConfigError("runtime.mcp_servers[].approval must be an object.")
 
@@ -338,9 +335,14 @@ class MCPStdioSandboxConfig:
     trust_reason: str = ""
 
     def __post_init__(self) -> None:
-        self.require_trust = bool(self.require_trust)
+        self.require_trust = _normalize_boolean(
+            self.require_trust, "runtime.mcp_servers[].stdio_sandbox.require_trust"
+        )
         for name in ("cwd_allowlist", "env_allowlist", "inherit_env_allowlist"):
-            setattr(self, name, _normalize_string_list(getattr(self, name)))
+            normalized = _normalize_pattern_list(
+                getattr(self, name), f"runtime.mcp_servers[].stdio_sandbox.{name}"
+            )
+            setattr(self, name, normalized)
         self.package_name = str(self.package_name or "").strip()
         self.package_version = str(self.package_version or "").strip()
         self.trust_reason = str(self.trust_reason or "").strip()
@@ -354,9 +356,9 @@ def _coerce_mcp_stdio_sandbox_config(value: object) -> MCPStdioSandboxConfig:
     if isinstance(value, Mapping):
         return MCPStdioSandboxConfig(
             require_trust=value.get("require_trust", True),
-            cwd_allowlist=list(value.get("cwd_allowlist", []) or []),
-            env_allowlist=list(value.get("env_allowlist", []) or []),
-            inherit_env_allowlist=list(value.get("inherit_env_allowlist", []) or []),
+            cwd_allowlist=value.get("cwd_allowlist", []),
+            env_allowlist=value.get("env_allowlist", []),
+            inherit_env_allowlist=value.get("inherit_env_allowlist", []),
             package_name=value.get("package_name", ""),
             package_version=value.get("package_version", ""),
             trust_reason=value.get("trust_reason", ""),
@@ -376,11 +378,10 @@ class MCPPackageMetadataConfig:
     def __post_init__(self) -> None:
         self.origin = str(self.origin or "").strip()
         self.version = str(self.version or "").strip()
-        self.install_command = [
-            str(item).strip()
-            for item in list(self.install_command or [])
-            if str(item).strip()
-        ]
+        self.install_command = _normalize_pattern_list(
+            self.install_command,
+            "runtime.mcp_servers[].package_metadata.install_command",
+        )
         self.trust_state = str(self.trust_state or "").strip().lower()
 
     def to_dict(self) -> dict[str, Any]:
@@ -403,7 +404,7 @@ def _coerce_mcp_package_metadata_config(
         return MCPPackageMetadataConfig(
             origin=value.get("origin", ""),
             version=value.get("version", ""),
-            install_command=list(value.get("install_command", []) or []),
+            install_command=value.get("install_command", []),
             trust_state=value.get("trust_state", ""),
         )
     raise ConfigError("runtime.mcp_servers[].package_metadata must be an object.")
@@ -475,10 +476,10 @@ def coerce_mcp_exposure_config(value: object) -> MCPExposureConfig:
         return value
     if isinstance(value, Mapping):
         return MCPExposureConfig(
-            include_servers=list(value.get("include_servers", []) or []),
-            exclude_servers=list(value.get("exclude_servers", []) or []),
-            include_tools=list(value.get("include_tools", []) or []),
-            exclude_tools=list(value.get("exclude_tools", []) or []),
+            include_servers=value.get("include_servers", []),
+            exclude_servers=value.get("exclude_servers", []),
+            include_tools=value.get("include_tools", []),
+            exclude_tools=value.get("exclude_tools", []),
         )
     raise ConfigError("agents.<id>.mcp_exposure must be an object.")
 
@@ -508,18 +509,16 @@ class MCPPublishConfig:
     name_prefix: str = "openminion.tool."
 
     def __post_init__(self) -> None:
-        self.enabled = bool(self.enabled)
+        self.enabled = _normalize_boolean(self.enabled, "runtime.mcp_publish.enabled")
         transport = str(self.transport or "stdio").strip().lower() or "stdio"
         if transport != "stdio":
             raise ConfigError("runtime.mcp_publish.transport only supports 'stdio'.")
         self.transport = transport
         self.include_tools = _normalize_pattern_list(
-            self.include_tools,
-            field_path="runtime.mcp_publish.include_tools",
+            self.include_tools, "runtime.mcp_publish.include_tools"
         )
         self.exclude_tools = _normalize_pattern_list(
-            self.exclude_tools,
-            field_path="runtime.mcp_publish.exclude_tools",
+            self.exclude_tools, "runtime.mcp_publish.exclude_tools"
         )
         self.name_prefix = str(self.name_prefix or "openminion.tool.").strip()
         if not self.name_prefix:
@@ -535,8 +534,8 @@ def coerce_mcp_publish_config(value: object) -> MCPPublishConfig:
         return MCPPublishConfig(
             enabled=value.get("enabled", False),
             transport=value.get("transport", "stdio"),
-            include_tools=list(value.get("include_tools", []) or []),
-            exclude_tools=list(value.get("exclude_tools", []) or []),
+            include_tools=value.get("include_tools", []),
+            exclude_tools=value.get("exclude_tools", []),
             name_prefix=value.get("name_prefix", "openminion.tool."),
         )
     raise ConfigError("runtime.mcp_publish must be an object.")
@@ -580,10 +579,10 @@ class MCPServerConfig:
 
     def __post_init__(self) -> None:
         self.name = normalize_mcp_server_name(self.name)
-        if not isinstance(self.enabled, bool):
-            raise ConfigError("runtime.mcp_servers[].enabled must be a boolean.")
-        if not isinstance(self.required, bool):
-            raise ConfigError("runtime.mcp_servers[].required must be a boolean.")
+        self.enabled = _normalize_boolean(self.enabled, "runtime.mcp_servers[].enabled")
+        self.required = _normalize_boolean(
+            self.required, "runtime.mcp_servers[].required"
+        )
         self.transport = normalize_mcp_transport(self.transport)
         self.url = _normalize_mcp_url(self.url)
         self.authorization = _coerce_mcp_authorization_config(self.authorization)
@@ -595,7 +594,9 @@ class MCPServerConfig:
                     "transport='streamable_http'."
                 )
         else:
-            self.command = list(self.command or [])
+            self.command = _normalize_pattern_list(
+                self.command, "runtime.mcp_servers[].command"
+            )
             if not self.url:
                 raise ConfigError(
                     "runtime.mcp_servers[].url is required when "
@@ -608,8 +609,7 @@ class MCPServerConfig:
             self.tool_risk_overrides
         )
         self.approval = _coerce_mcp_approval_config(self.approval)
-        if not isinstance(self.trusted, bool):
-            raise ConfigError("runtime.mcp_servers[].trusted must be a boolean.")
+        self.trusted = _normalize_boolean(self.trusted, "runtime.mcp_servers[].trusted")
         self.stdio_sandbox = _coerce_mcp_stdio_sandbox_config(self.stdio_sandbox)
         self.package_metadata = _coerce_mcp_package_metadata_config(
             self.package_metadata
@@ -660,7 +660,7 @@ def coerce_mcp_server_configs(value: object) -> list[MCPServerConfig]:
                 enabled=item.get("enabled", True),
                 required=item.get("required", False),
                 transport=item.get("transport", "stdio"),
-                command=list(item.get("command", []) or []),
+                command=item.get("command", []),
                 url=item.get("url", ""),
                 authorization=_coerce_mcp_authorization_config(
                     item.get("authorization")
@@ -671,7 +671,7 @@ def coerce_mcp_server_configs(value: object) -> list[MCPServerConfig]:
                 startup_timeout_seconds=item.get("startup_timeout_seconds", 15.0),
                 request_timeout_seconds=item.get("request_timeout_seconds", 30.0),
                 stderr_buffer_bytes=item.get("stderr_buffer_bytes", 65536),
-                tool_risk_overrides=list(item.get("tool_risk_overrides", []) or []),
+                tool_risk_overrides=item.get("tool_risk_overrides", []),
                 approval=_coerce_mcp_approval_config(item.get("approval")),
                 trusted=item.get("trusted", False),
                 stdio_sandbox=_coerce_mcp_stdio_sandbox_config(
