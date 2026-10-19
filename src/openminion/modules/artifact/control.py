@@ -344,9 +344,12 @@ class ArtifactCtl:
         return self.index.list_recent(limit=limit, filters=scope_filters)
 
     def search(
-        self, query: str, filters: dict[str, Any] | None = None
+        self,
+        query: str,
+        filters: dict[str, Any] | None = None,
+        limit: int = 100,
     ) -> list[ArtifactMeta]:
-        return self.index.search(query=query, filters=filters)
+        return self.index.search(query=query, filters=filters, limit=limit)
 
     def largest(
         self, limit: int = 50, filters: dict[str, Any] | None = None
