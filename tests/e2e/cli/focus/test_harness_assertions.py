@@ -672,6 +672,76 @@ def test_run_turn_ignores_repeated_old_completion_after_inline_approval(
     assert "result: complete" in transcript
 
 
+def test_run_turn_fails_completed_approved_turn_without_expected_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prompt = "build the fixture and finish with result"
+
+    class Session:
+        state = -1
+
+        @property
+        def visible_transcript(self) -> str:
+            if self.state < 0:
+                return "Prior turn\nDone in 1s\n"
+            if self.state == 0:
+                return (
+                    f"Prior turn\nDone in 1s\n❯ {prompt}\n"
+                    "Approval required: file.write\n"
+                    "[y]es / [N]o / [a]lways:"
+                )
+            return (
+                f"Prior turn\nDone in 1s\n❯ {prompt}\na\n"
+                "Fixture complete.\nDone in 2s\n"
+            )
+
+        @property
+        def screen_text(self) -> str:
+            if self.state < 0:
+                return "Prior turn\nDone in 1s\n❯ Ask anything\n◆ fixture"
+            if self.state == 0:
+                return "Approval required: file.write\n[y]es / [N]o / [a]lways:"
+            return "Fixture complete.\nDone in 2s\n❯ Ask anything\n◆ fixture"
+
+    session = Session()
+
+    def submit(_session: Session, text: str) -> str:
+        session.state = 0
+        return composer_echo_probe(text)
+
+    def approve(_session: Session, _reply: str) -> None:
+        session.state = 1
+
+    monkeypatch.setattr(FocusProbe, "_submit_composer_line", staticmethod(submit))
+    monkeypatch.setattr(FocusProbe, "_submit_inline_approval", staticmethod(approve))
+    monkeypatch.setattr(FocusProbe, "uses_echo_agent", lambda self: False)
+    monkeypatch.setattr("tests.e2e.cli.focus.harness.probe.time.sleep", lambda _: None)
+    focus_probe = FocusProbe(
+        python_bin=Path(sys.executable),
+        openminion_root=tmp_path,
+        framework_root=tmp_path,
+        data_root=tmp_path,
+        config_path=tmp_path / "config.json",
+        agent_id="test-agent",
+        workdir=tmp_path,
+        session_id="test-session",
+    )
+
+    with pytest.raises(AssertionError, match="result"):
+        focus_probe.run_turn(
+            session,  # type: ignore[arg-type]
+            FocusScenario(
+                scenario_id="missing-marker",
+                prompt=prompt,
+                expected_markers=("result",),
+                timeout=30,
+                requires_approval=True,
+                max_auto_approvals=1,
+            ),
+        )
+
+
 def test_expected_markers_ignore_echoed_prompt() -> None:
     prompt = "Please end with next steps."
     transcript = f"❯ {prompt}\n● Working\nDone in 4s\n"
@@ -1331,6 +1401,32 @@ asyncio.run(main())
 
     assert "FIRST:a" in transcript
     assert "FIRST:alwaysalways" not in transcript
+
+
+def test_compact_approval_returns_when_prompt_resolves_during_redraw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval = (
+        "Approval required: file.write(module.py)\n"
+        "[y] Allow once / [N] Deny (default) / "
+        "[a] Always allow this exact file.write call for this shell session:"
+    )
+
+    class Session:
+        reads = 0
+        sent: list[str] = []
+
+        @property
+        def screen_text(self) -> str:
+            self.reads += 1
+            return approval if self.reads == 1 else "● Wrote a file."
+
+    session = Session()
+    monkeypatch.setattr("tests.e2e.cli.focus.harness.probe.time.sleep", lambda _: None)
+
+    FocusProbe._submit_inline_approval(session, "session")  # type: ignore[arg-type]
+
+    assert session.sent == []
 
 
 def test_active_turn_busy_accepts_current_responding_footer() -> None:

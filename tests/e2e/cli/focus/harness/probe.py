@@ -694,6 +694,8 @@ class FocusProbe:
             while time.monotonic() < settle_deadline:
                 time.sleep(0.05)
                 current_screen = session.screen_text
+                if inline_approval_menu(current_screen) is None:
+                    return
                 current_fingerprint = inline_approval_fingerprint(current_screen)
                 if "Approval required:" in str(current_fingerprint or ""):
                     approval_screen = current_screen
@@ -902,15 +904,6 @@ class FocusProbe:
                 and _composer_is_ready(screen_text)
                 and not active_turn_busy(screen_text)
             ):
-                if approvals and scenario.expected_markers:
-                    try:
-                        assert_expected_markers(
-                            transcript[turn_offset:],
-                            scenario.prompt,
-                            scenario.expected_markers,
-                        )
-                    except AssertionError:
-                        continue
                 completed_segment = transcript[event_offset:]
                 if completion_probe is not None:
                     completed_segment = (
