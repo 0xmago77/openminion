@@ -826,6 +826,16 @@ def test_inspect_rejects_invalid_generated_manifest_integrity(
                 {"relative_path": "AGENT.md", "sha256": "a", "size_bytes": 1},
             ],
         },
+        {
+            "generated_from_profile_version": "version",
+            "files": [
+                {
+                    "relative_path": "AGENT.md",
+                    "sha256": "a",
+                    "size_bytes": "1",
+                }
+            ],
+        },
     ],
 )
 def test_inspect_marks_malformed_generated_lockfile_invalid(

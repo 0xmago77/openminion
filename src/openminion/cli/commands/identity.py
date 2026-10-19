@@ -77,7 +77,7 @@ def run_identity_upsert(
     identity_root: Path | None = None,
 ) -> None:
     ctl = ctl or _get_identityctl()
-    file_path = Path(yaml_path).expanduser().resolve()
+    file_path = Path(yaml_path).expanduser().absolute()
 
     if not file_path.exists():
         print(f"ERROR: Path '{yaml_path}' does not exist", file=sys.stderr)

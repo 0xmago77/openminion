@@ -817,6 +817,37 @@ def test_run_identity_upsert_missing_path_exits_one(
     assert "does not exist" in capsys.readouterr().err
 
 
+def test_run_identity_upsert_rejects_symlink_before_store_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctl = IdentityCtl(
+        store=SQLiteIdentityStore(sqlite_path=str(tmp_path / "identity.db"))
+    )
+    monkeypatch.setattr(identity_command, "_get_identityctl", lambda: ctl)
+    external = tmp_path / "external.yaml"
+    external.write_text(
+        yaml.safe_dump(
+            {
+                "agent_id": "ops-agent",
+                "display_name": "Ops Agent",
+                "profile_revision": 1,
+                "role": {"mission": "External mission"},
+                "personality": {"tone": "direct"},
+                "risk": {"risk_level": "medium"},
+                "tool_posture": {"tool_use": "restricted"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    linked = tmp_path / "linked.yaml"
+    linked.symlink_to(external)
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        identity_command.run_identity_upsert(str(linked))
+
+    assert ctl.get_profile("ops-agent") is None
+
+
 # ── IRGR-05: delete ────────────────────────────────────────────────────────
 
 
