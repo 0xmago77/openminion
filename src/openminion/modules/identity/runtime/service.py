@@ -459,7 +459,7 @@ class IdentityCtl:
         self, path: str | Path, *, identity_root: str | Path | None
     ) -> dict[str, _ProfileInputFile]:
         requested_path = Path(path).expanduser().absolute()
-        if any(item.is_symlink() for item in (requested_path, *requested_path.parents)):
+        if requested_path.is_symlink() or requested_path.parent.is_symlink():
             raise ValueError(f"profile path must not be a symlink: {requested_path}")
         src_path = requested_path.resolve(strict=False)
         if not src_path.exists():

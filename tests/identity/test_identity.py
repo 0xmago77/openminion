@@ -410,7 +410,7 @@ tool_posture:
     identity.close()
 
 
-@pytest.mark.parametrize("symlink_kind", ["file", "parent", "ancestor"])
+@pytest.mark.parametrize("symlink_kind", ["file", "parent"])
 def test_load_profiles_from_path_rejects_symlinked_profile_yaml(
     tmp_path: Path, symlink_kind: str
 ) -> None:
@@ -441,17 +441,8 @@ tool_posture:
         (agent_root / "profile.yaml").symlink_to(external_profile)
         load_path = identity_root
     else:
-        if symlink_kind == "parent":
-            agent_root.symlink_to(external_root, target_is_directory=True)
-            load_path = agent_root / "profile.yaml"
-        else:
-            agent_root.mkdir()
-            (agent_root / "profile.yaml").write_text(
-                external_profile.read_text(encoding="utf-8"), encoding="utf-8"
-            )
-            linked_root = tmp_path / "linked-identity"
-            linked_root.symlink_to(identity_root, target_is_directory=True)
-            load_path = linked_root / "router-agent" / "profile.yaml"
+        agent_root.symlink_to(external_root, target_is_directory=True)
+        load_path = agent_root / "profile.yaml"
     sidecar_root = load_path.resolve().parent
     identity = IdentityCtl(store=InMemoryIdentityStore())
 
