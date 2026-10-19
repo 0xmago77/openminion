@@ -233,26 +233,12 @@ class AgentIdentityMixin:
             configured_root=configured_root,
         )
 
-    @staticmethod
-    def _discover_startup_yaml_profile_paths(identity_root: Path) -> list[Path]:
-        if not identity_root.exists() or not identity_root.is_dir():
-            return []
-        profile_paths: list[Path] = []
-        for child in sorted(identity_root.iterdir(), key=lambda item: item.name):
-            if not child.is_dir():
-                continue
-            profile_yaml = child / "profile.yaml"
-            if profile_yaml.is_file():
-                profile_paths.append(profile_yaml.resolve())
-        return profile_paths
-
     def _sync_startup_yaml_profiles(self) -> dict[str, Any]:
         summary: dict[str, Any] = {
             "status": IDENTITY_RUNTIME_STATUS_NOT_STARTED,
             "identity_root": "",
             "profile_files_count": 0,
             "upserted_profiles_count": 0,
-            "errors_count": 0,
         }
         if self._identityctl is None:
             summary["status"] = IDENTITY_RUNTIME_STATUS_IDENTITYCTL_UNAVAILABLE
@@ -267,12 +253,11 @@ class AgentIdentityMixin:
             summary["status"] = IDENTITY_RUNTIME_STATUS_IDENTITY_ROOT_NOT_DIRECTORY
             return summary
 
-        profile_paths = self._discover_startup_yaml_profile_paths(identity_root)
-        summary["profile_files_count"] = len(profile_paths)
-        if not profile_paths:
-            removed_profile = self._remove_missing_current_yaml_profile(identity_root)
-            summary["removed_profiles"] = [removed_profile] if removed_profile else []
-            summary["removed_profiles_count"] = 1 if removed_profile else 0
+        profile_files_count = len(list(identity_root.glob("*/profile.yaml")))
+        summary["profile_files_count"] = profile_files_count
+        removed_profile = self._remove_missing_current_yaml_profile(identity_root)
+        summary["removed_profiles"] = [removed_profile] if removed_profile else []
+        if not profile_files_count:
             summary["status"] = IDENTITY_RUNTIME_STATUS_NO_YAML_PROFILES
             return summary
 
@@ -284,34 +269,27 @@ class AgentIdentityMixin:
         except yaml.YAMLError as exc:
             raise ValueError(f"{identity_root}: {exc}") from exc
         upserted_ids = {str(loaded_id) for loaded_id in loaded_ids}
-        removed_profile = self._remove_missing_current_yaml_profile(identity_root)
-        summary["removed_profiles"] = [removed_profile] if removed_profile else []
-        summary["removed_profiles_count"] = 1 if removed_profile else 0
-
         summary["upserted_profiles"] = sorted(upserted_ids)
         summary["upserted_profiles_count"] = len(upserted_ids)
         summary["status"] = IDENTITY_RUNTIME_STATUS_SYNCED
         return summary
 
     def _remove_missing_current_yaml_profile(self, identity_root: Path) -> str:
-        if self._identityctl is None:
+        identityctl = self._identityctl
+        if identityctl is None:
             return ""
-        profile = self._identityctl.get_profile(self._identity_agent_id)
-        if profile is None:
-            return ""
-        meta = dict(profile.meta or {})
-        if str(meta.get("source", "") or "").strip().lower() != "yaml":
-            return ""
+        profile = identityctl.get_profile(self._identity_agent_id)
+        meta = dict(profile.meta or {}) if profile else {}
         recorded = str(meta.get("source_path", "") or "").strip()
-        if not recorded:
+        canonical = (identity_root / self._identity_agent_id / "profile.yaml").resolve()
+        if (
+            str(meta.get("source", "") or "").strip().lower() != "yaml"
+            or not recorded
+            or Path(recorded).expanduser().resolve() != canonical
+            or canonical.is_file()
+        ):
             return ""
-        canonical = identity_root / self._identity_agent_id / "profile.yaml"
-        canonical = canonical.resolve(strict=False)
-        if Path(recorded).expanduser().resolve(strict=False) != canonical:
-            return ""
-        if canonical.is_file():
-            return ""
-        self._identityctl.delete_profile(self._identity_agent_id)
+        identityctl.delete_profile(self._identity_agent_id)
         return self._identity_agent_id
 
     @staticmethod
@@ -352,7 +330,6 @@ class AgentIdentityMixin:
             if existing is not None and canonical_meta != existing_meta:
                 updated = existing.model_copy(update={"meta": canonical_meta})
                 self._identityctl.upsert_profile(updated)
-                summary["metadata_backfilled"] = True
             summary["status"] = IDENTITY_RUNTIME_STATUS_SKIPPED_UNCHANGED
             self._logger.debug(
                 "identity bundle import skipped agent_id=%s reason=unchanged_fingerprint",
@@ -470,9 +447,8 @@ class AgentIdentityMixin:
         try:
             from openminion.modules.identity import load_identity_bundle
 
-            bundle = load_identity_bundle(
-                self._identity_agent_id, root=resolved_bundle_root
-            )
+            agent_id = self._identity_agent_id
+            bundle = load_identity_bundle(agent_id, root=resolved_bundle_root)
             summary["bundle_root"] = str(bundle.root_path)
             if not bundle.ok:
                 summary["status"] = IDENTITY_RUNTIME_STATUS_BUNDLE_INVALID
@@ -833,7 +809,6 @@ _AGENT_IDENTITY_RUNTIME_API_NAMES = (
     "_update_llm_policy_ref_diagnostics",
     "_resolve_bundle_root",
     "_resolve_startup_identity_root",
-    "_discover_startup_yaml_profile_paths",
     "_sync_startup_yaml_profiles",
     "_remove_missing_current_yaml_profile",
     "_classify_profile_source",

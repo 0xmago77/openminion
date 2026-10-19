@@ -128,7 +128,6 @@ class IdentityRuntimeInjectionTests(unittest.TestCase):
             "_remove_missing_current_yaml_profile",
             "_import_identity_bundle_profile",
             "_resolve_bundle_root",
-            "_discover_startup_yaml_profile_paths",
         ):
             self.assertIn(name, AgentService.__dict__)
             self.assertTrue(callable(getattr(AgentService, name)))
