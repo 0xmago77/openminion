@@ -908,6 +908,27 @@ def test_modern_task_timeout_cancels_remote_task(monkeypatch) -> None:
     assert calls == [(MCP_TASKS_CANCEL_METHOD, {"taskId": "task-1"})]
 
 
+def test_modern_task_polling_uses_default_delay(monkeypatch) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr("openminion.tools.mcp.modern.time.monotonic", lambda: 0.0)
+    monkeypatch.setattr("openminion.tools.mcp.modern.time.sleep", sleeps.append)
+
+    result = resolve_modern_result(
+        method=MCP_TOOLS_CALL_METHOD,
+        params={},
+        result={"resultType": "task", **_task("working")},
+        request=lambda _method, _params: {
+            "resultType": "complete",
+            **_task("completed", result={"resultType": "complete", "content": []}),
+        },
+        fulfill=lambda _method, _params: {},
+        timeout_seconds=1.0,
+    )
+
+    assert sleeps == [0.05]
+    assert result == {"resultType": "complete", "content": []}
+
+
 def test_modern_task_get_requires_complete_result() -> None:
     with pytest.raises(MCPModernFlowError) as excinfo:
         resolve_modern_result(

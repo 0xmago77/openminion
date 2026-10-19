@@ -7,7 +7,11 @@ from openminion.modules.llm.providers.bridge import (
     LLMCTLBridgeProvider,
     _bridge_usage_payload,
 )
-from openminion.modules.llm.providers.base import ProviderRequest, ProviderToolSpec
+from openminion.modules.llm.providers.base import (
+    ProviderHistoryMessage,
+    ProviderRequest,
+    ProviderToolSpec,
+)
 from openminion.modules.llm.providers.contracts import ProviderError
 from openminion.modules.llm.schemas import UsageInfo
 
@@ -217,11 +221,13 @@ class _FakeToolPolicy:
 
 class _FakeClientWithToolCapture:
     def __init__(self) -> None:
+        self.captured_messages = None
         self.captured_tools = None
         self.captured_tool_choice = None
         self.captured_metadata = None
 
     def complete(self, **kwargs):
+        self.captured_messages = kwargs.get("messages")
         self.captured_tools = kwargs.get("tools")
         self.captured_tool_choice = kwargs.get("tool_choice")
         self.captured_metadata = kwargs.get("metadata")
@@ -336,6 +342,35 @@ async def test_llm_bridge_uses_canonical_finish_reason_and_normalization_flag() 
     assert response.tool_calls[0].name == "weather.openmeteo.current"
     assert response.normalization.get("tool_calls_normalized") is True
     assert response.normalization.get("adapter") == "llmctl_bridge"
+
+
+@pytest.mark.asyncio
+async def test_llm_bridge_preserves_history_only_request_order() -> None:
+    with patch(
+        "openminion.modules.llm.providers.bridge._import_openminion_llm",
+        return_value=(_FakeAgentProfile, _FakeLLMCTLWithCapture, _FakeToolPolicy),
+    ):
+        bridge = LLMCTLBridgeProvider(
+            provider_name="openrouter",
+            model="openai/gpt-4.1-mini",
+            provider_config={"api_key": "test-key"},
+        )
+
+    await bridge.generate(
+        ProviderRequest(
+            user_message="",
+            system_prompt="",
+            history=[
+                ProviderHistoryMessage(role="user", content="draft"),
+                ProviderHistoryMessage(role="assistant", content="partial answer"),
+            ],
+        )
+    )
+
+    assert bridge._client.captured_messages == [  # noqa: SLF001
+        {"role": "user", "content": "draft"},
+        {"role": "assistant", "content": "partial answer"},
+    ]
 
 
 @pytest.mark.asyncio

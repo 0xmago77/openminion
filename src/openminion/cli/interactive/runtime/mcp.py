@@ -16,12 +16,14 @@ def _mcp_runtime_tool_names(
     prefix = f"mcp.{server_name}."
     prompt_prefix = f"{prefix}prompt."
     resource_prefix = f"{prefix}resource."
+    resource_template_prefix = f"{prefix}resource_template."
     names = [
         name
         for name in tool_specs
         if name.startswith(prefix)
         and not name.startswith(prompt_prefix)
         and not name.startswith(resource_prefix)
+        and not name.startswith(resource_template_prefix)
     ]
     names.sort()
     return names
@@ -31,12 +33,14 @@ def _mcp_runtime_auxiliary_counts(
     tool_specs: Mapping[str, Any],
     *,
     server_name: str,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     prompt_prefix = f"mcp.{server_name}.prompt."
     resource_prefix = f"mcp.{server_name}.resource."
+    resource_template_prefix = f"mcp.{server_name}.resource_template."
     return (
         sum(1 for name in tool_specs if name.startswith(prompt_prefix)),
         sum(1 for name in tool_specs if name.startswith(resource_prefix)),
+        sum(1 for name in tool_specs if name.startswith(resource_template_prefix)),
     )
 
 
@@ -65,15 +69,21 @@ class RuntimeMCPMixin:
             server_name = str(getattr(server, "name", "") or "").strip()
             transport = str(getattr(server, "transport", "") or "stdio").strip()
             tool_names = _mcp_runtime_tool_names(tool_specs, server_name=server_name)
-            prompt_count, resource_count = _mcp_runtime_auxiliary_counts(
-                tool_specs, server_name=server_name
-            )
-            resource_template_count = 0
+            (
+                prompt_count,
+                resource_count,
+                resource_template_count,
+            ) = _mcp_runtime_auxiliary_counts(tool_specs, server_name=server_name)
             app_resource_count = 0
             tool_count = len(tool_names)
             status = (
                 "registered"
-                if (tool_count or prompt_count or resource_count)
+                if (
+                    tool_count
+                    or prompt_count
+                    or resource_count
+                    or resource_template_count
+                )
                 else "configured"
             )
             error = ""

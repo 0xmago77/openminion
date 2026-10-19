@@ -7,11 +7,15 @@ from urllib import error as urllib_error
 
 import pytest
 
+import openminion.tools.mcp.auth as mcp_auth
+
 from openminion.base.config.base import ConfigError
 from openminion.base.config.mcp import MCPAuthorizationConfig, MCPServerConfig
 from openminion.tools.mcp.auth import (
+    build_pkce_challenge,
     consume_oauth_transaction,
     discover_oauth_metadata,
+    exchange_authorization_code,
     InMemoryMCPTokenStore,
     MCPOAuthClientSelection,
     MCPOAuthMetadata,
@@ -49,6 +53,54 @@ def _metadata(issuer: str) -> dict:
         "code_challenge_methods_supported": ["S256"],
         "authorization_response_iss_parameter_supported": True,
     }
+
+
+def test_oauth_redirect_rejects_https_downgrade() -> None:
+    with pytest.raises(ValueError, match="HTTPS"):
+        mcp_auth._HTTPSRedirectHandler().redirect_request(  # noqa: SLF001
+            None,
+            None,
+            302,
+            "Found",
+            {},
+            "http://auth.example/token",
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"access_token": "token", "expires_in": 30},
+        {"access_token": "token", "token_type": "Basic", "expires_in": 30},
+        {"access_token": "token", "token_type": "Bearer", "expires_in": -1},
+        {"access_token": "token", "token_type": "Bearer", "expires_in": True},
+        {"access_token": "token", "token_type": "Bearer", "expires_in": "nan"},
+        {"access_token": "token", "token_type": "Bearer", "expires_in": "inf"},
+    ],
+)
+def test_oauth_token_response_rejects_invalid_type_or_expiry(
+    monkeypatch, payload: dict
+) -> None:
+    monkeypatch.setattr(
+        "openminion.tools.mcp.auth._open_https",
+        lambda request, *, timeout: _JSONResponse(payload),
+    )
+
+    with pytest.raises(ValueError):
+        exchange_authorization_code(
+            config=MCPAuthorizationConfig(
+                mode="oauth_pkce",
+                client_id="client",
+                redirect_uri="http://127.0.0.1/callback",
+            ),
+            metadata=MCPOAuthMetadata(
+                authorization_endpoint="https://auth.example/authorize",
+                token_endpoint="https://auth.example/token",
+                issuer="https://auth.example",
+            ),
+            code="code",
+            challenge=build_pkce_challenge(),
+        )
 
 
 def test_oauth_prelogin_config_allows_missing_client_id_and_persists_issuer() -> None:
@@ -113,7 +165,7 @@ def test_oauth_discovery_rejects_ambiguous_authorization_servers(
     resource = "https://mcp.example/mcp"
 
     monkeypatch.setattr(
-        "openminion.tools.mcp.auth.urllib_request.urlopen",
+        "openminion.tools.mcp.auth._open_https",
         lambda request, *, timeout: _JSONResponse(
             {
                 "resource": resource,
@@ -149,7 +201,7 @@ def test_oauth_discovery_selects_explicit_advertised_issuer(monkeypatch) -> None
             )
         return _JSONResponse(_metadata(selected))
 
-    monkeypatch.setattr("openminion.tools.mcp.auth.urllib_request.urlopen", open_url)
+    monkeypatch.setattr("openminion.tools.mcp.auth._open_https", open_url)
 
     metadata = discover_oauth_metadata(
         MCPAuthorizationConfig(mode="oauth_pkce", client_issuer=selected),
@@ -162,7 +214,7 @@ def test_oauth_discovery_selects_explicit_advertised_issuer(monkeypatch) -> None
 def test_oauth_discovery_rejects_unadvertised_explicit_issuer(monkeypatch) -> None:
     resource = "https://mcp.example/mcp"
     monkeypatch.setattr(
-        "openminion.tools.mcp.auth.urllib_request.urlopen",
+        "openminion.tools.mcp.auth._open_https",
         lambda request, *, timeout: _JSONResponse(
             {
                 "resource": resource,
@@ -207,7 +259,7 @@ def test_oauth_discovery_rejects_plain_http_metadata_endpoints(
             )
         return _JSONResponse(metadata_payload)
 
-    monkeypatch.setattr("openminion.tools.mcp.auth.urllib_request.urlopen", open_url)
+    monkeypatch.setattr("openminion.tools.mcp.auth._open_https", open_url)
 
     with pytest.raises(ValueError, match="HTTPS"):
         discover_oauth_metadata(
@@ -304,7 +356,7 @@ def test_register_oauth_client_rejects_non_public_responses(
     response: dict,
 ) -> None:
     monkeypatch.setattr(
-        "openminion.tools.mcp.auth.urllib_request.urlopen",
+        "openminion.tools.mcp.auth._open_https",
         lambda request, *, timeout: _JSONResponse(response),
     )
     metadata = MCPOAuthMetadata(
@@ -331,7 +383,7 @@ def test_register_oauth_client_accepts_public_response(
     if auth_method is not None:
         response["token_endpoint_auth_method"] = auth_method
     monkeypatch.setattr(
-        "openminion.tools.mcp.auth.urllib_request.urlopen",
+        "openminion.tools.mcp.auth._open_https",
         lambda request, *, timeout: _JSONResponse(response),
     )
 
@@ -366,7 +418,7 @@ def test_oauth_discovery_prefers_challenge_resource_metadata(monkeypatch) -> Non
             )
         return _JSONResponse(_metadata(issuer))
 
-    monkeypatch.setattr("openminion.tools.mcp.auth.urllib_request.urlopen", open_url)
+    monkeypatch.setattr("openminion.tools.mcp.auth._open_https", open_url)
 
     metadata = discover_oauth_metadata(
         MCPAuthorizationConfig(mode="oauth_pkce", client_id="client"),
@@ -444,7 +496,7 @@ def test_oauth_discovery_uses_required_well_known_order(monkeypatch) -> None:
             )
         return _JSONResponse(_metadata(issuer))
 
-    monkeypatch.setattr("openminion.tools.mcp.auth.urllib_request.urlopen", open_url)
+    monkeypatch.setattr("openminion.tools.mcp.auth._open_https", open_url)
 
     metadata = discover_oauth_metadata(
         MCPAuthorizationConfig(mode="oauth_pkce", client_id="client"),
@@ -472,7 +524,7 @@ def test_oauth_discovery_rejects_metadata_issuer_mismatch(monkeypatch) -> None:
             )
         return _JSONResponse(_metadata("https://attacker.example"))
 
-    monkeypatch.setattr("openminion.tools.mcp.auth.urllib_request.urlopen", open_url)
+    monkeypatch.setattr("openminion.tools.mcp.auth._open_https", open_url)
 
     with pytest.raises(ValueError, match="issuer does not match"):
         discover_oauth_metadata(
@@ -483,7 +535,7 @@ def test_oauth_discovery_rejects_metadata_issuer_mismatch(monkeypatch) -> None:
 
 def test_oauth_discovery_requires_resource_in_protected_metadata(monkeypatch) -> None:
     monkeypatch.setattr(
-        "openminion.tools.mcp.auth.urllib_request.urlopen",
+        "openminion.tools.mcp.auth._open_https",
         lambda request, *, timeout: _JSONResponse(
             {"authorization_servers": ["https://auth.example"]}
         ),
@@ -515,7 +567,7 @@ def test_oauth_discovery_binds_configured_metadata_to_resource_issuer(
             )
         return _JSONResponse(_metadata("https://auth.example"))
 
-    monkeypatch.setattr("openminion.tools.mcp.auth.urllib_request.urlopen", open_url)
+    monkeypatch.setattr("openminion.tools.mcp.auth._open_https", open_url)
 
     result = discover_oauth_metadata(
         MCPAuthorizationConfig(
@@ -547,7 +599,7 @@ def test_oauth_discovery_enforces_configured_endpoint_pins(monkeypatch) -> None:
             )
         return _JSONResponse(_metadata("https://auth.example"))
 
-    monkeypatch.setattr("openminion.tools.mcp.auth.urllib_request.urlopen", open_url)
+    monkeypatch.setattr("openminion.tools.mcp.auth._open_https", open_url)
     config = MCPAuthorizationConfig(
         mode="oauth_pkce",
         client_id="client",

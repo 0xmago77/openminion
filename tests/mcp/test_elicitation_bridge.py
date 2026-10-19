@@ -3,11 +3,18 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 from openminion.base.config.mcp import MCPServerConfig
 from openminion.base.config.runtime import RuntimeConfig
 from openminion.tools.mcp.elicitation import OpenMinionElicitationHandler
+from openminion.tools.mcp.errors import MCPProtocolError
 from openminion.tools.mcp.manager import MCPFleetManager
-from openminion.tools.mcp.schemas import MCPElicitationRequest, MCPElicitationResult
+from openminion.tools.mcp.schemas import (
+    MCPArgumentValidationError,
+    MCPElicitationRequest,
+    MCPElicitationResult,
+)
 
 
 FIXTURE_SERVER_PATH = (
@@ -93,5 +100,90 @@ def test_elicitation_handler_declines_unsupported_url_request() -> None:
     )
 
     assert result.action == "decline"
-    assert result.content == {"reason": "url_unsupported"}
+    assert result.content is None
     assert handler.events()[-1].request_mode == "url"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        MCPElicitationResult(action="later"),
+        MCPElicitationResult(action="decline", content={"reason": "no"}),
+    ],
+)
+def test_elicitation_handler_rejects_invalid_action_content(
+    result: MCPElicitationResult,
+) -> None:
+    handler = OpenMinionElicitationHandler(mode="interactive")
+    handler.bind_responder(lambda _request: result)
+
+    with pytest.raises(MCPProtocolError):
+        handler.elicit(
+            server_name="fixture",
+            request=MCPElicitationRequest(mode="form", message="Choose"),
+        )
+
+
+def test_elicitation_handler_validates_accepted_form_content() -> None:
+    handler = OpenMinionElicitationHandler(mode="interactive")
+    handler.bind_responder(
+        lambda _request: MCPElicitationResult(
+            action="accept", content={"count": "not-an-integer"}
+        )
+    )
+
+    with pytest.raises(MCPArgumentValidationError):
+        handler.elicit(
+            server_name="fixture",
+            request=MCPElicitationRequest(
+                mode="form",
+                message="Count",
+                requested_schema={
+                    "type": "object",
+                    "properties": {"count": {"type": "integer"}},
+                    "required": ["count"],
+                },
+            ),
+        )
+
+
+def test_elicitation_handler_rejects_invalid_responder_return() -> None:
+    handler = OpenMinionElicitationHandler(mode="interactive")
+    handler.bind_responder(lambda _request: object())  # type: ignore[arg-type]
+
+    with pytest.raises(MCPProtocolError, match="invalid result"):
+        handler.elicit(
+            server_name="fixture",
+            request=MCPElicitationRequest(mode="form", message="Choose"),
+        )
+
+
+@pytest.mark.parametrize("result", [{}, {"action": "decline", "content": "bad"}])
+def test_elicitation_handler_rejects_malformed_result_dict(result: dict) -> None:
+    handler = OpenMinionElicitationHandler(mode="interactive")
+    handler.bind_responder(lambda _request: result)
+
+    with pytest.raises(MCPProtocolError):
+        handler.elicit(
+            server_name="fixture",
+            request=MCPElicitationRequest(mode="form", message="Choose"),
+        )
+
+
+def test_elicitation_handler_rejects_url_content() -> None:
+    handler = OpenMinionElicitationHandler(mode="interactive", url_supported=True)
+    handler.bind_responder(
+        lambda _request: MCPElicitationResult(
+            action="accept", content={"authorization_code": "secret"}
+        )
+    )
+
+    with pytest.raises(MCPProtocolError, match="URL elicitation must omit content"):
+        handler.elicit(
+            server_name="fixture",
+            request=MCPElicitationRequest(
+                mode="url",
+                message="Authorize",
+                url="https://example.invalid/authorize",
+            ),
+        )

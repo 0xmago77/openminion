@@ -117,7 +117,7 @@ class StdioMCPTransport:
         self._stderr_thread.start()
 
     def _enforce_stdio_trust(self) -> None:
-        if not self._server.trusted:
+        if self._server.stdio_sandbox.require_trust and not self._server.trusted:
             raise MCPServerUnavailableError(
                 f"MCP stdio server '{self.server_name}' requires explicit trust.",
                 reason_code="mcp_stdio_untrusted",

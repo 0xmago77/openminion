@@ -55,6 +55,7 @@ def complete_with_provider_override_retry(
     tool_choice: Any,
     metadata: Mapping[str, Any] | None,
     thinking: str | None,
+    max_output_tokens: int | None = None,
     env: EnvironmentConfig | Mapping[str, object] | None = None,
     policy: "RetryOverridePolicy | None" = None,
 ) -> ProviderRetryCompletionResult:
@@ -83,7 +84,7 @@ def complete_with_provider_override_retry(
         policy=policy,
     )
 
-    request_kwargs = {
+    request_kwargs: dict[str, Any] = {
         "messages": list(messages),
         "tools": tool_payload or None,
         "provider": provider_name,
@@ -91,6 +92,8 @@ def complete_with_provider_override_retry(
         "tool_choice": normalized_tool_choice,
         "metadata": metadata_payload,
     }
+    if max_output_tokens is not None:
+        request_kwargs["max_output_tokens"] = max_output_tokens
     if not tool_payload and normalized_tool_choice == "required":
         request_kwargs["tool_choice"] = "auto"
     response = complete_fn(**request_kwargs)

@@ -288,7 +288,11 @@ def _mcp_validate(args: argparse.Namespace) -> int:
     for server in servers:
         if not server.enabled:
             continue
-        if server.transport == "stdio" and not server.trusted:
+        if (
+            server.transport == "stdio"
+            and server.stdio_sandbox.require_trust
+            and not server.trusted
+        ):
             issues.append(
                 {
                     "server": server.name,
@@ -672,11 +676,15 @@ def _configured_manager(args: argparse.Namespace) -> Any:
     from openminion.tools.mcp.auth import build_runtime_mcp_token_store
 
     config = load_cli_manager_from_args(args).base_config
-    servers = [
-        server
-        for server in _filter_servers(config.runtime.mcp_servers, args.name)
-        if server.enabled
-    ]
+    configured_servers = list(config.runtime.mcp_servers)
+    name = str(getattr(args, "name", "") or "").strip()
+    if name:
+        selected = _require_server(configured_servers, name)
+        if not selected.enabled:
+            raise RuntimeError(f"MCP server is disabled: {selected.name}")
+        servers = [selected]
+    else:
+        servers = [server for server in configured_servers if server.enabled]
     return MCPFleetManager(
         servers,
         token_store=build_runtime_mcp_token_store(config.runtime),

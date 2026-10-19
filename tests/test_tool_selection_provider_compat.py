@@ -489,6 +489,43 @@ def test_complete_with_provider_override_retry_retries_on_tool_choice_error() ->
     )
 
 
+def test_complete_with_provider_override_retry_forwards_output_limit() -> None:
+    from openminion.modules.llm.providers.tool_choice import (
+        complete_with_provider_override_retry,
+    )
+    from openminion.modules.llm.schemas import LLMResponse
+
+    captured: dict[str, object] = {}
+
+    def _fake_complete(**kwargs: object) -> LLMResponse:
+        captured.update(kwargs)
+        return LLMResponse(
+            ok=True,
+            provider="fixture",
+            model="fixture",
+            output_text="ok",
+            tool_calls=[],
+            usage={},
+            latency_ms=1,
+            finish_reason="stop",
+            error=None,
+        )
+
+    complete_with_provider_override_retry(
+        complete_fn=_fake_complete,
+        provider_name="fixture",
+        model_name="fixture",
+        messages=[{"role": "user", "content": "test"}],
+        tools=None,
+        tool_choice="auto",
+        metadata={},
+        thinking=None,
+        max_output_tokens=321,
+    )
+
+    assert captured["max_output_tokens"] == 321
+
+
 def test_complete_with_provider_override_retry_uses_profile_policy_when_supplied() -> (
     None
 ):

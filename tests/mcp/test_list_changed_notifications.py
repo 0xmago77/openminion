@@ -26,6 +26,7 @@ from openminion.tools.mcp.schemas import (
     MCPListedResourceTemplate,
     MCPListedTool,
 )
+from openminion.tools.mcp.transport import MCPRemoteTransportError
 
 
 FIXTURE_SERVER_PATH = (
@@ -379,7 +380,7 @@ def test_duplicate_capability_refreshes_are_coalesced(monkeypatch) -> None:
         manager.close()
 
 
-def test_refresh_failure_releases_pending_slot(monkeypatch) -> None:
+def test_refresh_failure_releases_pending_slot(monkeypatch, caplog) -> None:
     manager = MCPFleetManager(servers=_runtime_config().mcp_servers)
     failed = threading.Event()
     recovered = threading.Event()
@@ -396,6 +397,7 @@ def test_refresh_failure_releases_pending_slot(monkeypatch) -> None:
         )
         assert failed.wait(timeout=5)
         _wait_for(lambda: not manager._refresh_pending)  # noqa: SLF001
+        _wait_for(lambda: "Unexpected MCP capability refresh failure" in caplog.text)
 
         def _recover(*, server_name: str, primitive: str) -> None:
             del server_name, primitive
@@ -407,6 +409,27 @@ def test_refresh_failure_releases_pending_slot(monkeypatch) -> None:
         )
         assert recovered.wait(timeout=5)
         _wait_for(lambda: not manager._refresh_pending)  # noqa: SLF001
+    finally:
+        manager.close()
+
+
+def test_capability_refresh_records_remote_transport_error(monkeypatch) -> None:
+    manager = MCPFleetManager(servers=_runtime_config().mcp_servers)
+
+    def _fail(*, primitive: str, session: object) -> list[object]:
+        del primitive, session
+        raise MCPRemoteTransportError(
+            "remote refresh failed",
+            reason_code="mcp_http_error",
+        )
+
+    monkeypatch.setattr(manager, "_discover_for_session", _fail)
+    try:
+        manager._refresh_capability_change(  # noqa: SLF001
+            server_name="fixture",
+            primitive="tools",
+        )
+        assert manager.failed_servers["fixture"].reason_code == "mcp_http_error"
     finally:
         manager.close()
 

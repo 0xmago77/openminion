@@ -219,6 +219,25 @@ def test_mcp_validate_reports_untrusted_stdio(tmp_path: Path, capsys) -> None:
     assert payload["issues"][0]["reason_code"] == "mcp_stdio_untrusted"
 
 
+def test_mcp_validate_allows_untrusted_stdio_when_trust_is_not_required(
+    tmp_path: Path, capsys
+) -> None:
+    config = _write_json(
+        tmp_path / "openminion.json",
+        _runtime_config(
+            {
+                "name": "Fixture",
+                "transport": "stdio",
+                "command": ["python", "server.py"],
+                "stdio_sandbox": {"require_trust": False},
+            }
+        ),
+    )
+
+    assert run_mcp(_args("validate", config=str(config))) == 0
+    assert json.loads(capsys.readouterr().out)["issues"] == []
+
+
 def test_mcp_parser_rejects_unimplemented_lifecycle_commands() -> None:
     parser = build_parser()
     for command in ("restart", "logs"):
@@ -800,6 +819,46 @@ def test_mcp_test_reports_failed_server(monkeypatch, capsys) -> None:
         "message": "fixture stopped",
         "reason_code": "mcp_server_unavailable",
     }
+
+
+@pytest.mark.parametrize("command", ("test", "browse"))
+def test_mcp_discovery_commands_reject_unknown_server(
+    command: str, tmp_path: Path
+) -> None:
+    config = _write_json(
+        tmp_path / "openminion.json",
+        _runtime_config(
+            {
+                "name": "Fixture",
+                "transport": "stdio",
+                "command": ["python", "server.py"],
+                "trusted": True,
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="MCP server not found: missing"):
+        run_mcp(_args(command, config=str(config), name="missing"))
+
+
+@pytest.mark.parametrize("command", ("test", "browse"))
+def test_mcp_discovery_commands_reject_disabled_server(
+    command: str, tmp_path: Path
+) -> None:
+    config = _write_json(
+        tmp_path / "openminion.json",
+        _runtime_config(
+            {
+                "name": "Fixture",
+                "enabled": False,
+                "transport": "stdio",
+                "command": ["python", "server.py"],
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="MCP server is disabled: fixture"):
+        run_mcp(_args(command, config=str(config), name="fixture"))
 
 
 class _RegistryResponse:
