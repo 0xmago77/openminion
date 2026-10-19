@@ -105,6 +105,25 @@ def test_runtime_snapshot_keeps_render_budget_and_warnings(tmp_path: Path) -> No
     ]
 
 
+def test_runtime_snapshot_includes_recorded_source_path(tmp_path: Path) -> None:
+    ctl = _ctl(tmp_path)
+    source = tmp_path / "identity" / "ops-agent" / "profile.yaml"
+    profile = AgentProfile.model_validate(_profile_payload()).model_copy(
+        update={"meta": {"source": "yaml", "source_path": str(source)}}
+    )
+    ctl.upsert_profile(profile)
+
+    result = runtime_identity_snapshot(
+        ctl,
+        agent_id="ops-agent",
+        purpose="act",
+        max_tokens=180,
+    )
+
+    assert result is not None
+    assert result["source_path"] == str(source)
+
+
 def test_apply_writes_canonical_yaml_store_and_sidecars(tmp_path: Path) -> None:
     ctl = _ctl(tmp_path)
     identity_root = tmp_path / "identity"
@@ -260,6 +279,27 @@ def test_external_yaml_edit_trips_source_guard_without_overwrite(
     inspected = inspect_identity(ctl, identity_root=identity_root, agent_id="ops-agent")
     assert inspected["verification"]["source_status"] == "drifted"
     assert inspected["verification"]["ok"] is False
+
+
+def test_inspect_verifies_external_yaml_without_generated_sidecars(
+    tmp_path: Path,
+) -> None:
+    ctl = _ctl(tmp_path)
+    external = tmp_path / "external.yaml"
+    _write_profile(external, _profile_payload())
+    ctl.load_profiles_from_path(external)
+
+    inspected = inspect_identity(
+        ctl,
+        identity_root=tmp_path / "identity",
+        agent_id="ops-agent",
+    )
+
+    assert inspected["editable"] is False
+    assert inspected["authored_yaml"] is None
+    assert inspected["verification"]["source_status"] == "clean"
+    assert inspected["verification"]["ok"] is True
+    assert inspected["generated_sidecars"]["status"] == "not_applicable"
 
 
 def test_inspect_explains_source_agent_id_mismatch(tmp_path: Path) -> None:
@@ -641,11 +681,159 @@ def test_inspect_rejects_lockfile_missing_required_generated_files(
 
     assert inspected["generated_sidecars"]["status"] == "drifted"
     assert inspected["generated_sidecars"]["drifted_files"] == [
+        ".identity-lock.json",
         "AGENT.md",
         "README.md",
         "SOUL.md",
     ]
     assert inspected["verification"]["ok"] is False
+
+
+def test_inspect_rejects_generated_file_rehashed_in_lockfile(tmp_path: Path) -> None:
+    ctl = _ctl(tmp_path)
+    identity_root = tmp_path / "identity"
+    candidate = tmp_path / "candidate.yaml"
+    _write_profile(candidate, _profile_payload())
+    apply_identity_candidate(
+        ctl,
+        identity_root=identity_root,
+        candidate_path=candidate,
+        expected_profile_version="missing",
+        expected_source_sha256="missing",
+    )
+    profile_root = identity_root / "ops-agent"
+    generated = profile_root / "AGENT.md"
+    generated.write_text("# Rewritten generated identity\n", encoding="utf-8")
+    lock_path = profile_root / ".identity-lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    for item in lock["files"]:
+        if item["relative_path"] == "AGENT.md":
+            item["sha256"] = identity_operator.sha256(
+                generated.read_bytes()
+            ).hexdigest()
+            item["size_bytes"] = generated.stat().st_size
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+
+    inspected = inspect_identity(ctl, identity_root=identity_root, agent_id="ops-agent")
+
+    assert inspected["generated_sidecars"]["status"] == "drifted"
+    assert "AGENT.md" in inspected["generated_sidecars"]["drifted_files"]
+    assert inspected["verification"]["ok"] is False
+
+
+def test_inspect_rejects_extra_rehashed_generated_manifest_entry(
+    tmp_path: Path,
+) -> None:
+    ctl = _ctl(tmp_path)
+    identity_root = tmp_path / "identity"
+    candidate = tmp_path / "candidate.yaml"
+    _write_profile(candidate, _profile_payload())
+    apply_identity_candidate(
+        ctl,
+        identity_root=identity_root,
+        candidate_path=candidate,
+        expected_profile_version="missing",
+        expected_source_sha256="missing",
+    )
+    profile_root = identity_root / "ops-agent"
+    extra = profile_root / "EXTRA.md"
+    extra.write_text("# Extra\n", encoding="utf-8")
+    lock_path = profile_root / ".identity-lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["files"].append(
+        {
+            "relative_path": "EXTRA.md",
+            "sha256": identity_operator.sha256(extra.read_bytes()).hexdigest(),
+            "size_bytes": extra.stat().st_size,
+        }
+    )
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+
+    inspected = inspect_identity(ctl, identity_root=identity_root, agent_id="ops-agent")
+
+    assert inspected["generated_sidecars"]["status"] == "drifted"
+    assert "EXTRA.md" in inspected["generated_sidecars"]["drifted_files"]
+    assert inspected["verification"]["ok"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "expected_drift"),
+    [
+        ("size_bytes", "AGENT.md"),
+        ("tree_sha256", ".identity-lock.json"),
+    ],
+)
+def test_inspect_rejects_invalid_generated_manifest_integrity(
+    tmp_path: Path, field: str, expected_drift: str
+) -> None:
+    ctl = _ctl(tmp_path)
+    identity_root = tmp_path / "identity"
+    candidate = tmp_path / "candidate.yaml"
+    _write_profile(candidate, _profile_payload())
+    apply_identity_candidate(
+        ctl,
+        identity_root=identity_root,
+        candidate_path=candidate,
+        expected_profile_version="missing",
+        expected_source_sha256="missing",
+    )
+    lock_path = identity_root / "ops-agent" / ".identity-lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    if field == "size_bytes":
+        lock["files"][0]["size_bytes"] = 999
+    else:
+        lock["tree_sha256"] = "0" * 64
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+
+    inspected = inspect_identity(ctl, identity_root=identity_root, agent_id="ops-agent")
+
+    assert inspected["generated_sidecars"]["status"] == "drifted"
+    assert expected_drift in inspected["generated_sidecars"]["drifted_files"]
+    assert inspected["verification"]["ok"] is False
+
+
+def test_inspect_marks_generated_sidecars_not_applicable_for_default_profile(
+    tmp_path: Path,
+) -> None:
+    ctl = _ctl(tmp_path)
+    profile = AgentProfile.model_validate(_profile_payload()).model_copy(
+        update={"meta": {"source": "default"}}
+    )
+    ctl.upsert_profile(profile)
+
+    inspected = inspect_identity(
+        ctl,
+        identity_root=tmp_path / "identity",
+        agent_id="ops-agent",
+    )
+
+    assert inspected["generated_sidecars"]["status"] == "not_applicable"
+
+
+def test_inspect_rejects_bundle_profile_without_recorded_root(tmp_path: Path) -> None:
+    ctl = _ctl(tmp_path)
+    profile = AgentProfile.model_validate(_profile_payload()).model_copy(
+        update={
+            "meta": {
+                "source": "bundle",
+                "bundle_fingerprint": "stored-fingerprint",
+            }
+        }
+    )
+    ctl.upsert_profile(profile)
+
+    inspected = inspect_identity(
+        ctl,
+        identity_root=tmp_path / "identity",
+        agent_id="ops-agent",
+    )
+
+    assert inspected["verification"]["ok"] is False
+    assert inspected["verification"]["source_status"] == "invalid"
+    assert inspected["verification"]["issues"] == [
+        {"message": "recorded bundle root is missing"}
+    ]
+    assert inspected["verification"]["sidecar_status"] == "not_applicable"
 
 
 def test_inspect_verifies_inherited_yaml_without_making_it_editable(

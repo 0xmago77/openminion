@@ -125,6 +125,7 @@ class IdentityRuntimeInjectionTests(unittest.TestCase):
         for name in (
             "_init_identity_runtime",
             "_sync_startup_yaml_profiles",
+            "_remove_missing_current_yaml_profile",
             "_import_identity_bundle_profile",
             "_resolve_bundle_root",
             "_discover_startup_yaml_profile_paths",
@@ -514,7 +515,35 @@ class IdentityRuntimeInjectionTests(unittest.TestCase):
             self.assertEqual(imported.personality.tone, "Calm and direct.")
             self.assertTrue(bool((imported.meta or {}).get("bundle_imported")))
             self.assertTrue(bool((imported.meta or {}).get("bundle_fingerprint")))
+            self.assertEqual(
+                dict(imported.meta or {}).get("bundle_root"),
+                str(agent_bundle.resolve()),
+            )
             self.assertEqual(dict(imported.meta or {}).get("source"), "bundle")
+
+            verified = service.identity_verify()
+            self.assertIsNotNone(verified)
+            if verified is None:  # pragma: no cover
+                self.fail("expected bundle verification")
+            self.assertTrue(verified["verification"]["ok"])
+            self.assertEqual(verified["verification"]["source_status"], "clean")
+
+            (agent_bundle / "AGENT.md").write_text(
+                "## Mission\nCoordinate production incidents carefully.\n",
+                encoding="utf-8",
+            )
+            drifted = service.identity_verify()
+            self.assertIsNotNone(drifted)
+            if drifted is None:  # pragma: no cover
+                self.fail("expected drifted bundle verification")
+            self.assertFalse(drifted["verification"]["ok"])
+            self.assertEqual(drifted["verification"]["source_status"], "drifted")
+
+            config.identity.bundle_root = str(Path(tmp) / "different-bundle-root")
+            reloaded = service.identity_reload()
+            self.assertEqual(
+                reloaded["mission"], "Coordinate production incidents carefully."
+            )
 
             response = asyncio.run(
                 service.run_turn(Message(channel="console", target="cli", body="hello"))
@@ -524,9 +553,43 @@ class IdentityRuntimeInjectionTests(unittest.TestCase):
             if provider.last_request is None:  # pragma: no cover
                 self.fail("expected captured provider request")
             self.assertIn(
-                "Investigate production incidents quickly.",
+                "Coordinate production incidents carefully.",
                 provider.last_request.system_prompt,
             )
+
+            before_failed_reload = service._identityctl.get_profile(  # noqa: SLF001
+                "openminion"
+            )
+            (agent_bundle / "SOUL.md").unlink()
+            with self.assertRaisesRegex(RuntimeError, "bundle reload failed"):
+                service.identity_reload()
+            after_failed_reload = service._identityctl.get_profile(  # noqa: SLF001
+                "openminion"
+            )
+            self.assertIsNotNone(before_failed_reload)
+            self.assertIsNotNone(after_failed_reload)
+            if before_failed_reload is None or after_failed_reload is None:
+                self.fail("expected preserved bundle profile")
+            self.assertEqual(
+                after_failed_reload.role.mission,
+                before_failed_reload.role.mission,
+            )
+            self.assertEqual(
+                after_failed_reload.profile_revision,
+                before_failed_reload.profile_revision,
+            )
+
+            without_root = service._identityctl.get_profile("openminion")  # noqa: SLF001
+            self.assertIsNotNone(without_root)
+            if without_root is None:  # pragma: no cover
+                self.fail("expected bundle-managed profile")
+            meta = dict(without_root.meta or {})
+            meta.pop("bundle_root", None)
+            service._identityctl.upsert_profile(  # noqa: SLF001
+                without_root.model_copy(update={"meta": meta})
+            )
+            with self.assertRaisesRegex(RuntimeError, "recorded bundle root"):
+                service.identity_reload()
 
     def test_identity_bundle_import_skips_unchanged_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -578,6 +641,23 @@ class IdentityRuntimeInjectionTests(unittest.TestCase):
             if second is None:  # pragma: no cover
                 self.fail("expected second profile lookup")
             self.assertEqual(second.profile_revision, first.profile_revision)
+
+            fingerprint = str((first.meta or {}).get("bundle_fingerprint"))
+            service._identityctl.upsert_profile(  # noqa: SLF001
+                first.model_copy(update={"meta": {"bundle_fingerprint": fingerprint}})
+            )
+            upgraded = service._import_identity_bundle_profile()  # noqa: SLF001
+            self.assertTrue(upgraded)
+            legacy = service._identityctl.get_profile("openminion")  # noqa: SLF001
+            self.assertIsNotNone(legacy)
+            if legacy is None:  # pragma: no cover
+                self.fail("expected upgraded legacy bundle profile")
+            self.assertEqual(legacy.profile_revision, first.profile_revision)
+            self.assertEqual(dict(legacy.meta or {}).get("source"), "bundle")
+            self.assertEqual(
+                dict(legacy.meta or {}).get("bundle_root"),
+                str(agent_bundle.resolve()),
+            )
 
     def test_identity_bundle_import_skips_legacy_protected_profile_without_fingerprint(
         self,
@@ -1703,6 +1783,120 @@ class IdentityRuntimeInjectionTests(unittest.TestCase):
             self.assertTrue((agent_b / "AGENT.md").is_file())
             self.assertTrue((agent_b / "SOUL.md").is_file())
             self.assertTrue((agent_b / "README.md").is_file())
+
+    def test_sync_startup_yaml_profiles_resolves_inheritance_as_one_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "identity-root"
+            base = root / "base" / "profile.yaml"
+            child = root / "child" / "profile.yaml"
+            _write_profile_yaml(base, mission="Base mission.", agent_id="base")
+            child.parent.mkdir(parents=True)
+            child.write_text(
+                "\n".join(
+                    [
+                        "agent_id: child",
+                        "inherits: base",
+                        "role:",
+                        '  mission: "Child mission."',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config = OpenMinionConfig()
+            _csc_install_default_agent(config)  # type: ignore[attr-defined]
+            config.identity.root = str(root)
+            service = self._build_service_without_identity_init(config=config)
+            service._identityctl = IdentityCtl(  # noqa: SLF001
+                store=SQLiteIdentityStore(sqlite_path=str(Path(tmp) / "identity.db"))
+            )
+
+            summary = service._sync_startup_yaml_profiles()  # noqa: SLF001
+
+            self.assertEqual(summary.get("status"), "synced")
+            child_profile = service._identityctl.get_profile("child")  # noqa: SLF001
+            self.assertIsNotNone(child_profile)
+            if child_profile is None:  # pragma: no cover
+                self.fail("expected inherited child profile")
+            self.assertEqual(child_profile.role.mission, "Child mission.")
+            self.assertEqual(child_profile.personality.tone, "steady")
+
+    def test_sync_startup_yaml_profiles_rejects_invalid_root_without_mutation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "identity-root"
+            _write_profile_yaml(
+                root / "stable" / "profile.yaml",
+                mission="Replacement mission.",
+                agent_id="stable",
+            )
+            invalid = root / "invalid" / "profile.yaml"
+            invalid.parent.mkdir(parents=True)
+            invalid.write_text("role: [invalid", encoding="utf-8")
+            config = OpenMinionConfig()
+            _csc_install_default_agent(config)  # type: ignore[attr-defined]
+            config.identity.root = str(root)
+            service = self._build_service_without_identity_init(config=config)
+            service._identityctl = IdentityCtl(  # noqa: SLF001
+                store=SQLiteIdentityStore(sqlite_path=str(Path(tmp) / "identity.db"))
+            )
+            original = _sample_profile("stable")
+            original.role.mission = "Stored mission."
+            service._identityctl.upsert_profile(original)  # noqa: SLF001
+
+            with self.assertRaises(ValueError):
+                service._sync_startup_yaml_profiles()  # noqa: SLF001
+
+            stored = service._identityctl.get_profile("stable")  # noqa: SLF001
+            self.assertIsNotNone(stored)
+            if stored is None:  # pragma: no cover
+                self.fail("expected stored profile")
+            self.assertEqual(stored.role.mission, "Stored mission.")
+            self.assertIsNone(  # noqa: SLF001
+                service._identityctl.get_profile("invalid")
+            )
+
+    def test_sync_startup_yaml_profiles_removes_missing_current_canonical_source(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "identity-root"
+            source = root / "openminion" / "profile.yaml"
+            _write_profile_yaml(source, mission="Temporary canonical mission.")
+            config = OpenMinionConfig()
+            _csc_install_default_agent(config)  # type: ignore[attr-defined]
+            config.identity.root = str(root)
+            service = self._build_service_without_identity_init(config=config)
+            service._identityctl = IdentityCtl(  # noqa: SLF001
+                store=SQLiteIdentityStore(sqlite_path=str(Path(tmp) / "identity.db"))
+            )
+            service._identityctl.load_profiles_from_path(source)  # noqa: SLF001
+            source.unlink()
+
+            summary = service._sync_startup_yaml_profiles()  # noqa: SLF001
+
+            self.assertEqual(summary.get("removed_profiles"), ["openminion"])
+            self.assertIsNone(service._identityctl.get_profile("openminion"))  # noqa: SLF001
+
+    def test_sync_startup_yaml_profiles_preserves_external_yaml_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "identity-root"
+            root.mkdir()
+            external = Path(tmp) / "external.yaml"
+            _write_profile_yaml(external, mission="External mission.")
+            config = OpenMinionConfig()
+            _csc_install_default_agent(config)  # type: ignore[attr-defined]
+            config.identity.root = str(root)
+            service = self._build_service_without_identity_init(config=config)
+            service._identityctl = IdentityCtl(  # noqa: SLF001
+                store=SQLiteIdentityStore(sqlite_path=str(Path(tmp) / "identity.db"))
+            )
+            service._identityctl.load_profiles_from_path(external)  # noqa: SLF001
+
+            summary = service._sync_startup_yaml_profiles()  # noqa: SLF001
+
+            self.assertEqual(summary.get("removed_profiles"), [])
+            self.assertIsNotNone(service._identityctl.get_profile("openminion"))  # noqa: SLF001
 
     def test_sync_startup_yaml_profiles_skips_unchanged_profile_churn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

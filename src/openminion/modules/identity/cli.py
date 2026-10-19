@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 import typer
-from pydantic import ValidationError
 
 from openminion.base.config.env import resolve_environment_config
 from openminion.base.config import resolve_data_root, resolve_home_root
@@ -18,7 +17,6 @@ from openminion.modules.cli_common import (
 from openminion.base.constants import OPENMINION_DATA_ROOT_ENV, OPENMINION_HOME_ENV
 from openminion.modules.identity.config import load_config, load_yaml_file, resolve_path
 from openminion.modules.identity.constants import DEFAULT_CONFIG_FILENAME
-from openminion.modules.identity.models import AgentProfile
 from openminion.modules.identity.runtime.service import IdentityCtl
 from openminion.modules.identity.storage import (
     InMemoryIdentityStore,
@@ -193,17 +191,24 @@ def upsert_cmd(
     config: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config"),
 ) -> None:
     try:
-        payload = load_yaml_file(file.expanduser().resolve(strict=False))
-        profile = AgentProfile.model_validate(payload)
-
+        payload = load_yaml_file(file)
+        if "profiles" in payload:
+            raise ValueError("identityctl upsert requires exactly one profile")
         with _open_identity(config) as (identity, _):
-            version = identity.upsert_profile(profile)
+            loaded = identity.load_profiles_from_path(file)
+            if len(loaded) != 1:
+                raise ValueError("identityctl upsert requires exactly one profile")
+            agent_id = loaded[0]
+            summary = identity.get_profile_summary(agent_id)
+            if summary is None:
+                raise RuntimeError(f"profile missing after upsert: {agent_id}")
             _print_json(
-                {"ok": True, "agent_id": profile.agent_id, "profile_version": version}
+                {
+                    "ok": True,
+                    "agent_id": agent_id,
+                    "profile_version": summary.profile_version,
+                }
             )
-    except ValidationError as exc:
-        _print_json({"ok": False, "error": {"message": str(exc)}})
-        raise typer.Exit(code=1)
     except Exception as exc:  # pragma: no cover - CLI guard
         _print_json({"ok": False, "error": {"message": str(exc)}})
         raise typer.Exit(code=1)

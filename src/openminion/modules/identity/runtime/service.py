@@ -382,6 +382,7 @@ class IdentityCtl:
         loaded: list[str] = []
 
         resolved_profiles: dict[str, AgentProfile] = {}
+        resolution_order: list[str] = []
         in_progress: set[str] = set()
 
         def resolve(agent_id: str) -> AgentProfile:
@@ -418,11 +419,15 @@ class IdentityCtl:
 
             profile = AgentProfile.model_validate(merged_payload)
             resolved_profiles[agent_id] = profile
+            resolution_order.append(agent_id)
             in_progress.remove(agent_id)
             return profile
 
         for agent_id in sorted(profile_inputs):
-            profile = resolve(agent_id)
+            resolve(agent_id)
+
+        for agent_id in resolution_order:
+            profile = resolved_profiles[agent_id]
             incoming_version = self._compute_profile_version(profile)
             if skip_unchanged:
                 existing = self.get_profile(agent_id)
@@ -450,7 +455,10 @@ class IdentityCtl:
         return loaded
 
     def _load_profile_inputs(self, path: str | Path) -> dict[str, _ProfileInputFile]:
-        src_path = Path(path).expanduser().resolve(strict=False)
+        requested_path = Path(path).expanduser().absolute()
+        if requested_path.is_symlink() or requested_path.parent.is_symlink():
+            raise ValueError(f"profile path must not be a symlink: {requested_path}")
+        src_path = requested_path.resolve(strict=False)
         if not src_path.exists():
             raise FileNotFoundError(f"profile path not found: {src_path}")
 
@@ -467,6 +475,8 @@ class IdentityCtl:
 
         profile_inputs: dict[str, _ProfileInputFile] = {}
         for file_path in files:
+            if file_path.is_symlink() or file_path.parent.resolve() != file_path.parent:
+                raise ValueError(f"profile path must not be a symlink: {file_path}")
             raw = load_yaml_file(file_path)
             payloads = self._extract_profile_payloads(raw)
             materialize_bundle = file_path.name == "profile.yaml" and len(payloads) == 1

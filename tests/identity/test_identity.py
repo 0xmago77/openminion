@@ -377,6 +377,52 @@ tool_posture:
     identity.close()
 
 
+@pytest.mark.parametrize("symlink_kind", ["file", "parent"])
+def test_load_profiles_from_path_rejects_symlinked_profile_yaml(
+    tmp_path: Path, symlink_kind: str
+) -> None:
+    identity_root = tmp_path / "identity"
+    agent_root = identity_root / "router-agent"
+    external_root = tmp_path / "external"
+    identity_root.mkdir()
+    external_root.mkdir()
+    external_profile = external_root / "profile.yaml"
+    external_profile.write_text(
+        """
+agent_id: router-agent
+display_name: Router Agent
+profile_revision: 1
+role:
+  mission: "External mission"
+personality:
+  tone: "direct"
+risk:
+  risk_level: medium
+tool_posture:
+  tool_use: restricted
+        """.strip(),
+        encoding="utf-8",
+    )
+    if symlink_kind == "file":
+        agent_root.mkdir()
+        (agent_root / "profile.yaml").symlink_to(external_profile)
+        load_path = identity_root
+    else:
+        agent_root.symlink_to(external_root, target_is_directory=True)
+        load_path = agent_root / "profile.yaml"
+    identity = IdentityCtl(store=InMemoryIdentityStore())
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        identity.load_profiles_from_path(load_path)
+
+    assert identity.get_profile("router-agent") is None
+    assert not (external_root / "AGENT.md").exists()
+    assert not (external_root / "SOUL.md").exists()
+    assert not (external_root / "README.md").exists()
+    assert not (external_root / ".identity-lock.json").exists()
+    identity.close()
+
+
 def test_load_profiles_from_single_yaml_file_restamps_existing_profile_to_yaml_source(
     tmp_path: Path,
 ) -> None:
