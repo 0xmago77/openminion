@@ -686,7 +686,7 @@ class ToolRegistryTests(unittest.TestCase):
                             '"requested_checks":["code"]}'
                         ),
                         "check_evidence": (
-                            f'[{json.dumps({"check": "code", "evidence_ref": evidence_ref})}]'
+                            f"[{json.dumps({'check': 'code', 'evidence_ref': evidence_ref})}]"
                         ),
                         "findings": "[]",
                         "summary": "Audit completed.",
@@ -700,7 +700,9 @@ class ToolRegistryTests(unittest.TestCase):
 
         assert batch.results[0].ok is True
         assert batch.results[0].data["scope"]["requested_checks"] == ["code"]
-        assert batch.results[0].data["check_evidence"][0]["evidence_ref"] == evidence_ref
+        assert (
+            batch.results[0].data["check_evidence"][0]["evidence_ref"] == evidence_ref
+        )
 
     def test_execute_calls_toolspec_non_object_arguments_report_contract_payload(
         self,

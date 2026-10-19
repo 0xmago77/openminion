@@ -8482,9 +8482,7 @@ def test_loop_recovers_empty_non_typed_closeout_after_bounded_retries() -> None:
         outcome.state.scratchpad.get("empty_final_after_tool_results_retry_used")
     )
     assert bool(
-        outcome.state.scratchpad.get(
-            "empty_final_after_tool_results_final_retry_used"
-        )
+        outcome.state.scratchpad.get("empty_final_after_tool_results_final_retry_used")
     )
     assert runtime.calls[-1]["tool_choice"] == {
         "type": "function",

@@ -708,11 +708,13 @@ def _run_live_scenario(
                 interrupted_run, _ = _wait_for_run(
                     probe,
                     run_id,
-                    lambda run, _checkpoint: run.status
-                    in {
-                        AutonomyRunStatus.WAITING_FOR_INPUT,
-                        AutonomyRunStatus.COMPLETED,
-                    },
+                    lambda run, _checkpoint: (
+                        run.status
+                        in {
+                            AutonomyRunStatus.WAITING_FOR_INPUT,
+                            AutonomyRunStatus.COMPLETED,
+                        }
+                    ),
                 )
                 if interrupted_run.status == AutonomyRunStatus.WAITING_FOR_INPUT:
                     assert interrupted_run.operator_summary.startswith(
