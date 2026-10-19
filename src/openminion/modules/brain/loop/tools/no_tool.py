@@ -348,6 +348,14 @@ def _no_tool_retry(
     )
 
 
+def _recover_empty_final(loop_state: Any, requires_finalization_status: bool) -> bool:
+    return requires_finalization_status or bool(
+        loop_state.scratchpad.get(
+            "empty_final_after_tool_results_final_retry_used", False
+        )
+    )
+
+
 class AdaptiveLoopRunnerNoToolMixin:
     def _build_response_payloads(self, response: Any) -> dict[str, Any]:
         finalization_status = _finalization_status_payload(response)
@@ -582,13 +590,8 @@ class AdaptiveLoopRunnerNoToolMixin:
             getattr(self.loop_state, "direct_tool_requested_batch_satisfied", False)
         ):
             return _requested_direct_tool_not_executed_outcome(self)
-        recover_empty_final = requires_finalization_status or bool(
-            self.loop_state.scratchpad.get(
-                "empty_final_after_tool_results_final_retry_used", False
-            )
-        )
         if (
-            recover_empty_final
+            _recover_empty_final(self.loop_state, requires_finalization_status)
             and finalization_status is None
             and not normalized_final_text
             and _count_substantive_non_control_tool_results(self.loop_state) > 0

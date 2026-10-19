@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Any
+from typing import Any, cast
 from collections.abc import Mapping
 
 from ..contracts.model_ids import (
@@ -162,6 +162,17 @@ def repair_model_tool_arguments(
     )
 
 
+def validate_model_tool_args(
+    arguments: dict[str, Any], args_model: Any, tool_name: str
+) -> dict[str, Any]:
+    repaired = repair_model_tool_arguments(
+        arguments,
+        args_model=args_model,
+        channel_name=f"model_tool:{tool_name}.args",
+    )
+    return cast(dict[str, Any], args_model.model_validate(repaired).model_dump())
+
+
 def _model_alias_map(args_model: Any) -> dict[str, str]:
     fields = getattr(args_model, "model_fields", None)
     if not isinstance(fields, Mapping):
@@ -283,4 +294,5 @@ __all__ = [
     "simple_required_fields",
     "synthesize_simple_tool_arguments",
     "tool_family_for_argument_repair",
+    "validate_model_tool_args",
 ]

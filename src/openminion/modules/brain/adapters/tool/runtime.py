@@ -26,13 +26,13 @@ from openminion.modules.tool import (
     enforce_watch_target_binding,
     new_run_id,
     resolve_binding_for_call,
+    validate_model_tool_args,
 )
 from openminion.modules.tool.adapters import AllowAllSafetyAdapter
 from openminion.modules.tool.errors import ToolRuntimeError
 from openminion.modules.tool.plugin_api import PolicyAdapter
 from openminion.modules.tool.contracts.schemas import TOOL_ERROR_CONFIRM_REQUIRED
 from openminion.modules.tool.runtime.routing import build_runtime_tool_routing_metadata
-from openminion.modules.tool.runtime.argument_repair import repair_model_tool_arguments
 from .command_metadata import (
     _confirmation_replay_metadata,
     _extract_runtime_message_ref,
@@ -494,12 +494,7 @@ class ToolAdapter:
         try:
             args_model = spec.args_model
             if hasattr(args_model, "model_validate"):
-                repaired_args = repair_model_tool_arguments(
-                    args,
-                    args_model=args_model,
-                    channel_name=f"brain_tool_adapter:{tool_name}.args",
-                )
-                validated_args = args_model.model_validate(repaired_args).model_dump()
+                validated_args = validate_model_tool_args(args, args_model, tool_name)
             else:
                 validated_args = dict(args)
         except (TypeError, ValueError) as exc:

@@ -59,6 +59,7 @@ PUBLIC_EXPORTS = [
     "tool_result_blast_radius",
     "tool_family_for_argument_repair",
     "tool_dependency_report_fields",
+    "validate_model_tool_args",
     "validate_plugin_contract",
 ]
 
@@ -186,6 +187,10 @@ LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "tool_family_for_argument_repair": (
         ".runtime.argument_repair",
         "tool_family_for_argument_repair",
+    ),
+    "validate_model_tool_args": (
+        ".runtime.argument_repair",
+        "validate_model_tool_args",
     ),
     "tool_dependency_report_fields": (
         ".runtime.dependencies",
