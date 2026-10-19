@@ -1,3 +1,49 @@
+from types import SimpleNamespace
+
+import pytest
+
+
+class _SnapshotStore:
+    def __init__(
+        self,
+        *,
+        fail_list_call: int | None = None,
+        fail_candidates: bool = False,
+        fail_vector_probe: bool = False,
+    ) -> None:
+        self.fail_list_call = fail_list_call
+        self.fail_candidates = fail_candidates
+        self.fail_vector_probe = fail_vector_probe
+        self.list_calls: list[list[str]] = []
+        self.candidate_options = None
+
+    @property
+    def _vector_adapter(self):  # noqa: ANN202, SLF001
+        if self.fail_vector_probe:
+            raise RuntimeError("secret-vector-token")
+        return object()
+
+    def list(self, options):  # noqa: ANN001, ANN201
+        self.list_calls.append(options.scopes)
+        if self.fail_list_call == len(self.list_calls):
+            raise RuntimeError("secret-record-token")
+        if len(options.scopes) == 2:
+            return [SimpleNamespace(title="recent memory")]
+        return {
+            "session:test-session": [object(), object()],
+            "agent:test-agent": [object()],
+            "global": [object()],
+        }.get(options.scopes[0], [])
+
+    def candidate_list(self, options):  # noqa: ANN001, ANN201
+        self.candidate_options = options
+        if self.fail_candidates:
+            raise RuntimeError("secret-candidate-token")
+        return (
+            [object()] if options.session_id == "test-session" else [object(), object()]
+        )
+
+
 class TestMemoryIntrospectionIntentDetector:
     CANONICAL_PROMPTS = [
         "what do you remember",
@@ -81,6 +127,106 @@ class TestMemoryRuntimeSnapshot:
         assert snapshot.degraded is True
         assert snapshot.degraded_reason == "memory_store_unavailable"
         assert snapshot.memory_available is False
+
+    def test_build_memory_snapshot_publishes_successful_bounded_reads(self) -> None:
+        from openminion.modules.memory.diagnostics.introspection import (
+            build_memory_snapshot,
+        )
+
+        store = _SnapshotStore()
+        snapshot = build_memory_snapshot(
+            store=store,
+            session_id="test-session",
+            agent_id="test-agent",
+        )
+
+        assert snapshot.memory_available is True
+        assert snapshot.degraded is False
+        assert snapshot.session_records == 2
+        assert snapshot.agent_records == 1
+        assert snapshot.global_records == 1
+        assert snapshot.total_records == 4
+        assert snapshot.candidate_count == 1
+        assert snapshot.vector_search_available is True
+        assert snapshot.recent_highlights == ["recent memory"]
+        assert store.candidate_options.session_id == "test-session"
+        assert store.list_calls[:3] == [
+            ["session:test-session"],
+            ["agent:test-agent"],
+            ["global"],
+        ]
+
+    @pytest.mark.parametrize(
+        ("fail_list_call", "fail_candidates", "fail_vector_probe"),
+        [
+            (1, False, False),
+            (2, False, False),
+            (3, False, False),
+            (None, True, False),
+            (None, False, True),
+        ],
+    )
+    def test_build_memory_snapshot_required_failure_is_content_free(
+        self,
+        fail_list_call: int | None,
+        fail_candidates: bool,
+        fail_vector_probe: bool,
+    ) -> None:
+        from openminion.modules.memory.diagnostics.introspection import (
+            build_memory_snapshot,
+        )
+
+        snapshot = build_memory_snapshot(
+            store=_SnapshotStore(
+                fail_list_call=fail_list_call,
+                fail_candidates=fail_candidates,
+                fail_vector_probe=fail_vector_probe,
+            ),
+            session_id="test-session",
+            agent_id="test-agent",
+        )
+
+        assert snapshot.memory_available is False
+        assert snapshot.degraded is True
+        assert snapshot.degraded_reason == "memory_snapshot_query_failed"
+        assert snapshot.session_records == 0
+        assert snapshot.agent_records == 0
+        assert snapshot.global_records == 0
+        assert snapshot.total_records == 0
+        assert snapshot.candidate_count == 0
+        assert "secret" not in snapshot.model_dump_json()
+
+    def test_build_memory_snapshot_keeps_highlights_optional(self) -> None:
+        from openminion.modules.memory.diagnostics.introspection import (
+            build_memory_snapshot,
+        )
+
+        snapshot = build_memory_snapshot(
+            store=_SnapshotStore(fail_list_call=4),
+            session_id="test-session",
+            agent_id="test-agent",
+        )
+
+        assert snapshot.memory_available is True
+        assert snapshot.degraded is False
+        assert snapshot.total_records == 4
+        assert snapshot.candidate_count == 1
+        assert snapshot.recent_highlights == []
+
+    def test_brain_adapter_returns_local_snapshot_schema(self) -> None:
+        from openminion.modules.brain.adapters.memory import MemctlAdapter
+        from openminion.modules.memory.storage.memory import InMemoryMemoryStore
+
+        snapshot = MemctlAdapter(
+            InMemoryMemoryStore(), agent_id="test-agent"
+        ).get_runtime_snapshot(
+            session_id="test-session",
+            agent_id="test-agent",
+        )
+
+        assert snapshot["memory_available"] is True
+        assert snapshot["candidate_count"] == 0
+        assert snapshot["scope_filter"] == "session:test-session"
 
 
 class TestRetrievalStatsSnapshot:

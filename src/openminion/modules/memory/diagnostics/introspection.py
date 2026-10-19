@@ -138,53 +138,45 @@ def build_memory_snapshot(
         return snapshot
 
     try:
-        try:
-            session_records = len(
-                _list_store_records(store, [f"session:{session_id}"], limit=1000)
-            )
-            agent_records = len(
-                _list_store_records(store, [f"agent:{agent_id}"], limit=1000)
-            )
-            global_records = len(_list_store_records(store, ["global"], limit=1000))
-            snapshot.session_records = session_records
-            snapshot.agent_records = agent_records
-            snapshot.global_records = global_records
-            snapshot.total_records = session_records + agent_records + global_records
-        except Exception:
-            pass
+        session_records = len(
+            _list_store_records(store, [f"session:{session_id}"], limit=1000)
+        )
+        agent_records = len(
+            _list_store_records(store, [f"agent:{agent_id}"], limit=1000)
+        )
+        global_records = len(_list_store_records(store, ["global"], limit=1000))
 
-        if getattr(store, "_vector_adapter", None) is not None:
-            snapshot.vector_search_available = True
+        from openminion.modules.memory.storage.base import CandidateListOptions
 
-        try:
-            from openminion.modules.memory.storage.base import CandidateListOptions
-
-            cand_opts = CandidateListOptions(limit=1000)
-            candidates = store.candidate_list(cand_opts)
-            snapshot.candidate_count = len(candidates)
-        except Exception:
-            pass
-
-        snapshot.memory_available = True
-        snapshot.degraded = False
-
-        try:
-            recent_records = _list_store_records(
-                store,
-                [f"session:{session_id}", f"agent:{agent_id}"],
-                limit=max_highlights,
-            )
-            for record in recent_records:
-                highlight = _record_highlight(record)
-                if highlight:
-                    snapshot.recent_highlights.append(highlight)
-        except Exception:
-            pass
-
-    except Exception as exc:
+        candidates = store.candidate_list(
+            CandidateListOptions(session_id=session_id, limit=1000)
+        )
+        vector_search_available = getattr(store, "_vector_adapter", None) is not None
+    except Exception:
         snapshot.degraded = True
-        snapshot.degraded_reason = f"memory_snapshot_error: {str(exc)[:100]}"
-        snapshot.memory_available = False
+        snapshot.degraded_reason = "memory_snapshot_query_failed"
+        return snapshot
+
+    snapshot.session_records = session_records
+    snapshot.agent_records = agent_records
+    snapshot.global_records = global_records
+    snapshot.candidate_count = len(candidates)
+    snapshot.total_records = session_records + agent_records + global_records
+    snapshot.memory_available = True
+    snapshot.vector_search_available = vector_search_available
+
+    try:
+        recent_records = _list_store_records(
+            store,
+            [f"session:{session_id}", f"agent:{agent_id}"],
+            limit=max_highlights,
+        )
+        for record in recent_records:
+            highlight = _record_highlight(record)
+            if highlight:
+                snapshot.recent_highlights.append(highlight)
+    except Exception:
+        pass
 
     return snapshot
 
