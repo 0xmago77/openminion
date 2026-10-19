@@ -115,6 +115,7 @@ def _prepare_config(source: Path, destination: Path, target: Path) -> None:
         name="security-researcher-readonly",
         role="readonly security researcher",
         skill="security-researcher-readonly",
+        structural_tool_results=True,
     )
     payload["agents"]["security-researcher-readonly"] = profile
     payload["identity"] = {"db_path": "identity/identity.db"}

@@ -214,8 +214,20 @@ def test_external_content_flags_are_independent_through_exporter(
 def test_default_policy_omits_content_and_prohibited_fields() -> None:
     cleaned = apply_content_policy(
         {
+            "active_state_full": {"goal": "private state"},
+            "active_state_prompt_view": {"summary": "private prompt state"},
+            "adaptive.finalization_status": {
+                "status": "final_answer",
+                "reasoning": "private reasoning",
+            },
             "gen_ai.input.messages": [{"content": "hello"}],
             "gen_ai.tool.call.arguments": {"query": "private"},
+            "args": {"target": "/private/repository"},
+            "goal": "private goal",
+            "intent": "private intent",
+            "latest_user_message": "private message",
+            "summary": "private summary",
+            "metric_summary": {"duration_ms": 12},
             "path": "/private/repository/file.py",
             "diff_body": "private patch",
             "itinerary_details": "private itinerary",
@@ -237,8 +249,17 @@ def test_default_policy_omits_content_and_prohibited_fields() -> None:
     )
 
     assert cleaned["input_tokens"] == 12
+    assert "active_state_full" not in cleaned
+    assert "active_state_prompt_view" not in cleaned
+    assert "adaptive.finalization_status" not in cleaned
     assert "gen_ai.input.messages" not in cleaned
     assert "gen_ai.tool.call.arguments" not in cleaned
+    assert "args" not in cleaned
+    assert "goal" not in cleaned
+    assert "intent" not in cleaned
+    assert "latest_user_message" not in cleaned
+    assert "summary" not in cleaned
+    assert cleaned["metric_summary"] == {"duration_ms": 12}
     assert "path" not in cleaned
     assert "diff_body" not in cleaned
     assert "itinerary_details" not in cleaned

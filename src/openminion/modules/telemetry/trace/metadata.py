@@ -8,6 +8,9 @@ from typing import Any, cast
 
 _SENSITIVE_FIELDS = frozenset(
     {
+        "active_state_full",
+        "active_state_prompt_view",
+        "adaptive.finalization_status",
         "assistant_body",
         "assistant_text",
         "body",
@@ -29,6 +32,7 @@ _SENSITIVE_FIELDS = frozenset(
         "output_messages",
         "output_text",
         "arguments",
+        "args",
         "result",
         "tool_definitions",
         "file_path",
@@ -46,6 +50,16 @@ _SENSITIVE_FIELDS = frozenset(
     }
 )
 _INHERITED_SENSITIVE_FIELDS = frozenset({"content", "text"})
+_SENSITIVE_TEXT_FIELDS = frozenset(
+    {
+        "goal",
+        "intent",
+        "last_user_input",
+        "latest_user_message",
+        "summary",
+        "task_description",
+    }
+)
 _PROHIBITED_FIELDS = frozenset(
     {
         "api_key",
@@ -272,6 +286,15 @@ def apply_content_policy(
                     and not allow_sensitive_content
                     and not field_allowed
                     and not parent_allows_field
+                ):
+                    removed.append(item_path)
+                    continue
+                if (
+                    field in _SENSITIVE_TEXT_FIELDS
+                    and isinstance(item, str)
+                    and not allow_sensitive_content
+                    and not field_allowed
+                    and not parent_sensitive_allowed
                 ):
                     removed.append(item_path)
                     continue
