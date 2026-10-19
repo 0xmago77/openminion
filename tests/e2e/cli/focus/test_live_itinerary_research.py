@@ -23,7 +23,9 @@ def test_live_focus_itinerary_research_preserves_followup_context(
             FocusScenario(
                 scenario_id="itinerary_research",
                 prompt=(
-                    "For Sunday, October 11, 2026, find three train routes from "
+                    "Handle this in the current interactive turn; do not propose "
+                    "or start a background project. For Sunday, October 11, 2026, "
+                    "find three train routes from "
                     "Nikaido Station in Nara to Hakata Station, including options "
                     "that board the Shinkansen at Kyoto and Shin-Osaka. Use current "
                     "web evidence. For each route show every leg, departure and "
@@ -56,7 +58,9 @@ def test_live_focus_itinerary_research_preserves_followup_context(
             FocusScenario(
                 scenario_id="itinerary_shopping_followup",
                 prompt=(
-                    "Keep the Kyoto route and revise its pre-Shinkansen legs so I "
+                    "Continue in this interactive session without proposing a "
+                    "background project. Keep the Kyoto route and revise its "
+                    "pre-Shinkansen legs so I "
                     "have at least 90 minutes to shop at Kyoto Station. Show the "
                     "updated leg-by-leg timeline, shopping window, transfer buffer, "
                     "Hakata arrival, fare, and source URLs."

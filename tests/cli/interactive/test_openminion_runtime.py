@@ -1303,7 +1303,7 @@ async def test_openminion_focus_runtime_reuses_stable_conversation_id() -> None:
     assert second_metadata["resume"] == "true"
 
 
-def test_openminion_focus_runtime_scopes_tool_profiles_to_stored_session() -> None:
+def test_openminion_focus_runtime_scopes_tool_profiles_to_turn_session() -> None:
     rt = _FakeRuntime()
     calls: list[tuple[str, str]] = []
     rt.tool_exposure_status = lambda *, session_id: (
@@ -1317,7 +1317,7 @@ def test_openminion_focus_runtime_scopes_tool_profiles_to_stored_session() -> No
         calls.append(("deactivate", kwargs["session_id"])) or True
     )
     focus_rt = OpenMinionRuntime(rt, target="focus")
-    expected = focus_rt.session_id
+    expected = focus_rt._turn_session_id()
 
     focus_rt.tool_exposure_status()
     focus_rt.activate_tool_profile("security_readonly")

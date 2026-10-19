@@ -582,8 +582,13 @@ class AdaptiveLoopRunnerNoToolMixin:
             getattr(self.loop_state, "direct_tool_requested_batch_satisfied", False)
         ):
             return _requested_direct_tool_not_executed_outcome(self)
+        recover_empty_final = requires_finalization_status or bool(
+            self.loop_state.scratchpad.get(
+                "empty_final_after_tool_results_final_retry_used", False
+            )
+        )
         if (
-            requires_finalization_status
+            recover_empty_final
             and finalization_status is None
             and not normalized_final_text
             and _count_substantive_non_control_tool_results(self.loop_state) > 0
