@@ -208,7 +208,7 @@ src/openminion/modules/llm/runtime/flow.py	1	0	current broad-handler baseline; r
 src/openminion/modules/memory/cli.py	7	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
 src/openminion/modules/memory/diagnostics/debug.py	1	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
 src/openminion/modules/memory/diagnostics/export.py	2	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
-src/openminion/modules/memory/diagnostics/introspection.py	6	4	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
+src/openminion/modules/memory/diagnostics/introspection.py	4	2	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
 src/openminion/modules/memory/observability/emitter.py	1	1	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
 src/openminion/modules/memory/portability/service.py	1	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
 src/openminion/modules/memory/runtime/candidate_lifecycle.py	3	1	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
