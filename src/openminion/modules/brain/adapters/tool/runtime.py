@@ -31,12 +31,8 @@ from openminion.modules.tool.adapters import AllowAllSafetyAdapter
 from openminion.modules.tool.errors import ToolRuntimeError
 from openminion.modules.tool.plugin_api import PolicyAdapter
 from openminion.modules.tool.contracts.schemas import TOOL_ERROR_CONFIRM_REQUIRED
-from openminion.modules.tool.runtime.routing import (
-    build_runtime_tool_routing_metadata,
-)
-from openminion.modules.tool.runtime.argument_repair import (
-    repair_model_tool_arguments,
-)
+from openminion.modules.tool.runtime.routing import build_runtime_tool_routing_metadata
+from openminion.modules.tool.runtime.argument_repair import repair_model_tool_arguments
 from .command_metadata import (
     _confirmation_replay_metadata,
     _extract_runtime_message_ref,
@@ -55,10 +51,7 @@ from .github_release import execute_github_release_project_effect
 from .github_update import execute_github_update_pr_project_effect
 from .github_workflow import execute_github_workflow_project_effect
 from .project_github import execute_github_open_pr_project_effect
-from .project_git import (
-    execute_git_remote_project_effect,
-    is_git_remote_project_action,
-)
+from .project_git import execute_git_remote_project_effect, is_git_remote_project_action
 from .policy_context import (
     _agent_id_from_policy,
     _approval_policy_facts,
