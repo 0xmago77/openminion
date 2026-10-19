@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import io
 import json
-from contextlib import redirect_stdout
 from unittest.mock import MagicMock
 
 import pytest
@@ -70,14 +68,15 @@ def test_purge_omitted_grace_uses_config(cli_ctl: MagicMock) -> None:
     ["12h", "30m", "3600s", "2.5d", "-1d", "", "later", "1000000d"],
 )
 def test_purge_grace_rejects_invalid_values_before_purge(
-    cli_ctl: MagicMock, raw: str
+    cli_ctl: MagicMock,
+    raw: str,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    output = io.StringIO()
-    with pytest.raises(SystemExit) as exc_info, redirect_stdout(output):
+    with pytest.raises(SystemExit) as exc_info:
         cli_module.main(["purge", f"--grace={raw}"])
 
     assert exc_info.value.code == 1
-    assert json.loads(output.getvalue())["error"]["code"] == "INVALID_ARGUMENT"
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "INVALID_ARGUMENT"
     cli_ctl.purge.assert_not_called()
     cli_ctl.__exit__.assert_called_once()
 
@@ -102,15 +101,15 @@ def test_separated_negative_grace_stays_an_argparse_error(
 
 def test_artifactctl_constructor_error_remains_unwrapped(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     def _construct(_config):
         raise ArtifactCtlError("CONSTRUCTION_FAILED", "construction failed")
 
     monkeypatch.setattr(cli_module, "ArtifactCtl", _construct)
 
-    output = io.StringIO()
-    with pytest.raises(ArtifactCtlError) as exc_info, redirect_stdout(output):
+    with pytest.raises(ArtifactCtlError) as exc_info:
         cli_module.main(["purge"])
 
     assert exc_info.value.code == "CONSTRUCTION_FAILED"
-    assert output.getvalue() == ""
+    assert capsys.readouterr().out == ""

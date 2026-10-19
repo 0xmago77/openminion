@@ -181,12 +181,12 @@ def _dispatch(ctl: ArtifactCtl, args: argparse.Namespace) -> None:
             "agent_id": args.agent,
             "mime": args.mime,
         }
-        rows = ctl.search(args.query, filters=filters, limit=int(args.limit))
+        rows = ctl.search(args.query, filters=filters, limit=args.limit)
         _print_json({"ok": True, "results": [row.to_dict() for row in rows]})
         return
 
     if args.cmd == "largest":
-        rows = ctl.largest(limit=int(args.top))
+        rows = ctl.largest(limit=args.top)
         _print_json({"ok": True, "results": [row.to_dict() for row in rows]})
         return
 
@@ -195,7 +195,7 @@ def _dispatch(ctl: ArtifactCtl, args: argparse.Namespace) -> None:
         return
 
     if args.cmd == "gc":
-        gc_report = ctl.gc(plan_only=bool(args.plan))
+        gc_report = ctl.gc(plan_only=args.plan)
         _print_json({"ok": True, "report": gc_report.to_dict()})
         return
 
@@ -263,8 +263,7 @@ def _parse_json_obj(raw: str) -> dict[str, Any]:
 
 
 def _parse_duration_to_days(raw: str) -> int:
-    text = raw.strip().lower()
-    digits = text[:-1] if text.endswith("d") else text
+    digits = raw.strip().lower().removesuffix("d")
     try:
         if not digits.isdecimal():
             raise ValueError
