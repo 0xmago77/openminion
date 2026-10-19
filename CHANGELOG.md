@@ -1,18 +1,45 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-17
+Last updated: 2026-10-19
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+## Current package line - 2026-10-19
+
+- Add complete scheduled-task operations, including update, run-now, pause,
+  resume, delete, history, retry, incident controls, durable attempt fencing,
+  daemon continuity, and execution telemetry.
+- Support live MCP configuration reload, validated registry updates, rollback,
+  lifecycle cleanup, and OAuth login without weakening the existing tool and
+  approval contracts.
+- Preserve learned-skill admission, save, reuse, denial, evidence, and
+  PostgreSQL behavior across CLI, Focus, and durable runtime paths.
+- Improve long-horizon memory retrieval, continuity, introspection, and
+  ContextCtl fallback health while keeping memory facts and trust diagnostics
+  truthful.
+- Keep long-running project handoffs, provider failures, approval recovery,
+  resumed work, and overlapping turns isolated to their owning session and
+  project.
 - Preserve canonical tool identity, call ID, status, and error code in recent
   tool activity and debug timelines.
 - Stream tool-call lifecycle status through ACP without copying raw tool input
   or output into progress updates.
 - Publish declared MCP output schemas and return successful runtime-tool results
   as both JSON text and validated `structuredContent`.
+- Preserve canonical identity-verification results and complete rendering
+  across terminal, Focus, and runtime inspection surfaces.
+- Scope telemetry to the active session, keep token events ordered, and omit
+  prompt and tool prose from default diagnostics.
+- Tighten artifact reference ownership, deletion, and orphan cleanup while
+  preserving lifecycle evidence across CLI and runtime adapters.
+- Strengthen terminal confirmations and Focus PTY behavior for permission
+  recovery, queued prompts, multiline paste, resize, and repeated approvals.
+- Recover invalid project-entry controls, keep inactive-tool activation
+  available during direct tool sequences, and accept provider-emitted JSON
+  boolean strings without masking malformed tool requests.
 
 ## Current package line - 2026-10-15
 
