@@ -3,6 +3,8 @@ import logging
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import yaml
+
 from openminion.base.config.env import EnvironmentConfig
 from openminion.base.config.runtime import (
     resolve_identity_db_from_env,
@@ -29,11 +31,9 @@ from openminion.modules.identity.constants import (
     IDENTITY_RUNTIME_STATUS_IMPORT_FAILED,
     IDENTITY_RUNTIME_STATUS_NOT_STARTED,
     IDENTITY_RUNTIME_STATUS_NO_YAML_PROFILES,
-    IDENTITY_RUNTIME_STATUS_PARTIAL_FAILURE,
     IDENTITY_RUNTIME_STATUS_SKIPPED_AUTHORITY,
     IDENTITY_RUNTIME_STATUS_SKIPPED_UNCHANGED,
     IDENTITY_RUNTIME_STATUS_SYNCED,
-    IDENTITY_RUNTIME_STATUS_SYNC_FAILED,
 )
 from openminion.modules.identity.runtime.renderer import (
     _CANONICAL_PURPOSES,
@@ -233,26 +233,12 @@ class AgentIdentityMixin:
             configured_root=configured_root,
         )
 
-    @staticmethod
-    def _discover_startup_yaml_profile_paths(identity_root: Path) -> list[Path]:
-        if not identity_root.exists() or not identity_root.is_dir():
-            return []
-        profile_paths: list[Path] = []
-        for child in sorted(identity_root.iterdir(), key=lambda item: item.name):
-            if not child.is_dir():
-                continue
-            profile_yaml = child / "profile.yaml"
-            if profile_yaml.is_file():
-                profile_paths.append(profile_yaml.resolve())
-        return profile_paths
-
     def _sync_startup_yaml_profiles(self) -> dict[str, Any]:
         summary: dict[str, Any] = {
             "status": IDENTITY_RUNTIME_STATUS_NOT_STARTED,
             "identity_root": "",
             "profile_files_count": 0,
             "upserted_profiles_count": 0,
-            "errors_count": 0,
         }
         if self._identityctl is None:
             summary["status"] = IDENTITY_RUNTIME_STATUS_IDENTITYCTL_UNAVAILABLE
@@ -267,45 +253,44 @@ class AgentIdentityMixin:
             summary["status"] = IDENTITY_RUNTIME_STATUS_IDENTITY_ROOT_NOT_DIRECTORY
             return summary
 
-        profile_paths = self._discover_startup_yaml_profile_paths(identity_root)
-        summary["profile_files_count"] = len(profile_paths)
-        if not profile_paths:
+        profile_files_count = len(list(identity_root.glob("*/profile.yaml")))
+        summary["profile_files_count"] = profile_files_count
+        removed_profile = self._remove_missing_current_yaml_profile(identity_root)
+        summary["removed_profiles"] = [removed_profile] if removed_profile else []
+        if not profile_files_count:
             summary["status"] = IDENTITY_RUNTIME_STATUS_NO_YAML_PROFILES
             return summary
 
-        upserted_ids: set[str] = set()
-        errors: list[str] = []
-        for profile_path in profile_paths:
-            try:
-                loaded_ids = self._identityctl.load_profiles_from_path(
-                    profile_path,
-                    skip_unchanged=True,
-                )
-                for loaded_id in loaded_ids:
-                    upserted_ids.add(str(loaded_id))
-            except Exception as exc:  # noqa: BLE001
-                self._logger.debug(
-                    "identity startup yaml sync failed path=%s reason=%s",
-                    profile_path,
-                    exc,
-                )
-                if profile_path.parent.name == self._identity_agent_id:
-                    raise ValueError(f"{profile_path}: {exc}") from exc
-                errors.append(f"{profile_path}: {exc}")
-
+        try:
+            loaded_ids = self._identityctl.load_profiles_from_path(
+                identity_root,
+                skip_unchanged=True,
+            )
+        except yaml.YAMLError as exc:
+            raise ValueError(f"{identity_root}: {exc}") from exc
+        upserted_ids = {str(loaded_id) for loaded_id in loaded_ids}
         summary["upserted_profiles"] = sorted(upserted_ids)
         summary["upserted_profiles_count"] = len(upserted_ids)
-        summary["errors_count"] = len(errors)
-        if errors and upserted_ids:
-            summary["status"] = IDENTITY_RUNTIME_STATUS_PARTIAL_FAILURE
-            summary["errors"] = errors
-            return summary
-        if errors:
-            summary["status"] = IDENTITY_RUNTIME_STATUS_SYNC_FAILED
-            summary["errors"] = errors
-            return summary
         summary["status"] = IDENTITY_RUNTIME_STATUS_SYNCED
         return summary
+
+    def _remove_missing_current_yaml_profile(self, identity_root: Path) -> str:
+        identityctl = self._identityctl
+        if identityctl is None:
+            return ""
+        profile = identityctl.get_profile(self._identity_agent_id)
+        meta = dict(profile.meta or {}) if profile else {}
+        recorded = str(meta.get("source_path", "") or "").strip()
+        canonical = (identity_root / self._identity_agent_id / "profile.yaml").resolve()
+        if (
+            str(meta.get("source", "") or "").strip().lower() != "yaml"
+            or not recorded
+            or Path(recorded).expanduser().resolve() != canonical
+            or canonical.is_file()
+        ):
+            return ""
+        identityctl.delete_profile(self._identity_agent_id)
+        return self._identity_agent_id
 
     @staticmethod
     def _classify_profile_source(profile: Any) -> str:
@@ -339,6 +324,12 @@ class AgentIdentityMixin:
             return True, 1
         existing_fingerprint = str(existing_meta.get("bundle_fingerprint", "")).strip()
         if existing_fingerprint and existing_fingerprint == str(bundle.fingerprint):
+            canonical_meta = dict(
+                existing_meta, bundle_root=str(bundle.root_path), source="bundle"
+            )
+            if existing is not None and canonical_meta != existing_meta:
+                updated = existing.model_copy(update={"meta": canonical_meta})
+                self._identityctl.upsert_profile(updated)
             summary["status"] = IDENTITY_RUNTIME_STATUS_SKIPPED_UNCHANGED
             self._logger.debug(
                 "identity bundle import skipped agent_id=%s reason=unchanged_fingerprint",
@@ -411,6 +402,7 @@ class AgentIdentityMixin:
             {
                 "bundle_fingerprint": str(bundle.fingerprint),
                 "bundle_imported": True,
+                "bundle_root": str(bundle.root_path),
                 "source": "bundle",
             }
         )
@@ -433,7 +425,9 @@ class AgentIdentityMixin:
                 import_warnings,
             )
 
-    def _import_identity_bundle_profile(self) -> bool:
+    def _import_identity_bundle_profile(
+        self, *, bundle_root: str | Path | None = None
+    ) -> bool:
         summary: dict[str, Any] = {
             "status": IDENTITY_RUNTIME_STATUS_NOT_STARTED,
             "imported": False,
@@ -445,15 +439,16 @@ class AgentIdentityMixin:
             summary["status"] = IDENTITY_RUNTIME_STATUS_IDENTITYCTL_UNAVAILABLE
             self._identity_import_summary = summary
             return False
-        bundle_root = self._resolve_bundle_root()
-        if not bundle_root:
+        resolved_bundle_root = bundle_root or self._resolve_bundle_root()
+        if not resolved_bundle_root:
             summary["status"] = IDENTITY_RUNTIME_STATUS_BUNDLE_ROOT_UNSET
             self._identity_import_summary = summary
             return False
         try:
             from openminion.modules.identity import load_identity_bundle
 
-            bundle = load_identity_bundle(self._identity_agent_id, root=bundle_root)
+            agent_id = self._identity_agent_id
+            bundle = load_identity_bundle(agent_id, root=resolved_bundle_root)
             summary["bundle_root"] = str(bundle.root_path)
             if not bundle.ok:
                 summary["status"] = IDENTITY_RUNTIME_STATUS_BUNDLE_INVALID
@@ -696,11 +691,20 @@ class AgentIdentityMixin:
     def identity_reload(self, *, purpose: str = "act") -> dict[str, Any]:
         if self._identityctl is None:
             raise RuntimeError("identity is not configured for this agent")
-        reload_runtime_identity(
-            self._identityctl,
-            identity_root=self._resolve_startup_identity_root(),
-            agent_id=self._identity_agent_id,
-        )
+        profile = self._identityctl.get_profile(self._identity_agent_id)
+        source = str((profile.meta or {}).get("source", "") if profile else "").strip()
+        if source == "bundle":
+            bundle_root = str((profile.meta or {}).get("bundle_root", "") or "").strip()
+            if not bundle_root:
+                raise RuntimeError("recorded bundle root is missing")
+            if not self._import_identity_bundle_profile(bundle_root=bundle_root):
+                raise RuntimeError("identity bundle reload failed")
+        else:
+            reload_runtime_identity(
+                self._identityctl,
+                identity_root=self._resolve_startup_identity_root(),
+                agent_id=self._identity_agent_id,
+            )
         self._refresh_identity_runtime_state()
         snapshot = self.identity_snapshot(purpose=purpose)
         if snapshot is None:
@@ -805,8 +809,8 @@ _AGENT_IDENTITY_RUNTIME_API_NAMES = (
     "_update_llm_policy_ref_diagnostics",
     "_resolve_bundle_root",
     "_resolve_startup_identity_root",
-    "_discover_startup_yaml_profile_paths",
     "_sync_startup_yaml_profiles",
+    "_remove_missing_current_yaml_profile",
     "_classify_profile_source",
     "_identity_bundle_existing_profile_state",
     "_identity_bundle_documents",

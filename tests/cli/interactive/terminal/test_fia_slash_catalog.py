@@ -643,6 +643,7 @@ def test_identity_report_shows_render_completeness_and_verification_issues() -> 
             "agent_id": "ops",
             "display_name": "Operations",
             "source": "yaml",
+            "source_path": "/tmp/identity/ops/profile.yaml",
             "profile_revision": 2,
             "profile_version": "profile-v2",
             "render_version": "render-v1",
@@ -671,6 +672,7 @@ def test_identity_report_shows_render_completeness_and_verification_issues() -> 
     )
 
     assert "Purpose: act" in rendered
+    assert "Source path: /tmp/identity/ops/profile.yaml" in rendered
     assert "Render budget: 42/180 tokens" in rendered
     assert "Included fields: role.mission" in rendered
     assert "Omitted fields: personality.formatting" in rendered

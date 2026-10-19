@@ -293,7 +293,7 @@ tool_posture:
     )
 
     with pytest.raises(ValueError, match="does not match its agent directory"):
-        identity.load_profiles_from_path(profile_path)
+        identity.load_profiles_from_path(profile_path, identity_root=tmp_path)
 
     assert identity.get_profile("other-agent") is None
     identity.close()
@@ -319,7 +319,7 @@ tool_posture:
     )
 
     identity = IdentityCtl(store=InMemoryIdentityStore())
-    loaded = identity.load_profiles_from_path(profile_path)
+    loaded = identity.load_profiles_from_path(profile_path, identity_root=tmp_path)
 
     assert loaded == ["single-agent"]
     profile = identity.get_profile("single-agent")
@@ -355,7 +355,7 @@ tool_posture:
     )
 
     identity = IdentityCtl(store=InMemoryIdentityStore())
-    loaded = identity.load_profiles_from_path(profile_path)
+    loaded = identity.load_profiles_from_path(profile_path, identity_root=tmp_path)
 
     assert loaded == ["router-agent"]
     assert (agent_root / "AGENT.md").is_file()
@@ -374,6 +374,86 @@ tool_posture:
         "README.md",
         "SOUL.md",
     ]
+    identity.close()
+
+
+def test_external_profile_yaml_does_not_generate_sidecars(tmp_path: Path) -> None:
+    identity_root = tmp_path / "identity"
+    external_root = tmp_path / "external-agent"
+    external_root.mkdir()
+    profile_path = external_root / "profile.yaml"
+    profile_path.write_text(
+        """
+agent_id: external-agent
+display_name: External Agent
+profile_revision: 1
+role:
+  mission: "External mission"
+personality:
+  tone: "direct"
+risk:
+  risk_level: medium
+tool_posture:
+  tool_use: restricted
+        """.strip(),
+        encoding="utf-8",
+    )
+    identity = IdentityCtl(store=InMemoryIdentityStore())
+
+    loaded = identity.load_profiles_from_path(profile_path, identity_root=identity_root)
+
+    assert loaded == ["external-agent"]
+    assert not (external_root / "AGENT.md").exists()
+    assert not (external_root / "SOUL.md").exists()
+    assert not (external_root / "README.md").exists()
+    assert not (external_root / ".identity-lock.json").exists()
+    identity.close()
+
+
+@pytest.mark.parametrize("symlink_kind", ["file", "parent"])
+def test_load_profiles_from_path_rejects_symlinked_profile_yaml(
+    tmp_path: Path, symlink_kind: str
+) -> None:
+    identity_root = tmp_path / "identity"
+    agent_root = identity_root / "router-agent"
+    external_root = tmp_path / "external"
+    identity_root.mkdir()
+    external_root.mkdir()
+    external_profile = external_root / "profile.yaml"
+    external_profile.write_text(
+        """
+agent_id: router-agent
+display_name: Router Agent
+profile_revision: 1
+role:
+  mission: "External mission"
+personality:
+  tone: "direct"
+risk:
+  risk_level: medium
+tool_posture:
+  tool_use: restricted
+        """.strip(),
+        encoding="utf-8",
+    )
+    if symlink_kind == "file":
+        agent_root.mkdir()
+        (agent_root / "profile.yaml").symlink_to(external_profile)
+        load_path = identity_root
+    else:
+        agent_root.symlink_to(external_root, target_is_directory=True)
+        load_path = agent_root / "profile.yaml"
+    sidecar_root = load_path.resolve().parent
+    identity = IdentityCtl(store=InMemoryIdentityStore())
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        identity.load_profiles_from_path(load_path)
+
+    assert identity.get_profile("router-agent") is None
+    assert not (sidecar_root / "AGENT.md").exists()
+    assert not (sidecar_root / "SOUL.md").exists()
+    assert not (sidecar_root / "README.md").exists()
+    assert not (sidecar_root / ".identity-lock.json").exists()
     identity.close()
 
 
@@ -443,7 +523,9 @@ tool_posture:
 
     store = SQLiteIdentityStore(db_path)
     identity = IdentityCtl(store=store)
-    loaded_first = identity.load_profiles_from_path(profile_path, skip_unchanged=True)
+    loaded_first = identity.load_profiles_from_path(
+        profile_path, skip_unchanged=True, identity_root=tmp_path
+    )
     assert loaded_first == ["router-agent"]
 
     first_row = store.get_profile("router-agent")
@@ -455,7 +537,9 @@ tool_posture:
     (agent_root / "README.md").unlink()
 
     time.sleep(0.01)
-    loaded_second = identity.load_profiles_from_path(profile_path, skip_unchanged=True)
+    loaded_second = identity.load_profiles_from_path(
+        profile_path, skip_unchanged=True, identity_root=tmp_path
+    )
     assert loaded_second == []
 
     second_row = store.get_profile("router-agent")

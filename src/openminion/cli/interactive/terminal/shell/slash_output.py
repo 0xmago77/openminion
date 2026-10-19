@@ -83,6 +83,8 @@ def render_identity_report(payload: dict[str, Any]) -> str:
         f"Profile version: {payload.get('profile_version', '')}",
         f"Render version: {payload.get('render_version', '')}",
     ]
+    if source_path := str(payload.get("source_path", "") or "").strip():
+        lines.insert(2, f"Source path: {source_path}")
     if purpose := str(render_facts.get("purpose", "") or "").strip():
         lines.append(f"Purpose: {purpose}")
     budget = render_facts.get("budget")

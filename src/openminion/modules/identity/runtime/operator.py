@@ -13,11 +13,14 @@ import yaml
 
 from openminion.modules.identity.config import load_yaml_file
 from openminion.modules.identity.models import AgentProfile, AgentProfileInput
+from openminion.modules.identity.runtime.bundle import load_identity_bundle
 from openminion.modules.identity.runtime.generated_bundle import (
     GENERATED_IDENTITY_README_NAME,
+    render_generated_identity_readme,
 )
 from openminion.modules.identity.runtime.lockfile import (
     IDENTITY_LOCKFILE_NAME,
+    compute_tree_sha256,
     read_identity_lockfile,
 )
 from openminion.modules.identity.runtime.md_generator import (
@@ -239,7 +242,7 @@ def _write_and_sync_profile(
         yaml.safe_dump(payload, sort_keys=False, default_flow_style=False),
     )
     try:
-        loaded = ctl.load_profiles_from_path(target)
+        loaded = ctl.load_profiles_from_path(target, identity_root=target.parent.parent)
         if profile.agent_id not in loaded:
             raise RuntimeError(
                 f"identity sync did not load profile: {profile.agent_id}"
@@ -278,6 +281,7 @@ def runtime_identity_snapshot(
         "mission": profile.role.mission,
         "tone": profile.personality.tone,
         "source": str((profile.meta or {}).get("source", "unknown")),
+        "source_path": str((profile.meta or {}).get("source_path", "") or "") or None,
         "profile_revision": profile.profile_revision,
         "profile_version": summary.profile_version,
         "render_version": snippet.render_version,
@@ -327,10 +331,16 @@ def reload_runtime_identity(
     identity_root: Path,
     agent_id: str,
 ) -> None:
-    profile_path = identity_root / agent_id / "profile.yaml"
+    profile = ctl.get_profile(agent_id)
+    recorded_path = str((profile.meta or {}).get("source_path", "") if profile else "")
+    profile_path = (
+        Path(recorded_path).expanduser()
+        if recorded_path.strip()
+        else identity_root / agent_id / "profile.yaml"
+    )
     if not profile_path.is_file():
-        raise FileNotFoundError(f"canonical identity profile not found: {profile_path}")
-    ctl.load_profiles_from_path(profile_path)
+        raise FileNotFoundError(f"identity profile source not found: {profile_path}")
+    ctl.load_profiles_from_path(profile_path, identity_root=identity_root)
 
 
 def _inspect_profile(
@@ -353,18 +363,9 @@ def _inspect_profile(
         raise RuntimeError("identity profile has no stored summary")
     source = str((profile.meta or {}).get("source", "") or "unknown").strip().lower()
     root = identity_root.expanduser().resolve()
-    profile_root = (root / agent_id).resolve()
-    canonical_path = profile_root / "profile.yaml"
-    canonical_resolved = canonical_path.resolve()
     recorded_path = str((profile.meta or {}).get("source_path", "") or "").strip()
-    source_path = (
-        Path(recorded_path).expanduser().resolve() if recorded_path else canonical_path
-    )
-    canonical_source = (
-        profile_root.parent == root
-        and not canonical_path.is_symlink()
-        and source_path == canonical_resolved
-        and source_path.is_file()
+    profile_root, canonical_path, source_path, canonical_source, external_source = (
+        _identity_source_paths(root, agent_id, recorded_path)
     )
     authored_yaml = (
         source_path.read_text(encoding="utf-8") if canonical_source else None
@@ -379,28 +380,40 @@ def _inspect_profile(
         )
     elif source != "yaml":
         read_only_reason = f"{source or 'unknown'}-managed profiles are read-only"
-    elif source_path != canonical_resolved or profile_root.parent != root:
+    elif source_path != canonical_path or profile_root.parent != root:
         read_only_reason = "source YAML is outside the canonical identity root"
     else:
         read_only_reason = "canonical profile.yaml was not found"
 
     validation = ctl.validate_profile(profile)
     snippet = ctl.render(agent_id, purpose=purpose, max_tokens=max_tokens)
-    sidecars = _generated_sidecar_status(
-        canonical_path.parent,
-        profile=profile,
-        profile_version=summary.profile_version,
+    sidecars = (
+        _generated_sidecar_status(
+            canonical_path.parent,
+            profile=profile,
+            profile_version=summary.profile_version,
+        )
+        if source == "yaml" and canonical_source
+        else {
+            "status": "not_applicable",
+            "lock_profile_version": None,
+            "files": [],
+            "drifted_files": [],
+        }
     )
+    profile_meta = dict(profile.meta or {})
     verification = _verification_status(
         ctl,
         identity_root=root,
         source=source,
-        source_path=canonical_path if canonical_source else None,
+        source_path=source_path if canonical_source or external_source else None,
         expected_agent_id=agent_id,
         stored_profile_version=summary.profile_version,
         stored_validation=validation.model_dump(mode="json"),
         render_validation=ctl.validate_render(snippet).model_dump(mode="json"),
         generated_sidecars=sidecars,
+        bundle_root=str(profile_meta.get("bundle_root", "") or ""),
+        stored_bundle_fingerprint=str(profile_meta.get("bundle_fingerprint", "") or ""),
         purpose=purpose,
         max_tokens=max_tokens,
     )
@@ -422,6 +435,30 @@ def _inspect_profile(
         "render": snippet.model_dump(mode="json"),
         "generated_sidecars": sidecars,
     }
+
+
+def _identity_source_paths(
+    identity_root: Path, agent_id: str, recorded_path: str
+) -> tuple[Path, Path, Path, bool, bool]:
+    profile_root = (identity_root / agent_id).resolve()
+    canonical_path = profile_root / "profile.yaml"
+    recorded_source_path = (
+        Path(recorded_path).expanduser().absolute() if recorded_path else canonical_path
+    )
+    source_path = recorded_source_path.resolve()
+    canonical_source = (
+        profile_root.parent == identity_root
+        and not canonical_path.is_symlink()
+        and recorded_source_path == canonical_path
+        and source_path == canonical_path
+        and source_path.is_file()
+    )
+    external_source = bool(
+        recorded_path
+        and recorded_source_path != canonical_path
+        and source_path.is_file()
+    )
+    return profile_root, canonical_path, source_path, canonical_source, external_source
 
 
 def _load_direct_profile(candidate_path: Path) -> AgentProfile:
@@ -488,6 +525,8 @@ def _verification_status(
     stored_validation: dict[str, Any],
     render_validation: dict[str, Any],
     generated_sidecars: dict[str, Any],
+    bundle_root: str,
+    stored_bundle_fingerprint: str,
     purpose: str,
     max_tokens: int,
 ) -> dict[str, Any]:
@@ -495,78 +534,23 @@ def _verification_status(
     source_profile_version: str | None = None
     source_status = "not_applicable"
     if source == "yaml":
-        if source_path is None:
-            source_status = "missing"
-            issues.append({"message": "canonical profile.yaml was not found"})
-        else:
-            try:
-                payload = load_yaml_file(source_path)
-                if "profiles" in payload:
-                    raise IdentityOperatorError(
-                        "canonical profile.yaml must contain one profile",
-                        code="multi_profile_candidate",
-                    )
-                profile_input = AgentProfileInput.model_validate(payload)
-                source_agent_id = (profile_input.agent_id or "").strip()
-                if source_agent_id != expected_agent_id:
-                    raise IdentityOperatorError(
-                        "profile.yaml agent_id does not match its agent directory",
-                        code="agent_id_mismatch",
-                        issues=[
-                            {
-                                "message": f"profile.yaml agent_id {source_agent_id!r} does not match directory agent_id {expected_agent_id!r}",
-                                "expected_agent_id": expected_agent_id,
-                                "actual_agent_id": source_agent_id,
-                            }
-                        ],
-                    )
-                source_profile = ctl.resolve_profile_input(
-                    profile_input,
-                    agent_id=expected_agent_id,
-                    source_path=source_path,
-                )
-                source_validation = ctl.validate_profile(source_profile)
-                if not source_validation.ok:
-                    raise IdentityOperatorError(
-                        "identity source failed semantic validation",
-                        code="validation_failed",
-                        issues=[
-                            {"message": message} for message in source_validation.errors
-                        ],
-                    )
-                source_profile_version = ctl.render_from_profile(
-                    source_profile,
-                    purpose=purpose,
-                    max_tokens=max_tokens,
-                ).profile_version
-                source_status = (
-                    "clean"
-                    if source_profile_version == stored_profile_version
-                    else "drifted"
-                )
-                if source_status == "drifted":
-                    issues.append(
-                        {"message": "source YAML does not match the stored profile"}
-                    )
-                if profile_input.inherits:
-                    parent_status, parent_issues = _inherited_source_status(
-                        ctl,
-                        identity_root=identity_root,
-                        parent_id=profile_input.inherits,
-                        purpose=purpose,
-                        max_tokens=max_tokens,
-                    )
-                    if parent_issues:
-                        source_status = parent_status
-                        source_profile_version = None
-                        issues.extend(parent_issues)
-            except (IdentityOperatorError, ValidationError, ValueError) as exc:
-                source_status = "invalid"
-                issues.extend(
-                    exc.issues
-                    if isinstance(exc, IdentityOperatorError) and exc.issues
-                    else [{"message": str(exc)}]
-                )
+        source_status, source_profile_version, source_issues = _yaml_source_status(
+            ctl,
+            identity_root=identity_root,
+            source_path=source_path,
+            expected_agent_id=expected_agent_id,
+            stored_profile_version=stored_profile_version,
+            purpose=purpose,
+            max_tokens=max_tokens,
+        )
+        issues.extend(source_issues)
+    elif source == "bundle":
+        source_status, bundle_issues = _bundle_source_status(
+            agent_id=expected_agent_id,
+            bundle_root=bundle_root,
+            stored_fingerprint=stored_bundle_fingerprint,
+        )
+        issues.extend(bundle_issues)
     return _verification_result(
         issues=issues,
         source=source,
@@ -577,6 +561,104 @@ def _verification_status(
         render_ok=bool(render_validation.get("ok")),
         sidecar_status=str(generated_sidecars.get("status", "unknown")),
     )
+
+
+def _yaml_source_status(
+    ctl: IdentityCtl,
+    *,
+    identity_root: Path,
+    source_path: Path | None,
+    expected_agent_id: str,
+    stored_profile_version: str,
+    purpose: str,
+    max_tokens: int,
+) -> tuple[str, str | None, list[dict[str, Any]]]:
+    if source_path is None:
+        return "missing", None, [{"message": "canonical profile.yaml was not found"}]
+    try:
+        payload = load_yaml_file(source_path)
+        if "profiles" in payload:
+            raise IdentityOperatorError(
+                "canonical profile.yaml must contain one profile",
+                code="multi_profile_candidate",
+            )
+        profile_input = AgentProfileInput.model_validate(payload)
+        source_agent_id = (profile_input.agent_id or "").strip()
+        if source_agent_id != expected_agent_id:
+            raise IdentityOperatorError(
+                "profile.yaml agent_id does not match its agent directory",
+                code="agent_id_mismatch",
+                issues=[
+                    {
+                        "message": f"profile.yaml agent_id {source_agent_id!r} does not match directory agent_id {expected_agent_id!r}",
+                        "expected_agent_id": expected_agent_id,
+                        "actual_agent_id": source_agent_id,
+                    }
+                ],
+            )
+        source_profile = ctl.resolve_profile_input(
+            profile_input,
+            agent_id=expected_agent_id,
+            source_path=source_path,
+        )
+        source_validation = ctl.validate_profile(source_profile)
+        if not source_validation.ok:
+            raise IdentityOperatorError(
+                "identity source failed semantic validation",
+                code="validation_failed",
+                issues=[{"message": message} for message in source_validation.errors],
+            )
+        source_profile_version = ctl.render_from_profile(
+            source_profile,
+            purpose=purpose,
+            max_tokens=max_tokens,
+        ).profile_version
+        status = (
+            "clean" if source_profile_version == stored_profile_version else "drifted"
+        )
+        issues = (
+            []
+            if status == "clean"
+            else [{"message": "source YAML does not match the stored profile"}]
+        )
+        if profile_input.inherits:
+            parent_status, parent_issues = _inherited_source_status(
+                ctl,
+                identity_root=identity_root,
+                parent_id=profile_input.inherits,
+                purpose=purpose,
+                max_tokens=max_tokens,
+            )
+            if parent_issues:
+                return parent_status, None, parent_issues
+        return status, source_profile_version, issues
+    except (IdentityOperatorError, ValidationError, ValueError) as exc:
+        issues = (
+            exc.issues
+            if isinstance(exc, IdentityOperatorError) and exc.issues
+            else [{"message": str(exc)}]
+        )
+        return "invalid", None, issues
+
+
+def _bundle_source_status(
+    *, agent_id: str, bundle_root: str, stored_fingerprint: str
+) -> tuple[str, list[dict[str, str]]]:
+    if not bundle_root:
+        return "invalid", [{"message": "recorded bundle root is missing"}]
+    bundle = load_identity_bundle(agent_id, root=Path(bundle_root).expanduser())
+    if not bundle.ok:
+        status = (
+            "missing"
+            if any("not found" in str(error).lower() for error in bundle.errors)
+            else "invalid"
+        )
+        return status, [{"message": str(error)} for error in bundle.errors]
+    if str(bundle.fingerprint) != stored_fingerprint:
+        return "drifted", [
+            {"message": "markdown bundle does not match the stored profile"}
+        ]
+    return "clean", []
 
 
 def _inherited_source_status(
@@ -617,7 +699,7 @@ def _verification_result(
         issues.append({"message": "stored profile validation failed"})
     if not render_ok:
         issues.append({"message": "render validation failed"})
-    if source == "yaml" and sidecar_status != "clean":
+    if source == "yaml" and sidecar_status not in {"clean", "not_applicable"}:
         issues.append({"message": "generated identity sidecars are not synchronized"})
     return {
         "ok": not issues,
@@ -640,19 +722,33 @@ def _generated_sidecar_status(
         return {"status": "missing", "lock_profile_version": None, "files": []}
     try:
         lockfile = read_identity_lockfile(lock_path)
-        expected_paths = {
-            document.relative_path
-            for document in export_profile_to_markdown_bundle(profile).documents
+        export_result = export_profile_to_markdown_bundle(profile)
+        expected_content = {
+            document.relative_path: document.content
+            for document in export_result.documents
         }
-        expected_paths.add(GENERATED_IDENTITY_README_NAME)
+        expected_content[GENERATED_IDENTITY_README_NAME] = (
+            render_generated_identity_readme(agent_id=profile.agent_id)
+        )
+        expected_paths = set(expected_content)
         manifest_paths = {item.relative_path for item in lockfile.files}
-        drifted = sorted(expected_paths - manifest_paths)
+        drifted = sorted(expected_paths.symmetric_difference(manifest_paths))
+        if lockfile.tree_sha256 != compute_tree_sha256(lockfile.files):
+            drifted.append(IDENTITY_LOCKFILE_NAME)
         for item in lockfile.files:
             path = _safe_generated_path(bundle_root, item.relative_path)
+            expected = expected_content.get(item.relative_path)
+            expected_bytes = (
+                None
+                if expected is None
+                else (expected if expected.endswith("\n") else f"{expected}\n").encode()
+            )
+            payload = path.read_bytes() if path is not None and path.is_file() else None
             if (
-                path is None
-                or not path.is_file()
-                or sha256(path.read_bytes()).hexdigest() != item.sha256
+                payload is None
+                or sha256(payload).hexdigest() != item.sha256
+                or len(payload) != item.size_bytes
+                or (expected_bytes is not None and payload != expected_bytes)
             ):
                 drifted.append(item.relative_path)
         drifted = sorted(set(drifted))

@@ -377,11 +377,13 @@ class IdentityCtl:
         path: str | Path,
         *,
         skip_unchanged: bool = False,
+        identity_root: str | Path | None = None,
     ) -> list[str]:
-        profile_inputs = self._load_profile_inputs(path)
+        profile_inputs = self._load_profile_inputs(path, identity_root=identity_root)
         loaded: list[str] = []
 
         resolved_profiles: dict[str, AgentProfile] = {}
+        resolution_order: list[str] = []
         in_progress: set[str] = set()
 
         def resolve(agent_id: str) -> AgentProfile:
@@ -418,11 +420,15 @@ class IdentityCtl:
 
             profile = AgentProfile.model_validate(merged_payload)
             resolved_profiles[agent_id] = profile
+            resolution_order.append(agent_id)
             in_progress.remove(agent_id)
             return profile
 
         for agent_id in sorted(profile_inputs):
-            profile = resolve(agent_id)
+            resolve(agent_id)
+
+        for agent_id in resolution_order:
+            profile = resolved_profiles[agent_id]
             incoming_version = self._compute_profile_version(profile)
             if skip_unchanged:
                 existing = self.get_profile(agent_id)
@@ -449,8 +455,13 @@ class IdentityCtl:
 
         return loaded
 
-    def _load_profile_inputs(self, path: str | Path) -> dict[str, _ProfileInputFile]:
-        src_path = Path(path).expanduser().resolve(strict=False)
+    def _load_profile_inputs(
+        self, path: str | Path, *, identity_root: str | Path | None
+    ) -> dict[str, _ProfileInputFile]:
+        requested_path = Path(path).expanduser().absolute()
+        if requested_path.is_symlink() or requested_path.parent.is_symlink():
+            raise ValueError(f"profile path must not be a symlink: {requested_path}")
+        src_path = requested_path.resolve(strict=False)
         if not src_path.exists():
             raise FileNotFoundError(f"profile path not found: {src_path}")
 
@@ -464,16 +475,30 @@ class IdentityCtl:
                     *src_path.glob("*/profile.yaml"),
                 }
             )
+        generated_root = (
+            Path(identity_root).expanduser().resolve(strict=False)
+            if identity_root is not None
+            else src_path
+            if src_path.is_dir()
+            else None
+        )
 
         profile_inputs: dict[str, _ProfileInputFile] = {}
         for file_path in files:
+            if file_path.is_symlink() or file_path.parent.resolve() != file_path.parent:
+                raise ValueError(f"profile path must not be a symlink: {file_path}")
             raw = load_yaml_file(file_path)
             payloads = self._extract_profile_payloads(raw)
-            materialize_bundle = file_path.name == "profile.yaml" and len(payloads) == 1
+            materialize_bundle = bool(
+                generated_root is not None
+                and file_path.name == "profile.yaml"
+                and file_path.parent.parent == generated_root
+                and len(payloads) == 1
+            )
             for payload in payloads:
                 parsed = AgentProfileInput.model_validate(payload)
                 if (
-                    file_path.name == "profile.yaml"
+                    materialize_bundle
                     and parsed.agent_id
                     and parsed.agent_id.strip() != file_path.parent.name
                 ):
