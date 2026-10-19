@@ -4,7 +4,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .schemas import MCPElicitationRequest, MCPElicitationResult
+from .errors import MCPProtocolError
+from .schemas import (
+    MCPElicitationRequest,
+    MCPElicitationResult,
+    validate_mcp_value,
+)
 
 ElicitationResponder = Callable[
     [MCPElicitationRequest], MCPElicitationResult | dict[str, Any]
@@ -48,10 +53,7 @@ class OpenMinionElicitationHandler:
     ) -> MCPElicitationResult:
         request_mode = request.mode.strip().lower() or "form"
         if request_mode == "url" and not self._url_supported:
-            result = MCPElicitationResult(
-                action="decline",
-                content={"reason": "url_unsupported"},
-            )
+            result = MCPElicitationResult(action="decline")
             self._record(server_name=server_name, request=request, result=result)
             return result
         if self._mode != "interactive" or self._responder is None:
@@ -60,6 +62,7 @@ class OpenMinionElicitationHandler:
             return result
 
         result = _coerce_elicitation_result(self._responder(request))
+        _validate_elicitation_result(request=request, result=result)
         self._record(server_name=server_name, request=request, result=result)
         return result
 
@@ -89,10 +92,38 @@ def _coerce_elicitation_result(
         return value
     if isinstance(value, dict):
         content = value.get("content")
+        if content is not None and not isinstance(content, dict):
+            raise MCPProtocolError("MCP elicitation content must be an object.")
         return MCPElicitationResult(
-            action=str(value.get("action", "") or "decline").strip() or "decline",
-            content=dict(content) if isinstance(content, dict) else None,
+            action=str(value.get("action", "") or "").strip(),
+            content=dict(content) if content is not None else None,
         )
+    raise MCPProtocolError("MCP elicitation responder returned an invalid result.")
+
+
+def _validate_elicitation_result(
+    *, request: MCPElicitationRequest, result: MCPElicitationResult
+) -> None:
+    action = result.action.strip()
+    if action not in {"accept", "decline", "cancel"}:
+        raise MCPProtocolError(f"MCP elicitation returned invalid action {action!r}.")
+    if action != "accept":
+        if result.content is not None:
+            raise MCPProtocolError(
+                "Declined or cancelled MCP elicitation must omit content."
+            )
+        return
+    if request.mode.strip().lower() == "url":
+        if result.content is not None:
+            raise MCPProtocolError("Accepted URL elicitation must omit content.")
+        return
+    if result.content is None:
+        raise MCPProtocolError("Accepted MCP form elicitation must include content.")
+    validate_mcp_value(
+        schema=request.requested_schema,
+        value=result.content,
+        value_path="content",
+    )
 
 
 __all__ = [

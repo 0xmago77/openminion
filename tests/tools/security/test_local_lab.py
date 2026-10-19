@@ -419,6 +419,8 @@ def test_direct_api_tool_run_keeps_security_lab_context(
 
     runtime = SimpleNamespace(
         config=config,
+        home_root=tmp_path,
+        data_root=tmp_path / ".openminion",
         runtime_manager=object(),
         security_lab_runner=runner,
         sessions=sessions,

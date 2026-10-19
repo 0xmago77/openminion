@@ -17,7 +17,7 @@ class SkillStore(ABC):
         scope: str,
         agent_id: str | None,
         ts: str,
-    ) -> None:
+    ) -> bool:
         raise NotImplementedError
 
     @abstractmethod

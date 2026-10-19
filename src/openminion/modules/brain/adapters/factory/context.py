@@ -1,5 +1,7 @@
 from typing import Any
 
+from openminion.modules.context.contracts import PluginRegistry
+
 from .environment import context_feature_flags
 from .modes import mode_is_local, raise_if_strict
 
@@ -19,6 +21,7 @@ def create_context_adapter(
     skill_home_root: Any | None = None,
     artifactctl: Any | None = None,
     owns_artifactctl: bool = False,
+    plugin_registry: PluginRegistry | None = None,
 ) -> Any:
     from openminion.modules.brain.adapters.context import LocalContextAdapter
 
@@ -71,6 +74,7 @@ def create_context_adapter(
             compaction_enabled=feature_flags["compaction_enabled"],
             compression_enabled=feature_flags["compression_enabled"],
             record_context_selection=memory_client.record_context_selection,
+            plugin_registry=plugin_registry,
         )
         return ContextCtlAdapter(
             service=service,

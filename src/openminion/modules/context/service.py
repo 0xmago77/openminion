@@ -788,6 +788,15 @@ class ContextCtlService:
         k: int,
     ) -> list[EvidenceItem]:
         """Call registered retrievers then apply each compressor in sequence."""
+        current_query = str(request.query or "").strip()
+        continuity_query = str(request.continuity_query or "").strip()
+        query_role = (
+            "continuity"
+            if continuity_query
+            and str(query or "").strip() == continuity_query
+            and continuity_query != current_query
+            else "current"
+        )
         all_items: list[EvidenceItem] = []
         for name in self._plugin_registry.retriever_names:
             retriever = self._plugin_registry.get_retriever(name)
@@ -798,7 +807,7 @@ class ContextCtlService:
                     session_id=request.session_id,
                     query=query,
                     k=k,
-                    filters={},
+                    filters={"query_role": query_role},
                 )
                 all_items.extend(items)
             except Exception as exc:

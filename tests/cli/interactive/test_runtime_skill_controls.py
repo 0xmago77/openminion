@@ -67,7 +67,7 @@ def test_skill_rows_merge_catalog_with_config_only_entries(
             "version_hash": "abc123",
             "source": "catalog",
         },
-        {"id": "configured-only", "source": "config"},
+        {"id": "configured-only", "source": "config (unavailable)"},
     ]
     assert instances[0].config == tmp_path / "openminion.json"
     assert instances[0].home_root == tmp_path
@@ -159,3 +159,152 @@ def test_skills_report_renders_catalog_skill_details_and_closes_resource(
     assert "Summary:\nCollect a local system inventory." in report
     assert "Procedure:\nRun the inventory tool and verify both artifacts." in report
     assert instances[0].closed is True
+
+
+def test_skills_report_explains_configured_only_skill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _SkillCatalog:
+        def __init__(self, _config: object, *, home_root: Path) -> None:
+            self.home_root = home_root
+
+        def get_skill(self, skill_id: str) -> object:
+            from openminion.modules.skill.errors import SkillError
+
+            raise SkillError("NOT_FOUND", "Skill not found", {"skill_id": skill_id})
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "openminion.cli.interactive.runtime.controls.Skill", _SkillCatalog
+    )
+    controls = _RuntimeControls(
+        _runtime(
+            tmp_path,
+            profile=SimpleNamespace(skill=None, skill_catalog=["configured-only"]),
+        )
+    )
+    report = controls.skills_report("configured-only")
+    assert "status   unavailable" in report
+    assert "configured but is not installed" in report
+
+
+def test_skills_report_discloses_catalog_truncation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _SkillCatalog:
+        def __init__(self, _config: object, *, home_root: Path) -> None:
+            self.home_root = home_root
+
+        def catalog_summaries(self, *, agent_id: str) -> list[dict[str, object]]:
+            return [{"id": f"skill-{index}"} for index in range(21)]
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "openminion.cli.interactive.runtime.controls.Skill", _SkillCatalog
+    )
+    controls = _RuntimeControls(
+        _runtime(tmp_path, profile=SimpleNamespace(skill=None, skill_catalog=[]))
+    )
+    assert "showing 20 of 21 skills" in controls.skills_report()
+
+
+def test_skills_report_includes_read_only_learning_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    instances = []
+
+    class _SkillCatalog:
+        def __init__(self, _config: object, *, home_root: Path) -> None:
+            self.home_root = home_root
+            self.store = object()
+            self.closed = False
+            instances.append(self)
+
+        def catalog_summaries(self, *, agent_id: str) -> list[dict[str, object]]:
+            assert agent_id == "agent-1"
+            return []
+
+        def list_workflow_observations(
+            self, *, agent_id: str
+        ) -> list[dict[str, object]]:
+            assert agent_id == "agent-1"
+            return [{"id": "obs-1"}, {"id": "obs-2"}]
+
+        def list_workflow_shapes(self, *, agent_id: str) -> list[object]:
+            assert agent_id == "agent-1"
+            return [SimpleNamespace(success_count=2, explicit_save_count=0)]
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(
+        "openminion.cli.interactive.runtime.controls.Skill", _SkillCatalog
+    )
+    monkeypatch.setattr(
+        "openminion.cli.interactive.runtime.skill_status.Skill", _SkillCatalog
+    )
+    monkeypatch.setattr(
+        "openminion.cli.interactive.runtime.skill_status.suggestion_status",
+        lambda _store: SimpleNamespace(pending_count=3),
+    )
+    controls = _RuntimeControls(
+        _runtime(
+            tmp_path,
+            profile=SimpleNamespace(skill=None, skill_catalog=[]),
+        )
+    )
+
+    report = controls.skills_report()
+
+    assert "Skills:\n  (none)" in report
+    assert "Learning:" in report
+    assert "observations       2 · active agent" in report
+    assert "authoring ready    1 · active agent" in report
+    assert "pending proposals  3 · catalog-wide" in report
+    assert all(instance.closed for instance in instances)
+
+
+def test_skills_report_keeps_catalog_when_learning_data_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openminion.modules.skill.learning.runtime import WorkflowObservationError
+
+    class _SkillCatalog:
+        def __init__(self, _config: object, *, home_root: Path) -> None:
+            self.home_root = home_root
+            self.store = object()
+
+        def catalog_summaries(self, *, agent_id: str) -> list[dict[str, object]]:
+            assert agent_id == "agent-1"
+            return [{"id": "working-skill", "display_name": "Working Skill"}]
+
+        def list_workflow_observations(
+            self, *, agent_id: str
+        ) -> list[dict[str, object]]:
+            raise WorkflowObservationError("stored workflow observation is invalid")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "openminion.cli.interactive.runtime.controls.Skill", _SkillCatalog
+    )
+    monkeypatch.setattr(
+        "openminion.cli.interactive.runtime.skill_status.Skill", _SkillCatalog
+    )
+    controls = _RuntimeControls(
+        _runtime(
+            tmp_path,
+            profile=SimpleNamespace(skill=None, skill_catalog=[]),
+        )
+    )
+
+    report = controls.skills_report()
+
+    assert "working-skill · catalog" in report
+    assert "Learning:" in report
+    assert "unavailable         stored workflow observation is invalid" in report

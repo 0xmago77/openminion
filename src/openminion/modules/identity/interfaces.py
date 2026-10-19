@@ -75,7 +75,9 @@ class IdentityCtlInterface(Protocol):
 
     def clear_cache(self, agent_id: str | None = None) -> None: ...
 
-    def load_profiles_from_path(self, path: str) -> list[str]: ...
+    def load_profiles_from_path(
+        self, path: str, *, identity_root: str | None = None
+    ) -> list[str]: ...
 
 
 @runtime_checkable

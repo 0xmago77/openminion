@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1425,3 +1426,6 @@ class TestDebugSnapshot(unittest.TestCase):
                 "README.txt",
             }
             self.assertEqual(required, files, f"Missing files: {required - files}")
+            snapshot = json.loads((out_path / "snapshot.json").read_text())
+            self.assertTrue(snapshot["memory_available"])
+            self.assertFalse(snapshot["degraded"])

@@ -44,7 +44,8 @@ def build_entry_retry_message(*, has_real_tools: bool) -> str:
             "step you may do exactly one of the following: call a real tool, call "
             "clarify(question=...), or answer directly with plain text. Do not emit "
             "submit_output, mode labels, act_profile, execution_target, or other "
-            "decide metadata."
+            "decide metadata. For coding or research, omit project_handoff for "
+            "foreground work; a project_handoff requires nonempty sub_intents."
         )
     return (
         "Your previous unified entry response was invalid. Retry now. In this step "

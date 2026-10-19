@@ -12,6 +12,10 @@ from openminion.modules.brain.loop.tools.engine import (
     _build_tool_failure_recovery_message,
     _duplicate_batch_recovery_message,
 )
+from openminion.modules.brain.loop.tools.shortlisting import (
+    TOOL_REQUEST_TOOL_NAME,
+    build_tool_request_spec,
+)
 from openminion.modules.brain.loop.tools.contracts import (
     AdaptiveToolLoopState,
     DirectToolTurnContext,
@@ -102,6 +106,7 @@ class TestFailureRecoveryContract:
             )
         )
         active_specs = [ToolSpec(name="exec.run", description="", input_schema={})]
+        active_specs.append(build_tool_request_spec())
         requestable_specs = [
             *active_specs,
             ToolSpec(
@@ -117,14 +122,32 @@ class TestFailureRecoveryContract:
             requestable_tool_specs=requestable_specs,
         )
 
-        assert [spec.name for spec in restored] == ["exec.run", "mcp.fixture.echo_text"]
+        assert [spec.name for spec in restored] == [
+            "exec.run",
+            TOOL_REQUEST_TOOL_NAME,
+            "mcp.fixture.echo_text",
+        ]
         assert state.scratchpad["direct_tool_shortlist_restored_tools"] == [
             "mcp.fixture.echo_text"
         ]
         assert [
             spec.name
             for spec in _visible_tool_specs_for_direct_tool_turn(state, restored)
-        ] == ["mcp.fixture.echo_text"]
+        ] == ["mcp.fixture.echo_text", TOOL_REQUEST_TOOL_NAME]
+
+    def test_direct_tool_visibility_does_not_duplicate_tool_request(self) -> None:
+        state = AdaptiveToolLoopState(
+            direct_tool_turn=DirectToolTurnContext(
+                requested_tool_names=(TOOL_REQUEST_TOOL_NAME,),
+                requested_batch_signature=f"{TOOL_REQUEST_TOOL_NAME}:{{name}}",
+            )
+        )
+        visible = _visible_tool_specs_for_direct_tool_turn(
+            state,
+            [build_tool_request_spec()],
+        )
+
+        assert [spec.name for spec in visible] == [TOOL_REQUEST_TOOL_NAME]
 
     def test_retains_fact_and_hard_constraint(self) -> None:
         action = _FakeActionResult(

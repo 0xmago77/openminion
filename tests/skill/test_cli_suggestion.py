@@ -4,6 +4,9 @@ import io
 import json
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from openminion.modules.skill.cli import main
 from openminion.modules.skill.proposal import SkillProposal, SkillProposalDraft
@@ -14,18 +17,20 @@ from openminion.modules.skill.proposal.queue import (
 from openminion.modules.skill.runtime.skill import Skill
 
 
-def _config_path(tmp_path: Path) -> Path:
+def _config_path(tmp_path: Path, **overrides: object) -> Path:
     db = tmp_path / "skill.db"
     cfg = tmp_path / "skill.json"
+    skill_config = {
+        "sqlite_path": str(db),
+        "blob_root": str(tmp_path / "blob"),
+        "fallback_root": str(tmp_path / "fallback"),
+        "wal": False,
+        **overrides,
+    }
     cfg.write_text(
         json.dumps(
             {
-                "skill": {
-                    "sqlite_path": str(db),
-                    "blob_root": str(tmp_path / "blob"),
-                    "fallback_root": str(tmp_path / "fallback"),
-                    "wal": False,
-                }
+                "skill": skill_config,
             }
         ),
         encoding="utf-8",
@@ -94,6 +99,74 @@ def test_cli_suggestion_status_shows_zero_before_pass(tmp_path: Path) -> None:
     status = payload["status"]
     assert status["surfaced_count"] == 0
     assert status["pending_count"] == 1
+
+
+def test_cli_surface_pass_uses_config_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config_path(
+        tmp_path,
+        suggestion_batch_cap=2,
+        suggestion_cooldown_seconds=45,
+        suggestion_min_age_seconds=15,
+    )
+    captured: dict[str, int] = {}
+
+    def _surface(_store: object, **kwargs: int) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(surfaced=[], auto_dismissed=[], pending_remaining=0)
+
+    monkeypatch.setattr(
+        "openminion.modules.skill.suggestion.run_suggestion_surface_pass", _surface
+    )
+
+    _run_cli(["--config", str(cfg), "suggestion-surface-pass"])
+
+    assert captured == {
+        "batch_cap": 2,
+        "cooldown_seconds": 45,
+        "min_age_seconds": 15,
+    }
+
+
+def test_cli_surface_pass_arguments_override_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config_path(
+        tmp_path,
+        suggestion_batch_cap=2,
+        suggestion_cooldown_seconds=45,
+        suggestion_min_age_seconds=15,
+    )
+    captured: dict[str, int] = {}
+
+    def _surface(_store: object, **kwargs: int) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(surfaced=[], auto_dismissed=[], pending_remaining=0)
+
+    monkeypatch.setattr(
+        "openminion.modules.skill.suggestion.run_suggestion_surface_pass", _surface
+    )
+
+    _run_cli(
+        [
+            "--config",
+            str(cfg),
+            "suggestion-surface-pass",
+            "--batch-cap",
+            "4",
+            "--cooldown-seconds",
+            "90",
+            "--min-age-seconds",
+            "30",
+        ]
+    )
+
+    assert captured == {
+        "batch_cap": 4,
+        "cooldown_seconds": 90,
+        "min_age_seconds": 30,
+    }
 
 
 def test_cli_suggestion_surface_pass_writes_audit_and_status_reflects_it(

@@ -36,6 +36,7 @@ class ToolExecutionContext:
     task_manager: Any | None = None
     scheduler_readiness: Callable[[], dict[str, Any]] | None = None
     confirm: bool = False
+    artifactctl: Any | None = None
 
 
 @dataclass

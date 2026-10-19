@@ -77,7 +77,7 @@ def _apply_tool_failure_recovery(
         tool_name=tool_call.name.strip(),
         action_result=action_result,
     )
-    if not recovery_enabled:
+    if not recovery_enabled or _is_operator_denied(action_result):
         return
     _reopen_failed_terminal_tool_request(loop_state, action_result)
     scratchpad = loop_state.scratchpad
@@ -103,6 +103,14 @@ def _is_structured_policy_recoverable(action_result: ActionResult) -> bool:
     return bool(
         action_result.error
         and str(action_result.error.details.get("suggested_tool", "") or "").strip()
+    )
+
+
+def _is_operator_denied(action_result: ActionResult) -> bool:
+    return (
+        _error_code(action_result) == "POLICY_DENIED"
+        and action_result.error is not None
+        and action_result.error.details.get("reason") == "operator_denied"
     )
 
 
@@ -526,7 +534,7 @@ def execute_iteration_results(
                         ),
                     )
 
-        direct_tool_failure = (
+        direct_tool_failure = _is_operator_denied(action_result) or (
             direct_tool_turn_active(loop_state)
             and action_result.status
             in {

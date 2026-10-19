@@ -275,8 +275,10 @@ class _SingleToolProvider(LLMProvider):
     def __init__(self, tool_name: str, arguments: dict[str, str] | None = None) -> None:
         self.tool_name = tool_name
         self.arguments = arguments or {}
+        self.calls = 0
 
     async def generate(self, request: ProviderRequest) -> ProviderResponse:
+        self.calls += 1
         tool_name = self.tool_name
         if request.tools:
             first = request.tools[0]
@@ -508,18 +510,24 @@ class _FailPrimaryTool(Tool):
     }
     categories = ToolCategoryInfo(primary_category="weather.current")
 
-    def __init__(self, error_code: str) -> None:
+    def __init__(
+        self, error_code: str, *, error_details: dict[str, str] | None = None
+    ) -> None:
         self.error_code = error_code
+        self.error_details = error_details
 
     def execute(self, arguments, context: ToolExecutionContext) -> ToolExecutionResult:
         del arguments, context
+        data: dict[str, object] = {"error_code": self.error_code}
+        if self.error_details is not None:
+            data["error_details"] = self.error_details
         return ToolExecutionResult(
             tool_name=self.name,
             ok=False,
             content="fail",
             verified=False,
             error="simulated failure",
-            data={"error_code": self.error_code},
+            data=data,
         )
 
 
@@ -1344,7 +1352,7 @@ def test_capability_fallback_chain_executes_on_tool_unavailable(
     assert provider.calls[1].tools[0].name == "weather.secondary"
 
 
-def test_capability_fallback_is_blocked_on_policy_denied() -> None:
+def test_capability_fallback_is_blocked_on_operator_denied() -> None:
     config = OpenMinionConfig()
     _csc_install_default_agent(config)  # type: ignore[attr-defined]
     config.runtime.tool_selection.bindings["weather"] = "weather.primary"
@@ -1357,7 +1365,15 @@ def test_capability_fallback_is_blocked_on_policy_denied() -> None:
         plugins=PluginRegistry([]),
         provider=provider,
         logger=logging.getLogger("openminion.tests"),
-        tools=ToolRegistry([_FailPrimaryTool("policy_denied"), _FallbackWeatherTool()]),
+        tools=ToolRegistry(
+            [
+                _FailPrimaryTool(
+                    "POLICY_DENIED",
+                    error_details={"reason": "operator_denied"},
+                ),
+                _FallbackWeatherTool(),
+            ]
+        ),
     )
 
     response = _run_async(
@@ -1378,3 +1394,4 @@ def test_capability_fallback_is_blocked_on_policy_denied() -> None:
     }
     # Fallback should not have been used
     assert response.metadata.get("fallback_used") in {"false", False, "False", None}
+    assert provider.calls == 1

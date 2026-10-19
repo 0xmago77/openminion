@@ -58,6 +58,7 @@ class ProviderRequest:
     tool_choice: str | dict[str, Any] = LLM_TOOL_CHOICE_AUTO
     tool_call_strategy: str = LLM_TOOL_CALL_STRATEGY_HYBRID
     metadata: dict[str, str] = field(default_factory=dict)
+    max_output_tokens: int | None = None
 
 
 @dataclass

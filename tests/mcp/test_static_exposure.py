@@ -1,14 +1,22 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
-from openminion.base.config.mcp import MCPServerConfig
+from openminion.base.config import ToolSelectionConfig
+from openminion.base.config.mcp import MCPExposureConfig, MCPServerConfig
 from openminion.base.config.runtime import RuntimeConfig
+from openminion.modules.brain.tools.parser import normalize_tool_name_for_brain
+from openminion.modules.brain.tools.schema import collect_runtime_tool_names
 from openminion.modules.llm.providers.base import ProviderToolCall
 from openminion.modules.tool.base import ToolExecutionContext
 from openminion.modules.tool.bootstrap import build_runtime_bootstrap
+from openminion.modules.tool.registry import ToolRegistry, ToolSpec
 from openminion.modules.tool.schema_service import ToolSchemaService
+from openminion.modules.tool.selection import ToolSelectionService
+from openminion.tools.mcp.exposure import scoped_mcp_registry_view
 
 
 FIXTURE_SERVER_PATH = (
@@ -94,6 +102,58 @@ def test_build_runtime_bootstrap_registers_mcp_tools() -> None:
         _close_bootstrap(bootstrap)
 
 
+def test_mcp_publication_preserves_concurrent_non_mcp_registration(
+    monkeypatch,
+) -> None:
+    bootstrap = build_runtime_bootstrap(config=_runtime_config(), strict=True)
+    registry = bootstrap.registry
+    manager = bootstrap.mcp_manager
+    assert manager is not None
+    specs = tuple(
+        tool for name, tool in registry.list().items() if name.startswith("mcp.")
+    )
+    staging_started = threading.Event()
+    late_registration_started = threading.Event()
+    release_staging = threading.Event()
+    original_register = ToolRegistry.register
+
+    def blocking_register(self, tool) -> None:
+        if self is not registry and str(tool.name).startswith("mcp."):
+            staging_started.set()
+            release_staging.wait(timeout=5)
+        if self is registry and str(tool.name) == "runtime.late":
+            late_registration_started.set()
+        original_register(self, tool)
+
+    monkeypatch.setattr(ToolRegistry, "register", blocking_register)
+    replacement = threading.Thread(
+        target=registry.replace_mcp_tools,
+        kwargs={
+            "specs": specs,
+            "registry_manager": registry.registry_manager,
+            "expected_manager": manager,
+        },
+    )
+    replacement.start()
+    assert staging_started.wait(timeout=5)
+    late_spec = ToolSpec(
+        name="runtime.late",
+        args_model=dict,
+        min_scope="READ_ONLY",
+        handler=lambda _arguments, _context: {"ok": True},
+    )
+    late_registration = threading.Thread(target=registry.register, args=(late_spec,))
+    late_registration.start()
+    assert late_registration_started.wait(timeout=5)
+    release_staging.set()
+    replacement.join(timeout=5)
+    late_registration.join(timeout=5)
+    try:
+        assert "runtime.late" in registry.list()
+    finally:
+        manager.close()
+
+
 def test_model_origin_execution_supports_prompt_visible_mcp_runtime_tools() -> None:
     bootstrap = build_runtime_bootstrap(config=_runtime_config(), strict=True)
     try:
@@ -121,6 +181,70 @@ def test_model_origin_execution_supports_prompt_visible_mcp_runtime_tools() -> N
         assert result.data["runtime_tool_name"] == "mcp.fixture.echo_text"
     finally:
         _close_bootstrap(bootstrap)
+
+
+def test_runtime_registry_manager_is_isolated_from_later_bootstrap() -> None:
+    first = build_runtime_bootstrap(config=_runtime_config(), strict=True)
+    second = None
+    try:
+        scoped_first = scoped_mcp_registry_view(
+            first.registry,
+            MCPExposureConfig(include_servers=["fixture"]),
+        )
+        first_specs = first.registry.model_provider_specs()
+        first_dispatch = first.registry.model_runtime_dispatch_map()
+
+        second = build_runtime_bootstrap(strict=True)
+
+        assert first.registry._binding_manager() is first.manager
+        assert second.registry._binding_manager() is second.manager
+        assert first.registry.model_provider_specs() == first_specs
+        assert first.registry.model_runtime_dispatch_map() == first_dispatch
+        assert scoped_first.model_provider_specs() == first_specs
+        assert scoped_first.model_runtime_dispatch_map() == first_dispatch
+        assert "mcp.fixture.echo_text" in {spec.name for spec in first_specs}
+        assert first_dispatch["mcp.fixture.echo_text"] == {
+            "runtime_binding_id": "runtime.mcp.fixture.echo_text",
+            "runtime_tool_name": "mcp.fixture.echo_text",
+            "runtime_candidates": ["mcp.fixture.echo_text"],
+        }
+        assert (
+            normalize_tool_name_for_brain(
+                "mcp.fixture.echo_text",
+                registry=scoped_first,
+            )
+            == "mcp.fixture.echo_text"
+        )
+        runner = SimpleNamespace(tool_api=SimpleNamespace(registry=scoped_first))
+        assert "mcp.fixture.echo_text" in collect_runtime_tool_names(runner)
+        selection = ToolSelectionService(ToolSelectionConfig(), scoped_first)
+        selected = selection.select_tools(
+            query="echo through MCP",
+            forced_category="mcp.fixture.echo_text",
+        )
+        assert selected.shortlist == ["mcp.fixture.echo_text"]
+
+        batch = first.registry.execute_calls(
+            [
+                ProviderToolCall(
+                    name="mcp.fixture.echo_text",
+                    arguments={"text": "isolated"},
+                    source="native",
+                )
+            ],
+            context=ToolExecutionContext(
+                channel="console",
+                target="unit-test",
+                session_id="session-isolation",
+                metadata={"tool_call_origin": "model"},
+            ),
+        )
+        assert batch.results[0].ok is True
+        assert batch.results[0].content.startswith("echo: isolated")
+    finally:
+        if second is not None:
+            _close_bootstrap(second)
+        _close_bootstrap(first)
 
 
 def test_model_origin_execution_supports_prompt_visible_mcp_prompt_and_resource_runtime_tools() -> (

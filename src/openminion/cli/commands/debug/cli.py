@@ -275,6 +275,11 @@ def _render_timeline_text(
     print(f"  {'TIMESTAMP':<26}  {'LAYER':<5}  {'EVENT TYPE':<28}  DETAILS")
     print("-" * 100)
 
+    payloads_by_event_id = {
+        str(ev.get("event_id") or ev.get("id") or ""): ev.get("payload") or {}
+        for ev in events
+    }
+
     for ev in events:
         timestamp = str(ev.get("ts", ev.get("timestamp", ev.get("created_at", ""))))
         if len(timestamp) > 26:
@@ -283,7 +288,14 @@ def _render_timeline_text(
         layer = _classify_layer(event_type)
         label = _LAYER_LABELS.get(layer, "???? ")
         payload = ev.get("payload") or {}
-        details = _extract_details(event_type, payload, ev)
+        parent_event_id = str(ev.get("parent_event_id") or ev.get("parent_id") or "")
+        parent_payload = payloads_by_event_id.get(parent_event_id)
+        details = _extract_details(
+            event_type,
+            payload,
+            ev,
+            parent_payload=parent_payload,
+        )
         print(f"  {timestamp:<26}  {label}  {event_type:<28}  {details}")
 
     print("-" * 100)
@@ -332,10 +344,15 @@ def _debug_timeline(args: Any) -> int:
 
 
 def _extract_details(
-    event_type: str, payload: dict[str, Any], ev: dict[str, Any] | None = None
+    event_type: str,
+    payload: dict[str, Any],
+    ev: dict[str, Any] | None = None,
+    *,
+    parent_payload: dict[str, Any] | None = None,
 ) -> str:
     parts: list[str] = []
     ev = ev or {}
+    parent_payload = parent_payload or {}
 
     status = str(payload.get("status", ev.get("status", "") or "") or "").strip()
     if status and status.lower() != "none":
@@ -369,9 +386,7 @@ def _extract_details(
     if purpose:
         parts.append(f"purpose={purpose}")
 
-    tool_name = str(payload.get("tool_name", payload.get("tool", ""))).strip()
-    if tool_name:
-        parts.append(f"tool={tool_name}")
+    parts.extend(_tool_identity_details(payload, parent_payload))
 
     argument_count = payload.get("argument_count")
     argument_bytes = payload.get("argument_bytes")
@@ -407,7 +422,7 @@ def _extract_details(
         parts.append(f"reason={reason}")
 
     title = str(payload.get("title", "")).strip()
-    if title and not tool_name:
+    if title and not any(part.startswith("tool=") for part in parts):
         parts.append(title)
 
     summary = str(payload.get("summary", "")).strip()
@@ -427,6 +442,23 @@ def _extract_details(
         parts.append(f"error={error[:80]}")
 
     return "  ".join(parts)
+
+
+def _tool_identity_details(
+    payload: dict[str, Any], parent_payload: dict[str, Any]
+) -> list[str]:
+    tool_name = str(
+        payload.get("tool_name")
+        or payload.get("tool")
+        or payload.get("canonical_name")
+        or parent_payload.get("canonical_name")
+        or ""
+    ).strip()
+    details = [f"tool={tool_name}"] if tool_name else []
+    call_id = str(payload.get("call_id") or parent_payload.get("call_id") or "").strip()
+    if call_id:
+        details.append(f"call={call_id}")
+    return details
 
 
 def _debug_trace(args: Any) -> int:

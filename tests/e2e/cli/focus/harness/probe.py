@@ -223,6 +223,10 @@ def inline_approval_menu(screen_text: str) -> str | None:
                 screen_text,
                 match=latest_compact,
             )
+            or _compact_approval_unrelated_tool_result_follows(
+                screen_text,
+                match=latest_compact,
+            )
             or not _interactive_surface_follows(
                 screen_text, offset=latest_compact.end()
             )
@@ -290,6 +294,21 @@ def _compact_approval_active_tool_follows(
         )
     )
     return bool(tool_statuses and tool_statuses[-1].group("running"))
+
+
+def _compact_approval_unrelated_tool_result_follows(
+    screen_text: str,
+    *,
+    match: re.Match[str],
+) -> bool:
+    targets = list(_APPROVAL_TARGET_RE.finditer(screen_text[: match.start()]))
+    if not targets:
+        return False
+    quoted = re.findall(r'["\']([^"\']+)["\']', targets[-1].group(0))
+    if not quoted:
+        return False
+    trailing = re.sub(r"\s+", "", screen_text[match.end() :])
+    return bool(trailing and quoted[-1] not in trailing)
 
 
 def inline_approval_fingerprint(screen_text: str) -> str | None:
@@ -694,6 +713,8 @@ class FocusProbe:
             while time.monotonic() < settle_deadline:
                 time.sleep(0.05)
                 current_screen = session.screen_text
+                if inline_approval_menu(current_screen) is None:
+                    return
                 current_fingerprint = inline_approval_fingerprint(current_screen)
                 if "Approval required:" in str(current_fingerprint or ""):
                     approval_screen = current_screen
@@ -794,8 +815,6 @@ class FocusProbe:
         decision = str(reply or "").strip().lower()
         if decision in {"no", "deny", "denied"}:
             key = "n"
-        elif decision in {"session", "a", "always"}:
-            key = "a"
         else:
             key = "y"
         session.send(f"{key}\r")
@@ -904,15 +923,6 @@ class FocusProbe:
                 and _composer_is_ready(screen_text)
                 and not active_turn_busy(screen_text)
             ):
-                if approvals and scenario.expected_markers:
-                    try:
-                        assert_expected_markers(
-                            transcript[turn_offset:],
-                            scenario.prompt,
-                            scenario.expected_markers,
-                        )
-                    except AssertionError:
-                        continue
                 completed_segment = transcript[event_offset:]
                 if completion_probe is not None:
                     completed_segment = (

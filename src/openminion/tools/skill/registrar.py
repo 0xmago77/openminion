@@ -25,12 +25,12 @@ if TYPE_CHECKING:
 _TOOL_DEFINITIONS = (
     (
         MODEL_SKILL_INGEST,
-        "Prepare at most one complete Markdown skill after substantial reusable work. Call with both required arguments: name and markdown containing the complete SKILL.md. Saving requires user approval, remains pending until separate operator admission, and is not immediately selectable. When pending, report operator_admission_command exactly with the version and lifecycle facts.",
+        "Prepare at most one complete Markdown skill after substantial reusable work. Call with both required arguments: name and markdown, using those exact keys; do not send skill_markdown. The markdown value contains the complete SKILL.md. Saving requires user approval, remains pending until separate operator admission, and is not immediately selectable. When pending, report operator_admission_command exactly with the version and lifecycle facts.",
         RUNTIME_SKILL_INGEST,
     ),
     (
         MODEL_SKILL_INGEST_URL,
-        "Fetch a remote markdown skill URL, safety-scan it, and store it for reuse in one step. Use this when the user wants to learn or ingest a skill directly from an http/https URL.",
+        "Fetch and safety-scan a remote Markdown skill URL. Saving requires user approval, remains pending until separate operator admission, and is not immediately selectable. When pending, report operator_admission_command exactly with the version and lifecycle facts.",
         RUNTIME_SKILL_INGEST_URL,
     ),
     (
@@ -45,7 +45,7 @@ _TOOL_DEFINITIONS = (
     ),
     (
         MODEL_SKILL_GET,
-        "Get one stored skill. Call with the required skill_id and optional version_hash. When the skill lists a bundled reference, asset, or script, call this tool again with resource_path and the same version_hash to read that resource before using it.",
+        "Get one stored skill. Call with the required skill_id argument named exactly skill_id, not name, and optional version_hash. When the skill lists a bundled reference, asset, or script, call this tool again with resource_path and the same version_hash to read that resource before using it.",
         RUNTIME_SKILL_GET,
     ),
     (

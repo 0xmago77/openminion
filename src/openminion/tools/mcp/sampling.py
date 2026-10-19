@@ -125,27 +125,38 @@ def _provider_request_from_sampling(
     request: MCPSamplingRequest,
 ) -> ProviderRequest:
     messages = list(request.messages)
+    last_user_index = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if str(messages[index].role or "").strip().lower() == "user"
+        ),
+        -1,
+    )
+    if last_user_index < 0:
+        raise ValueError("MCP sampling request must include a user message.")
+    history_only = last_user_index != len(messages) - 1
     system_prompt = request.system_prompt
     history: list[ProviderHistoryMessage] = []
-    user_message = ""
-    for message in messages:
+    user_message = (
+        "" if history_only else _content_to_text(messages[last_user_index].content)
+    )
+    for index, message in enumerate(messages):
+        if not history_only and index == last_user_index:
+            continue
         role = str(message.role or "").strip().lower() or "user"
         text = _content_to_text(message.content)
         if role == "system" and not system_prompt:
             system_prompt = text
             continue
-        if role == "user":
-            user_message = text
-        else:
-            history.append(ProviderHistoryMessage(role=role, content=text))
-    if not user_message and messages:
-        user_message = _content_to_text(messages[-1].content)
+        history.append(ProviderHistoryMessage(role=role, content=text))
     return ProviderRequest(
         user_message=user_message,
         system_prompt=system_prompt,
         thinking="minimal",
         history=history,
         tools=[],
+        max_output_tokens=request.max_tokens,
         metadata={
             "origin": "mcp.sampling",
             "mcp_server": server_name,

@@ -2,12 +2,45 @@ import tempfile
 import unittest
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
 from tests._csc_fixtures import _csc_install_default_agent
 
 
+from openminion.api.operations.tools import _tool_run_response
 from openminion.api.runtime import APIRuntime
 from openminion.api.server import dispatch_request
 from openminion.base.config import OpenMinionConfig, save_config
+from openminion.modules.artifact.config import from_base_config
+from openminion.modules.artifact.control import ArtifactCtl
+from openminion.modules.tool.base import Tool, ToolExecutionContext, ToolExecutionResult
+
+
+class _DurableArtifactTool(Tool):
+    name = "file.list_dir"
+    description = "Create one durable artifact for API integration tests"
+    parameters = {"type": "object", "properties": {}}
+
+    def execute(
+        self,
+        arguments,
+        context: ToolExecutionContext,
+    ) -> ToolExecutionResult:
+        del arguments
+        ref = context.artifactctl.ingest_bytes(
+            b"api artifact",
+            mime="text/plain",
+            original_name="api-artifact.txt",
+            session_id=context.session_id,
+        )
+        return ToolExecutionResult(
+            tool_name=self.name,
+            ok=True,
+            content="created",
+            verified=True,
+            data={"artifact_refs": [ref.ref]},
+        )
 
 
 class APIV1RuntimeTests(unittest.TestCase):
@@ -77,6 +110,131 @@ class APIV1RuntimeTests(unittest.TestCase):
             self.assertTrue(run_payload["trace_id"])
             self.assertTrue(run_payload["artifact_refs"])
             self.assertEqual(run_payload["tool"]["name"], "file.list_dir")
+
+    def test_v1_tool_run_protects_canonical_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["OPENMINION_DATA_ROOT"] = str(Path(tmp) / ".openminion")
+            config_path = _write_echo_config(Path(tmp))
+            runtime = APIRuntime.from_config_path(str(config_path))
+            runtime.tools.unregister("file.list_dir")
+            runtime.tools.register(_DurableArtifactTool())
+            try:
+                status, payload = dispatch_request(
+                    "POST",
+                    "/v1/tools/file.list_dir/run",
+                    str(config_path),
+                    body={"arguments": {}, "session_id": "artifact-session"},
+                    runtime=runtime,
+                )
+
+                self.assertEqual(int(status), 200)
+                self.assertEqual(
+                    payload["artifact_refs"],
+                    [
+                        {
+                            "ref": payload["tool"]["data"]["artifact_refs"][0],
+                            "type": "tool_result",
+                            "tool": "file.list_dir",
+                        }
+                    ],
+                )
+                events = runtime.sessions.list_events(
+                    session_id="artifact-session",
+                    limit=20,
+                )
+                self.assertEqual(
+                    events[-1].payload["artifact_refs"],
+                    payload["artifact_refs"],
+                )
+                artifact_config = from_base_config(
+                    base_config=runtime.config,
+                    home_root=runtime.home_root,
+                    data_root=runtime.data_root,
+                )
+                with ArtifactCtl(artifact_config) as ctl:
+                    owned = ctl.list_recent(
+                        scope_filters={
+                            "owner_type": "session",
+                            "owner_id": "artifact-session",
+                        }
+                    )
+                    self.assertEqual(len(owned), 1)
+                    self.assertNotIn(owned[0].sha256, ctl.gc(plan_only=True).candidates)
+            finally:
+                runtime.close()
+
+    def test_tool_run_response_writes_edge_before_event(self) -> None:
+        runtime = SimpleNamespace(sessions=MagicMock())
+        artifactctl = MagicMock()
+        artifactctl.ref_add.side_effect = RuntimeError("edge failed")
+        result = ToolExecutionResult(
+            tool_name="test.tool",
+            ok=True,
+            content="ok",
+            data={"artifact_refs": ["artifact://sha256/" + "a" * 64]},
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "edge failed"):
+            _tool_run_response(
+                runtime,
+                request_id="trace",
+                session_id="session",
+                result=result,
+                artifactctl=artifactctl,
+            )
+
+        runtime.sessions.append_event.assert_not_called()
+
+    def test_tool_run_response_ignores_synthetic_artifact_ref(self) -> None:
+        runtime = SimpleNamespace(sessions=MagicMock())
+        artifactctl = MagicMock()
+        result = ToolExecutionResult(
+            tool_name="test.tool",
+            ok=True,
+            content="ok",
+        )
+
+        _, payload, _ = _tool_run_response(
+            runtime,
+            request_id="trace",
+            session_id="session",
+            result=result,
+            artifactctl=artifactctl,
+        )
+
+        artifactctl.ref_add.assert_not_called()
+        self.assertEqual(
+            payload["artifact_refs"],
+            [
+                {
+                    "ref": "artifact://tool/session/trace/test.tool/call",
+                    "type": "tool_result",
+                    "tool": "test.tool",
+                }
+            ],
+        )
+
+    def test_tool_run_response_keeps_edge_when_event_fails(self) -> None:
+        runtime = SimpleNamespace(sessions=MagicMock())
+        runtime.sessions.append_event.side_effect = RuntimeError("event failed")
+        artifactctl = MagicMock()
+        result = ToolExecutionResult(
+            tool_name="test.tool",
+            ok=True,
+            content="ok",
+            data={"artifact_refs": ["artifact://sha256/" + "a" * 64]},
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "event failed"):
+            _tool_run_response(
+                runtime,
+                request_id="trace",
+                session_id="session",
+                result=result,
+                artifactctl=artifactctl,
+            )
+
+        artifactctl.ref_add.assert_called_once_with("session", "session", "a" * 64)
 
     def test_v1_tool_exposure_status_activate_and_deactivate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

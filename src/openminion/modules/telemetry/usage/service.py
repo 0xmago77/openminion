@@ -1,6 +1,7 @@
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from openminion.modules.telemetry.trace.turn_cost import (
@@ -47,6 +48,17 @@ def _normalize_iso_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _observation_timestamp(summary: TokenUsageSummary) -> float:
+    if summary.last_source_event is None:
+        return float("-inf")
+    observed = _normalize_iso_datetime(summary.last_source_event.observed_at)
+    if observed is None:
+        return float("-inf")
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=UTC)
+    return observed.timestamp()
+
+
 def _usage_stats_from_payload(payload: dict[str, Any]) -> RunStats:
     usage = payload.get("usage")
     if isinstance(usage, dict):
@@ -89,9 +101,32 @@ def _event_run_id(event: dict[str, Any]) -> str:
 
 
 def _session_id_from_row(row: Any) -> str:
-    if isinstance(row, dict):
+    if isinstance(row, Mapping):
         return str(row.get("session_id") or row.get("id") or "").strip()
     return str(getattr(row, "session_id", None) or getattr(row, "id", "") or "").strip()
+
+
+def usage_event_session_id(row: Any) -> str:
+    """Return the durable event-stream id owned by a visible session row."""
+    session_id = _session_id_from_row(row)
+    if not session_id:
+        return ""
+    if isinstance(row, Mapping):
+        metadata = row.get("metadata") or row.get("meta") or {}
+        target = row.get("target") or (
+            metadata.get("target") if isinstance(metadata, Mapping) else ""
+        )
+    else:
+        metadata = getattr(row, "metadata", {}) or {}
+        target = getattr(row, "target", "")
+    conversation_id = (
+        str(metadata.get("conversation_id", "") or "").strip()
+        if isinstance(metadata, Mapping)
+        else ""
+    )
+    if not conversation_id and str(target or "") == "focus":
+        conversation_id = f"focus-{session_id}"
+    return f"{session_id}::conv:{conversation_id}" if conversation_id else session_id
 
 
 def _event_trace_id(event: dict[str, Any]) -> str:
@@ -379,7 +414,13 @@ class StatsService:
                         event_limit=event_limit,
                     )
                 )
-        return tuple(summaries)
+        return tuple(
+            sorted(
+                summaries,
+                key=_observation_timestamp,
+                reverse=True,
+            )
+        )
 
     def get_run_stats(self, run_id: str) -> RunStatsSummary | None:
         if not hasattr(self._store, "get_run_record"):

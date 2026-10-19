@@ -10,6 +10,8 @@ from openminion.base.config import resolve_agent_config
 from openminion.cli.config import load_cli_manager_from_args
 from openminion.cli.parser.flags import add_json_output_flag
 from openminion.cli.presentation.json_output import print_json_payload
+from openminion.modules.artifact.config import from_base_config
+from openminion.modules.artifact.control import ArtifactCtl
 from openminion.modules.session.schemas import ContinuationError
 from openminion.modules.storage import build_runtime_storage
 
@@ -218,18 +220,30 @@ def run_sessions_delete(args) -> int:
             return 1
 
     try:
-        runtime = _load_session_storage(args)
+        manager = load_cli_manager_from_args(args)
+        config = manager.base_config
+        artifact_config = from_base_config(
+            base_config=config,
+            home_root=manager.home_root,
+            data_root=manager.data_root,
+        )
+        runtime = build_runtime_storage(
+            config.storage.path,
+            env=manager.env,
+            record_backend=config.storage.record_backend(),
+            record_backend_options=config.storage.record_backend_options(),
+        )
     except Exception as exc:
         print(f"openminion sessions: startup error — {exc}", file=sys.stderr)
         return 1
 
     try:
-        deleted = bool(runtime.sessions.delete_session(session_id))
+        with closing(runtime), ArtifactCtl(artifact_config) as artifactctl:
+            deleted = bool(runtime.sessions.delete_session(session_id))
+            artifactctl.ref_remove_owner("session", session_id)
     except Exception as exc:
         print(f"openminion sessions: could not delete session — {exc}", file=sys.stderr)
         return 1
-    finally:
-        runtime.close()
 
     if not deleted:
         print(

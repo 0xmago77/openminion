@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pydantic import BaseModel
 
 from openminion.base.config import OpenMinionConfig, build_runtime_config
 from openminion.base.types import AgentResponse
@@ -14,10 +15,12 @@ from openminion.modules.brain.loop.context.pending_turn import (
     PENDING_TURN_CONTEXT_MAX_STALE_TURNS,
 )
 from openminion.modules.brain.schemas import BudgetCounters, WorkingState
+from openminion.modules.tool import ToolRegistry, ToolSpec
 from openminion.modules.llm.providers.base import ProviderError, ProviderResponse
 from openminion.modules.llm.schemas import UsageInfo
 from openminion.services.agent.constants import PRIOR_TURN_CONTEXT_CHAR_LIMIT
 from openminion.services.brain.post_execution import BrainBridgeTurnMixin
+from openminion.services.security.policy import SecurityPolicyEngine
 from openminion.services.brain.post_execution.context import (
     _recalled_memory_count_from_runner,
 )
@@ -30,6 +33,42 @@ from tests._csc_fixtures import _csc_install_default_agent
 
 class DummyBridge(BrainBridgeTurnMixin):
     pass
+
+
+class _NoArgs(BaseModel):
+    pass
+
+
+def test_tool_policy_adapter_includes_configured_internal_actor_scopes() -> None:
+    tools = ToolRegistry()
+    spec = ToolSpec(
+        name="test.power",
+        args_model=_NoArgs,
+        min_scope="POWER_USER",
+        handler=lambda _args, _ctx: {},
+    )
+    tools.register(spec)
+    bridge = DummyBridge()
+    bridge._security_policy = SecurityPolicyEngine(
+        internal_actor_scopes=frozenset({"tool.execute.elevated"})
+    )
+    bridge._identity_agent_id = "agent-a"
+    bridge._tools = tools
+    runner = SimpleNamespace(tool_api=SimpleNamespace(policy_adapter=None))
+
+    bridge._bind_tool_policy_adapter(
+        runner=runner,
+        message=Message(channel="console", target="focus", body="run"),
+        session_id="session-a",
+        request_id="request-a",
+    )
+
+    decision = runner.tool_api.policy_adapter.evaluate(
+        tool_name=spec.name,
+        tool_spec=spec,
+        args={},
+    )
+    assert decision.allowed is True
 
 
 def test_runtime_grounding_propagates_working_state_read_failure() -> None:

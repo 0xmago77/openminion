@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import atexit
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -11,7 +13,11 @@ from openminion.tools.mcp.manager import (
     MCPFleetManager,
     MCPServerSession,
 )
-from openminion.tools.mcp.transport import MCPProtocolError, MCPServerUnavailableError
+from openminion.tools.mcp.transport import (
+    MCPProtocolError,
+    MCPRemoteTransportError,
+    MCPServerUnavailableError,
+)
 from openminion.tools.mcp.results import MCPCallError
 
 
@@ -96,6 +102,40 @@ def test_fourth_crash_inside_window_raises_unrecoverable_error() -> None:
         manager.close()
 
 
+def test_concurrent_recovery_restarts_stdio_session_once() -> None:
+    manager = MCPFleetManager.from_runtime_config(_runtime_config())
+    try:
+        session = manager._sessions["fixture"]
+        manager.call_tool(
+            server_name="fixture",
+            remote_name="echo-text",
+            arguments={"text": "prime"},
+        )
+        manager.close_server("fixture")
+        observed_restart_total = session.restart_total
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(
+                    session._restart_transport,
+                    observed_restart_total=observed_restart_total,
+                )
+                for _ in range(2)
+            ]
+            for future in futures:
+                future.result(timeout=5)
+
+        assert session.restart_total == observed_restart_total + 1
+        result = manager.call_tool(
+            server_name="fixture",
+            remote_name="echo-text",
+            arguments={"text": "recovered"},
+        )
+        assert result["ok"] is True
+    finally:
+        manager.close()
+
+
 def test_stdio_discovery_crash_does_not_retry_legacy_handshake(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -170,6 +210,68 @@ def test_successful_call_clears_stale_server_failure() -> None:
         assert manager.failed_servers == {}
     finally:
         manager.close()
+
+
+def test_successful_tool_call_preserves_other_primitive_failure() -> None:
+    manager = MCPFleetManager.from_runtime_config(_runtime_config())
+    try:
+        manager._record_failed_server(  # noqa: SLF001
+            server_name="fixture",
+            primitive="prompts",
+            exc=MCPProtocolError("prompt discovery failed"),
+        )
+
+        result = manager.call_tool(
+            server_name="fixture",
+            remote_name="echo-text",
+            arguments={"text": "recovered"},
+        )
+
+        assert result["ok"] is True
+        assert manager.failed_servers["fixture"].primitive == "prompts"
+    finally:
+        manager.close()
+
+
+def test_parallel_discovery_records_remote_transport_error(monkeypatch) -> None:
+    manager = MCPFleetManager.from_runtime_config(_runtime_config())
+    session = manager._sessions["fixture"]
+
+    def _fail() -> list[object]:
+        raise MCPRemoteTransportError(
+            "remote discovery failed",
+            reason_code="mcp_http_error",
+        )
+
+    monkeypatch.setattr(session, "list_tools", _fail)
+    try:
+        assert manager.discover_tools(parallel=True) == []
+        assert manager.failed_servers["fixture"].reason_code == "mcp_http_error"
+    finally:
+        manager.close()
+
+
+def test_manager_close_unregisters_atexit_once(monkeypatch) -> None:
+    registered: list[object] = []
+    unregistered: list[object] = []
+    token_store_closes: list[str] = []
+    monkeypatch.setattr(atexit, "register", registered.append)
+    monkeypatch.setattr(atexit, "unregister", unregistered.append)
+    token_store = type(
+        "TokenStore",
+        (),
+        {"close": lambda self: token_store_closes.append("closed")},
+    )()
+    manager = MCPFleetManager(
+        servers=_runtime_config().mcp_servers,
+        token_store=token_store,
+    )
+
+    manager.close()
+    manager.close()
+
+    assert unregistered == registered
+    assert token_store_closes == ["closed"]
 
 
 def test_disabled_server_is_not_started() -> None:

@@ -16,6 +16,10 @@ def test_focus_runner_writes_summary_when_requested(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
+    monkeypatch.delenv(
+        "OPENMINION_CLI_FOCUS_E2E_RUNNER_TIMEOUT_SECONDS",
+        raising=False,
+    )
     summary_path = tmp_path / "focus-summary.json"
 
     def fake_run(paths, *, env, extra_args=(), timeout_seconds=None):

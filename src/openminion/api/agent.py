@@ -297,7 +297,7 @@ class Agent(Generic[InputT, OutputT]):
             self.subagent_context = run_context
             delegated_grant_id = run_context.memory_grant_id
         registration_scope = (
-            registry.temporary_registration_lock
+            registry.temporary_registration_scope()
             if registry is not None
             else nullcontext()
         )

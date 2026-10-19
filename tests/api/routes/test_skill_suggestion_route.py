@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from http import HTTPStatus
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,20 +17,22 @@ from openminion.modules.skill.proposal.queue import (
 from openminion.modules.skill.runtime.skill import Skill
 
 
-def _config_path(tmp_path: Path) -> str:
+def _config_path(tmp_path: Path, **overrides: object) -> str:
     data_root = tmp_path / ".openminion"
     skill_root = data_root / "skill"
     db = skill_root / "skill.db"
     cfg = tmp_path / "skill.json"
+    skill_config = {
+        "sqlite_path": str(db),
+        "blob_root": str(skill_root / "blob"),
+        "fallback_root": str(skill_root / "fallback"),
+        "wal": False,
+        **overrides,
+    }
     cfg.write_text(
         json.dumps(
             {
-                "skill": {
-                    "sqlite_path": str(db),
-                    "blob_root": str(skill_root / "blob"),
-                    "fallback_root": str(skill_root / "fallback"),
-                    "wal": False,
-                }
+                "skill": skill_config,
             }
         ),
         encoding="utf-8",
@@ -137,6 +140,82 @@ def test_http_suggestion_surface_pass_writes_audit(cfg_path: str) -> None:
     )
     assert status_result is not None
     assert status_result.payload["status"]["surfaced_count"] == 1
+
+
+def test_http_suggestion_surface_uses_config_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = _config_path(
+        tmp_path,
+        suggestion_batch_cap=2,
+        suggestion_cooldown_seconds=45,
+        suggestion_min_age_seconds=15,
+    )
+    captured: dict[str, int] = {}
+
+    def _surface(_store: object, **kwargs: int) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(surfaced=[], auto_dismissed=[], pending_remaining=0)
+
+    monkeypatch.setattr(
+        "openminion.modules.skill.suggestion.run_suggestion_surface_pass", _surface
+    )
+
+    result = handle_request(
+        _ctx(config_path),
+        method_name="POST",
+        path="/v1/skills/suggestions/surface",
+        body={},
+        query=None,
+    )
+
+    assert result is not None
+    assert result.status == HTTPStatus.OK
+    assert captured == {
+        "batch_cap": 2,
+        "cooldown_seconds": 45,
+        "min_age_seconds": 15,
+    }
+
+
+def test_http_suggestion_surface_body_overrides_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = _config_path(
+        tmp_path,
+        suggestion_batch_cap=2,
+        suggestion_cooldown_seconds=45,
+        suggestion_min_age_seconds=15,
+    )
+    captured: dict[str, int] = {}
+
+    def _surface(_store: object, **kwargs: int) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(surfaced=[], auto_dismissed=[], pending_remaining=0)
+
+    monkeypatch.setattr(
+        "openminion.modules.skill.suggestion.run_suggestion_surface_pass", _surface
+    )
+
+    result = handle_request(
+        _ctx(config_path),
+        method_name="POST",
+        path="/v1/skills/suggestions/surface",
+        body={
+            "batch_cap": 4,
+            "cooldown_seconds": 90,
+            "min_age_seconds": 30,
+        },
+        query=None,
+    )
+
+    assert result is not None
+    assert result.status == HTTPStatus.OK
+    assert captured == {
+        "batch_cap": 4,
+        "cooldown_seconds": 90,
+        "min_age_seconds": 30,
+    }
 
 
 def test_http_suggestion_status_counts_review_outcomes(cfg_path: str) -> None:

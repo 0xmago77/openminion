@@ -25,6 +25,7 @@ from openminion.cli.interactive.terminal.shell.slash_output import (
     PROMPT_SAFE_OUTPUT_SLASHES,
     handle_debug_output_slash,
     render_context_review,
+    render_identity_report,
 )
 from openminion.cli.interactive.terminal.shell.sessions import (
     handle_room_slash,
@@ -140,7 +141,8 @@ class _VisibleRuntime:
     def token_usage_snapshot(self) -> None:
         return None
 
-    def token_usage_report(self) -> str:
+    def token_usage_report(self, *, recent: int | None = None) -> str:
+        del recent
         return "no token usage data"
 
     def effort_level(self) -> str:
@@ -633,6 +635,74 @@ def test_identity_slashes_use_the_runtime_identity_owner(
     assert calls == [method_name]
     assert "Source: yaml" in buf.getvalue()
     assert "Profile version: profile-v2" in buf.getvalue()
+
+
+def test_identity_report_shows_render_completeness_and_verification_issues() -> None:
+    rendered = render_identity_report(
+        {
+            "agent_id": "ops",
+            "display_name": "Operations",
+            "source": "yaml",
+            "source_path": "/tmp/identity/ops/profile.yaml",
+            "profile_revision": 2,
+            "profile_version": "profile-v2",
+            "render_version": "render-v1",
+            "render": {
+                "purpose": "act",
+                "budget": {"used_tokens": 42, "max_tokens": 180},
+                "included_fields": ["role.mission"],
+                "omitted_fields": ["personality.formatting"],
+                "warnings": ["non-critical fields omitted to fit budget"],
+            },
+            "verification": {
+                "ok": False,
+                "source_status": "invalid",
+                "sidecar_status": "clean",
+                "issues": [
+                    {"message": "profile.yaml agent_id does not match its directory"}
+                ],
+            },
+            "validation": {
+                "ok": True,
+                "errors": [],
+                "warnings": ["role.responsibilities recommended range is 3-7"],
+            },
+            "rendered_text": "Mission: Operate safely.",
+        }
+    )
+
+    assert "Purpose: act" in rendered
+    assert "Source path: /tmp/identity/ops/profile.yaml" in rendered
+    assert "Render budget: 42/180 tokens" in rendered
+    assert "Included fields: role.mission" in rendered
+    assert "Omitted fields: personality.formatting" in rendered
+    assert "Render warning: non-critical fields omitted to fit budget" in rendered
+    assert "Issue: profile.yaml agent_id does not match its directory" in rendered
+    assert "Validation: ok" in rendered
+    assert (
+        "Validation warning: role.responsibilities recommended range is 3-7" in rendered
+    )
+
+
+def test_identity_report_does_not_manufacture_missing_details() -> None:
+    rendered = render_identity_report(
+        {
+            "agent_id": "ops",
+            "source": "yaml",
+            "profile_revision": 2,
+            "profile_version": "profile-v2",
+            "render_version": "render-v1",
+            "verification": {
+                "ok": True,
+                "source_status": "clean",
+                "sidecar_status": "clean",
+                "issues": [{"message": {"detail": "not presentation text"}}],
+            },
+        }
+    )
+
+    assert "Issue:" not in rendered
+    assert "Render warning:" not in rendered
 
 
 def test_context_review_forwards_explicit_paths(monkeypatch, tmp_path: Path) -> None:

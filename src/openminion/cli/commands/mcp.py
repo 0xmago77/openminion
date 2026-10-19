@@ -7,6 +7,7 @@ from pathlib import Path
 import secrets
 import sys
 import time
+import webbrowser
 from typing import TYPE_CHECKING, Any
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -45,7 +46,12 @@ def run_mcp(args: argparse.Namespace) -> int:
 
 def _mcp_add(args: argparse.Namespace) -> int:
     from openminion.base.config.io import save_config
-    from openminion.base.config.mcp import MCPServerConfig
+    from openminion.base.config.mcp import (
+        MCPApprovalConfig,
+        MCPAuthorizationConfig,
+        MCPServerConfig,
+        MCPStdioSandboxConfig,
+    )
 
     manager = _load_writable_config_manager(args)
     config = manager.base_config
@@ -56,6 +62,26 @@ def _mcp_add(args: argparse.Namespace) -> int:
     if bool(command) == bool(url):
         raise RuntimeError("mcp add requires either --url or --command")
 
+    authorization_kwargs: dict[str, Any] = {
+        "mode": str(getattr(args, "auth", "none") or "none").replace("-", "_"),
+        "bearer_token_ref": getattr(args, "bearer_token_ref", ""),
+        "client_id": getattr(args, "client_id", ""),
+        "authorization_server_metadata_url": getattr(
+            args, "authorization_metadata_url", ""
+        ),
+        "authorization_endpoint": getattr(args, "authorization_endpoint", ""),
+        "token_endpoint": getattr(args, "token_endpoint", ""),
+        "registration_endpoint": getattr(args, "registration_endpoint", ""),
+        "revocation_endpoint": getattr(args, "revocation_endpoint", ""),
+        "redirect_uri": getattr(args, "redirect_uri", ""),
+        "scope": getattr(args, "scope", ""),
+        "access_token_ref": getattr(args, "access_token_ref", ""),
+        "refresh_token_ref": getattr(args, "refresh_token_ref", ""),
+    }
+    client_issuer = str(getattr(args, "client_issuer", "") or "").strip()
+    if client_issuer:
+        authorization_kwargs["client_issuer"] = client_issuer
+
     server = MCPServerConfig(
         name=args.name,
         enabled=not bool(getattr(args, "disabled", False)),
@@ -63,8 +89,29 @@ def _mcp_add(args: argparse.Namespace) -> int:
         transport="streamable_http" if url else "stdio",
         command=command,
         url=url,
+        authorization=MCPAuthorizationConfig(**authorization_kwargs),
+        env=dict(getattr(args, "env", []) or []),
+        env_secret_refs=dict(getattr(args, "env_secret", []) or []),
         cwd=str(getattr(args, "cwd", "") or ""),
+        startup_timeout_seconds=getattr(args, "startup_timeout", 15.0),
+        request_timeout_seconds=getattr(args, "request_timeout", 30.0),
+        stderr_buffer_bytes=getattr(args, "stderr_buffer_bytes", 65536),
+        tool_risk_overrides=list(getattr(args, "risk_override", []) or []),
+        approval=MCPApprovalConfig(
+            mode=getattr(args, "approval_mode", "never"),
+            tool_patterns=list(getattr(args, "approval_tool", []) or []),
+            risk_levels=list(getattr(args, "approval_risk", []) or []),
+        ),
         trusted=bool(getattr(args, "trusted", False)),
+        stdio_sandbox=MCPStdioSandboxConfig(
+            require_trust=getattr(args, "sandbox_require_trust", True),
+            cwd_allowlist=list(getattr(args, "sandbox_cwd", []) or []),
+            env_allowlist=list(getattr(args, "sandbox_env", []) or []),
+            inherit_env_allowlist=list(getattr(args, "sandbox_inherit_env", []) or []),
+            package_name=getattr(args, "sandbox_package_name", ""),
+            package_version=getattr(args, "sandbox_package_version", ""),
+            trust_reason=getattr(args, "sandbox_trust_reason", ""),
+        ),
     )
     if any(item.name == server.name for item in config.runtime.mcp_servers):
         raise RuntimeError(f"MCP server already exists: {server.name}")
@@ -241,7 +288,11 @@ def _mcp_validate(args: argparse.Namespace) -> int:
     for server in servers:
         if not server.enabled:
             continue
-        if server.transport == "stdio" and not server.trusted:
+        if (
+            server.transport == "stdio"
+            and server.stdio_sandbox.require_trust
+            and not server.trusted
+        ):
             issues.append(
                 {
                     "server": server.name,
@@ -316,21 +367,123 @@ def _mcp_login(args: argparse.Namespace) -> int:
     if secret_service is None:
         raise RuntimeError("mcp login requires OPENMINION_SECRET_KEY")
     token_store = SecretServiceMCPTokenStore(secret_service)
+    callback = None
     try:
         code = str(getattr(args, "code", "") or "").strip()
-        if not code:
-            auth_challenge = probe_oauth_challenge(server)
-            metadata = discover_oauth_metadata(
-                server.authorization,
-                resource=server.url,
-                resource_metadata_url=auth_challenge["resource_metadata"],
+        if code:
+            return _complete_mcp_login(args, server, token_store, code)
+        auth_challenge = probe_oauth_challenge(server)
+        metadata = discover_oauth_metadata(
+            server.authorization,
+            resource=server.url,
+            resource_metadata_url=auth_challenge["resource_metadata"],
+        )
+        manual = bool(getattr(args, "manual", False))
+        if manual:
+            if not server.authorization.redirect_uri:
+                raise RuntimeError("manual MCP login requires configured redirect_uri")
+            redirect_uri = server.authorization.redirect_uri
+        else:
+            from openminion.tools.mcp.oauth_callback import MCPOAuthCallbackServer
+
+            callback = MCPOAuthCallbackServer()
+            redirect_uri = callback.redirect_uri
+        server, registration = _prepare_mcp_login_client(
+            manager,
+            server,
+            metadata,
+            redirect_uri=redirect_uri,
+        )
+        payload = _start_mcp_login(
+            server,
+            token_store,
+            metadata,
+            auth_challenge=auth_challenge,
+            client_registration=registration,
+        )
+        if manual:
+            print_json_payload(payload)
+            return 0
+        assert callback is not None
+        if not webbrowser.open(payload["authorization_url"]):
+            print_json_payload(payload)
+        result = callback.wait(
+            expected_state=payload["state"],
+            timeout_seconds=float(getattr(args, "callback_timeout", 180.0)),
+        )
+        if result.error:
+            from openminion.tools.mcp.auth import validate_authorization_issuer
+
+            validate_authorization_issuer(
+                expected=metadata.issuer,
+                received=result.issuer,
+                required=metadata.authorization_response_iss_parameter_supported,
             )
-            return _start_mcp_login(
-                server, token_store, metadata, auth_challenge=auth_challenge
-            )
-        return _complete_mcp_login(args, server, token_store, code)
+            raise RuntimeError(f"OAuth authorization failed: {result.error}")
+        completion_args = argparse.Namespace(
+            state=payload["state"], issuer=result.issuer
+        )
+        return _complete_mcp_login(
+            completion_args,
+            server,
+            token_store,
+            result.code,
+        )
     finally:
+        if callback is not None:
+            callback.close()
         token_store.close()
+
+
+def _prepare_mcp_login_client(
+    manager: Any,
+    server: Any,
+    metadata: Any,
+    *,
+    redirect_uri: str,
+) -> tuple[Any, str]:
+    from openminion.services.bootstrap.provider_setup import atomic_save_setup_config
+    from openminion.tools.mcp.auth import register_oauth_client, select_oauth_client
+
+    selection = select_oauth_client(server.authorization, metadata)
+    client_id = selection.client_id
+    if selection.method == "dcr":
+        registration = register_oauth_client(
+            metadata=metadata,
+            client_name="OpenMinion",
+            redirect_uris=[redirect_uri],
+        )
+        client_id = str(registration["client_id"])
+    client_issuer = (
+        server.authorization.client_issuer
+        if selection.method == "cimd"
+        else selection.issuer
+    )
+    authorization = replace(
+        server.authorization,
+        client_id=client_id,
+        client_issuer=client_issuer,
+        redirect_uri=redirect_uri,
+    )
+    updated = replace(server, authorization=authorization)
+    if (
+        client_id != server.authorization.client_id
+        or client_issuer != server.authorization.client_issuer
+    ):
+        persisted = replace(
+            server,
+            authorization=replace(
+                server.authorization,
+                client_id=client_id,
+                client_issuer=client_issuer,
+            ),
+        )
+        manager.base_config.runtime.mcp_servers = [
+            persisted if item.name == server.name else item
+            for item in manager.base_config.runtime.mcp_servers
+        ]
+        atomic_save_setup_config(manager.base_config, manager.config_path)
+    return updated, selection.method
 
 
 def _start_mcp_login(
@@ -339,7 +492,8 @@ def _start_mcp_login(
     metadata: Any,
     *,
     auth_challenge: dict[str, str],
-) -> int:
+    client_registration: str,
+) -> dict[str, Any]:
     from openminion.tools.mcp.auth import (
         MCPOAuthTransaction,
         build_authorization_url,
@@ -366,29 +520,21 @@ def _start_mcp_login(
             scope=auth_challenge.get("scope", ""),
         ),
     )
-    print_json_payload(
-        {
-            "ok": True,
-            "server": server.name,
-            "authorization_url": build_authorization_url(
-                config=server.authorization,
-                metadata=metadata,
-                challenge=challenge,
-                state=state,
-                resource=server.url,
-                scope=auth_challenge.get("scope", ""),
-            ),
-            "state": state,
-            "issuer_required": metadata.authorization_response_iss_parameter_supported,
-            "client_registration": (
-                "cimd"
-                if metadata.client_id_metadata_document_supported
-                and server.authorization.client_id.startswith("https://")
-                else "pre_registered"
-            ),
-        }
-    )
-    return 0
+    return {
+        "ok": True,
+        "server": server.name,
+        "authorization_url": build_authorization_url(
+            config=server.authorization,
+            metadata=metadata,
+            challenge=challenge,
+            state=state,
+            resource=server.url,
+            scope=auth_challenge.get("scope", ""),
+        ),
+        "state": state,
+        "issuer_required": metadata.authorization_response_iss_parameter_supported,
+        "client_registration": client_registration,
+    }
 
 
 def _complete_mcp_login(
@@ -530,11 +676,15 @@ def _configured_manager(args: argparse.Namespace) -> Any:
     from openminion.tools.mcp.auth import build_runtime_mcp_token_store
 
     config = load_cli_manager_from_args(args).base_config
-    servers = [
-        server
-        for server in _filter_servers(config.runtime.mcp_servers, args.name)
-        if server.enabled
-    ]
+    configured_servers = list(config.runtime.mcp_servers)
+    name = str(getattr(args, "name", "") or "").strip()
+    if name:
+        selected = _require_server(configured_servers, name)
+        if not selected.enabled:
+            raise RuntimeError(f"MCP server is disabled: {selected.name}")
+        servers = [selected]
+    else:
+        servers = [server for server in configured_servers if server.enabled]
     return MCPFleetManager(
         servers,
         token_store=build_runtime_mcp_token_store(config.runtime),
@@ -693,7 +843,14 @@ def _redacted_server_payload(server: MCPServerConfig) -> dict[str, Any]:
         "env": {key: "<redacted>" for key in server.env},
         "env_secret_refs": dict(server.env_secret_refs),
         "cwd": server.cwd,
+        "startup_timeout_seconds": server.startup_timeout_seconds,
+        "request_timeout_seconds": server.request_timeout_seconds,
+        "stderr_buffer_bytes": server.stderr_buffer_bytes,
+        "tool_risk_overrides": [
+            asdict(override) for override in server.tool_risk_overrides
+        ],
         "trusted": server.trusted,
+        "stdio_sandbox": asdict(server.stdio_sandbox),
         "package_metadata": server.package_metadata.to_dict(),
         "approval": {
             "mode": server.approval.mode,
@@ -703,94 +860,9 @@ def _redacted_server_payload(server: MCPServerConfig) -> dict[str, Any]:
     }
 
 
-def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    parser = subparsers.add_parser("mcp", help="Manage MCP servers")
-    mcp_sub = parser.add_subparsers(dest="mcp_command", required=True)
+def register(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    from .mcp_parser import register as register_parser
 
-    add_parser = mcp_sub.add_parser("add", help="Add an MCP server")
-    add_parser.add_argument("name", help="Server name")
-    add_parser.add_argument("--url", default="", help="Streamable HTTP endpoint")
-    add_parser.add_argument("--cwd", default="", help="stdio working directory")
-    add_parser.add_argument("--trusted", action="store_true", help="Trust stdio server")
-    add_parser.add_argument(
-        "--required", action="store_true", help="Require server discovery at startup"
-    )
-    add_parser.add_argument(
-        "--disabled", action="store_true", help="Add without enabling"
-    )
-    add_parser.add_argument(
-        "--command",
-        nargs=argparse.REMAINDER,
-        default=[],
-        help="stdio command after --",
-    )
-    add_parser.set_defaults(handler=run_mcp)
-
-    for command, help_text in (
-        ("get", "Show one configured MCP server"),
-        ("remove", "Remove an MCP server"),
-        ("enable", "Enable an MCP server"),
-        ("disable", "Disable an MCP server"),
-        ("trust", "Trust a local stdio MCP server"),
-        ("untrust", "Revoke trust from a local stdio MCP server"),
-    ):
-        lifecycle_parser = mcp_sub.add_parser(command, help=help_text)
-        lifecycle_parser.add_argument("name", help="Server name")
-        lifecycle_parser.set_defaults(handler=run_mcp)
-
-    import_parser = mcp_sub.add_parser("import", help="Import MCP server config")
-    import_parser.add_argument(
-        "--from", dest="source", required=True, help="Source JSON file"
-    )
-    import_parser.add_argument(
-        "--write",
-        action="store_true",
-        help="Write imported servers to OpenMinion config",
-    )
-    import_parser.set_defaults(handler=run_mcp)
-
-    list_parser = mcp_sub.add_parser("list", help="List configured MCP servers")
-    list_parser.set_defaults(handler=run_mcp)
-
-    validate_parser = mcp_sub.add_parser("validate", help="Validate MCP server config")
-    validate_parser.set_defaults(handler=run_mcp)
-
-    test_parser = mcp_sub.add_parser("test", help="Test MCP server discovery")
-    test_parser.add_argument("name", nargs="?", default="", help="Optional server name")
-    test_parser.set_defaults(handler=run_mcp)
-
-    login_parser = mcp_sub.add_parser("login", help="Authorize a remote MCP server")
-    login_parser.add_argument("name", help="Configured MCP server name")
-    login_parser.add_argument("--code", default="", help="Authorization code")
-    login_parser.add_argument("--issuer", default="", help="Authorization issuer")
-    login_parser.add_argument(
-        "--state",
-        default="",
-        help="State returned with the authorization response",
-    )
-    login_parser.set_defaults(handler=run_mcp)
-
-    browse_parser = mcp_sub.add_parser("browse", help="List server capabilities")
-    browse_parser.add_argument("name", nargs="?", default="", help="Server name")
-    browse_parser.set_defaults(handler=run_mcp)
-
-    prompt_parser = mcp_sub.add_parser("prompt", help="Get an MCP prompt")
-    prompt_parser.add_argument("name", help="Server name")
-    prompt_parser.add_argument("prompt_name", help="Prompt name")
-    prompt_parser.add_argument("--arguments", default="{}", help="JSON arguments")
-    prompt_parser.set_defaults(handler=run_mcp)
-
-    resource_parser = mcp_sub.add_parser("resource", help="Read an MCP resource")
-    resource_parser.add_argument("name", help="Server name")
-    resource_parser.add_argument("uri", help="Resource URI")
-    resource_parser.set_defaults(handler=run_mcp)
-
-    registry_parser = mcp_sub.add_parser(
-        "registry-search", help="Search the official MCP registry"
-    )
-    registry_parser.add_argument("query", help="Server-name search query")
-    registry_parser.add_argument("--limit", type=int, choices=range(1, 101), default=20)
-    registry_parser.set_defaults(handler=run_mcp)
-
-    serve_parser = mcp_sub.add_parser("serve", help="Publish tools over MCP stdio")
-    serve_parser.set_defaults(handler=run_mcp)
+    register_parser(subparsers, handler=run_mcp)

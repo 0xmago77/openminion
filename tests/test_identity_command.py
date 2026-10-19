@@ -147,6 +147,7 @@ def test_run_identity_import_from_bundle_stamps_bundle_provenance(
     assert meta.get("source") == "bundle"
     assert bool(meta.get("bundle_imported"))
     assert bool(meta.get("bundle_fingerprint"))
+    assert meta.get("bundle_root") == str(bundle_root.resolve())
 
 
 def test_run_identity_import_from_bundle_refuses_yaml_authority(
@@ -603,7 +604,8 @@ def test_run_identity_list_outputs_seeded_profile(
     ctl = IdentityCtl(
         store=SQLiteIdentityStore(sqlite_path=str(tmp_path / "identity.db"))
     )
-    _seed_profile(ctl, agent_id="ops-agent")
+    profile = _seed_profile(ctl, agent_id="ops-agent")
+    ctl.upsert_profile(profile.model_copy(update={"meta": {"source": "bundle"}}))
     monkeypatch.setattr(identity_command, "_get_identityctl", lambda **_kwargs: ctl)
 
     identity_command.run_identity_list()
@@ -611,6 +613,8 @@ def test_run_identity_list_outputs_seeded_profile(
     out = capsys.readouterr().out
     assert "Agent ID" in out
     assert "ops-agent" in out
+    assert "Source" in out
+    assert "bundle" in out
 
 
 def test_run_identity_list_empty_db_prints_header_only(
@@ -628,6 +632,33 @@ def test_run_identity_list_empty_db_prints_header_only(
     out = capsys.readouterr().out
     assert "Agent ID" in out
     assert "ops-agent" not in out
+
+
+@pytest.mark.parametrize(
+    ("meta", "expected_source"),
+    [
+        ({"source": "yaml"}, "yaml"),
+        ({"bundle_fingerprint": "fingerprint"}, "legacy-bundle"),
+        ({}, "legacy-protected"),
+    ],
+)
+def test_run_identity_list_uses_source_classification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    meta: dict[str, str],
+    expected_source: str,
+) -> None:
+    ctl = IdentityCtl(
+        store=SQLiteIdentityStore(sqlite_path=str(tmp_path / "identity.db"))
+    )
+    profile = _seed_profile(ctl, agent_id="ops-agent")
+    ctl.upsert_profile(profile.model_copy(update={"meta": meta}))
+    monkeypatch.setattr(identity_command, "_get_identityctl", lambda **_kwargs: ctl)
+
+    identity_command.run_identity_list()
+
+    assert expected_source in capsys.readouterr().out
 
 
 # ── IRGR-05: show ──────────────────────────────────────────────────────────
@@ -786,6 +817,37 @@ def test_run_identity_upsert_missing_path_exits_one(
     assert "does not exist" in capsys.readouterr().err
 
 
+def test_run_identity_upsert_rejects_symlink_before_store_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctl = IdentityCtl(
+        store=SQLiteIdentityStore(sqlite_path=str(tmp_path / "identity.db"))
+    )
+    monkeypatch.setattr(identity_command, "_get_identityctl", lambda: ctl)
+    external = tmp_path / "external.yaml"
+    external.write_text(
+        yaml.safe_dump(
+            {
+                "agent_id": "ops-agent",
+                "display_name": "Ops Agent",
+                "profile_revision": 1,
+                "role": {"mission": "External mission"},
+                "personality": {"tone": "direct"},
+                "risk": {"risk_level": "medium"},
+                "tool_posture": {"tool_use": "restricted"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    linked = tmp_path / "linked.yaml"
+    linked.symlink_to(external)
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        identity_command.run_identity_upsert(str(linked))
+
+    assert ctl.get_profile("ops-agent") is None
+
+
 # ── IRGR-05: delete ────────────────────────────────────────────────────────
 
 
@@ -838,12 +900,13 @@ def test_run_identity_render_existing_profile(
     _seed_profile(ctl, agent_id="ops-agent")
     monkeypatch.setattr(identity_command, "_get_identityctl", lambda: ctl)
 
-    identity_command.run_identity_render("ops-agent", purpose="act", max_tokens=180)
+    identity_command.run_identity_render("ops-agent", purpose="verify", max_tokens=0)
 
     out = capsys.readouterr().out
     assert "Rendering Stats" in out
-    assert "Purpose: act" in out
-    assert "Max Tokens: 180" in out
+    assert "Purpose: judge" in out
+    assert "Max Tokens: 1" in out
+    assert "Warning:" in out
 
 
 def test_run_identity_render_missing_profile_exits_one(

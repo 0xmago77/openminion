@@ -299,14 +299,17 @@ class BrainBridgeTurnMixin:
         tool_api = getattr(runner, "tool_api", None)
         if tool_api is None:
             return
-        if self._security_policy is None:
+        security_policy = self._security_policy
+        if security_policy is None:
             return
         tool_policy_lookup = None
         if self._tools is not None and hasattr(self._tools, "policy_for"):
             tool_policy_lookup = self._tools.policy_for  # type: ignore[assignment]
+        actor = default_internal_actor(self._identity_agent_id)
+        actor.scopes.update(security_policy.internal_actor_scopes)
         tool_policy_adapter = build_execution_boundary_policy_adapter(
-            policy=self._security_policy,
-            actor=default_internal_actor(self._identity_agent_id),
+            policy=security_policy,
+            actor=actor,
             context=SecurityPolicyContext(
                 channel=str(message.channel or "brain"),
                 target="tool-runtime",

@@ -13,6 +13,7 @@ from openminion.cli.commands.identity_editor import (
     run_identity_candidate_validate,
     run_identity_inspect,
 )
+from openminion.cli.identity.provenance import classify_profile_source
 from openminion.modules.identity.runtime.bundle_importer import (
     BundleTextDocument,
     build_profile_from_parsed_bundle,
@@ -42,14 +43,16 @@ def run_identity_list(*, ctl: IdentityCtl | None = None) -> None:
     profiles = ctl.list_profiles()
 
     print(
-        f"{'Agent ID':<20} {'Display Name':<25} {'Version (prefix)':<20} {'Updated At'}"
+        f"{'Agent ID':<20} {'Display Name':<25} {'Source':<17} {'Version (prefix)':<20} {'Updated At'}"
     )
-    print("-" * 90)
-    for profile in profiles:
-        version = profile.profile_version[:12]
+    print("-" * 107)
+    for summary in profiles:
+        profile = ctl.get_profile(summary.agent_id)
+        source = classify_profile_source(profile)
+        version = summary.profile_version[:12]
         print(
-            f"{profile.agent_id:<20} {profile.display_name:<25} "
-            f"{version:<20} {profile.updated_at}"
+            f"{summary.agent_id:<20} {summary.display_name:<25} {source:<17} "
+            f"{version:<20} {summary.updated_at}"
         )
 
 
@@ -67,15 +70,20 @@ def run_identity_show(agent_id: str, *, ctl: IdentityCtl | None = None) -> None:
     print(yaml.dump(profile_data, default_flow_style=False, indent=2))
 
 
-def run_identity_upsert(yaml_path: str, *, ctl: IdentityCtl | None = None) -> None:
+def run_identity_upsert(
+    yaml_path: str,
+    *,
+    ctl: IdentityCtl | None = None,
+    identity_root: Path | None = None,
+) -> None:
     ctl = ctl or _get_identityctl()
-    file_path = Path(yaml_path).expanduser().resolve()
+    file_path = Path(yaml_path).expanduser().absolute()
 
     if not file_path.exists():
         print(f"ERROR: Path '{yaml_path}' does not exist", file=sys.stderr)
         sys.exit(1)
 
-    agent_ids = ctl.load_profiles_from_path(file_path)
+    agent_ids = ctl.load_profiles_from_path(file_path, identity_root=identity_root)
     summaries = {item.agent_id: item for item in ctl.list_profiles()}
     for aid in agent_ids:
         summary = summaries.get(aid)
@@ -167,6 +175,7 @@ def run_identity_import_from_bundle(
     meta = dict(profile.meta or {})
     meta["bundle_fingerprint"] = str(bundle.fingerprint)
     meta["bundle_imported"] = True
+    meta["bundle_root"] = str(bundle.root_path)
     meta["source"] = "bundle"
     if defaulted_fields:
         meta["bundle_import_defaulted_fields"] = list(defaulted_fields)
@@ -444,8 +453,8 @@ def run_identity_render(
 
         print(snippet.text)
         print("\n--- Rendering Stats ---")
-        print(f"Purpose: {purpose}")
-        print(f"Max Tokens: {max_tokens}")
+        print(f"Purpose: {snippet.purpose}")
+        print(f"Max Tokens: {snippet.budget.max_tokens}")
         print(f"Used Tokens: {snippet.budget.used_tokens}")
         print(f"Profile Version: {snippet.profile_version[:12]}")
         print(f"Render Version: {snippet.render_version}")
@@ -453,6 +462,8 @@ def run_identity_render(
             print(f"Included Fields: {', '.join(snippet.included_fields)}")
         if snippet.omitted_fields:
             print(f"Omitted Fields: {', '.join(snippet.omitted_fields)}")
+        for warning in snippet.warnings:
+            print(f"Warning: {warning}")
     except ValueError as e:
         print(f"Rendering Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -666,7 +677,11 @@ def _add_identity_show_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_identity_upsert_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "yaml_path", help="Path to YAML file or directory with profiles"
+        "yaml_path",
+        help=(
+            "YAML file or directory to sync; canonical <identity-root>/<agent-id>/profile.yaml "
+            "also refreshes generated Markdown"
+        ),
     )
 
 
@@ -765,11 +780,15 @@ def _add_identity_clear_cache_args(parser: argparse.ArgumentParser) -> None:
 
 _IDENTITY_SUBCOMMAND_SPECS: tuple[tuple[str, str, Any], ...] = (
     ("list", "List all agent profiles", None),
-    ("show", "Show specific agent profile", _add_identity_show_args),
-    ("inspect", "Inspect identity state", _add_identity_inspect_args),
+    ("show", "Show stored effective profile YAML", _add_identity_show_args),
+    (
+        "inspect",
+        "Inspect source, store, render, and generated-file state",
+        _add_identity_inspect_args,
+    ),
     (
         "upsert",
-        "Create/update profiles from YAML file or directory",
+        "Synchronize profiles from YAML source",
         _add_identity_upsert_args,
     ),
     ("import", "Import profile from markdown bundle", _add_identity_import_args),
@@ -781,8 +800,16 @@ _IDENTITY_SUBCOMMAND_SPECS: tuple[tuple[str, str, Any], ...] = (
     ("diff", "Diff SQLite profile vs markdown bundle", _add_identity_diff_args),
     ("delete", "Delete specific agent profile", _add_identity_delete_args),
     ("render", "Render identity snippet for agent", _add_identity_render_args),
-    ("validate", "Validate identity profiles", _add_identity_validate_args),
-    ("apply", "Atomically apply direct profile YAML", _add_identity_apply_args),
+    (
+        "validate",
+        "Validate stored profiles or an unsaved YAML candidate",
+        _add_identity_validate_args,
+    ),
+    (
+        "apply",
+        "Atomically create/update canonical profile.yaml from a YAML candidate",
+        _add_identity_apply_args,
+    ),
     (
         "warm-cache",
         "Warm cached identity snippets",
@@ -795,7 +822,7 @@ _IDENTITY_SUBCOMMAND_SPECS: tuple[tuple[str, str, Any], ...] = (
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     identity = subparsers.add_parser(
         "identity",
-        help="Identity profile management (list, show, upsert, import, export, delete, render)",
+        help="Manage identity profiles and source synchronization",
         description=(
             "Identity profile management. Startup precedence: YAML sync first, "
             "bundle sync second, default fallback last."
@@ -851,7 +878,7 @@ def _run_registered_identity_command(args: argparse.Namespace) -> int:
     elif command == "show":
         run_identity_show(str(args.agent_id), ctl=ctl)
     elif command == "upsert":
-        run_identity_upsert(str(args.yaml_path), ctl=ctl)
+        run_identity_upsert(str(args.yaml_path), ctl=ctl, identity_root=identity_root)
     elif command == "import":
         run_identity_import_from_bundle(
             str(args.from_bundle),

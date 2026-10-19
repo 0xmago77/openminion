@@ -22,7 +22,22 @@ def _write_config(
     *,
     base_url: str,
     python_bin: Path,
+    mcp_enabled: bool = True,
 ) -> None:
+    mcp_servers = (
+        [
+            {
+                "name": "Fixture",
+                "transport": "stdio",
+                "trusted": True,
+                "command": [str(python_bin), str(_MCP_FIXTURE_SERVER)],
+                "startup_timeout_seconds": 5,
+                "request_timeout_seconds": 5,
+            }
+        ]
+        if mcp_enabled
+        else []
+    )
     path.write_text(
         json.dumps(
             {
@@ -44,16 +59,7 @@ def _write_config(
                     "demo_mode": False,
                     "memory_enabled": False,
                     "telemetry_enabled": True,
-                    "mcp_servers": [
-                        {
-                            "name": "Fixture",
-                            "transport": "stdio",
-                            "trusted": True,
-                            "command": [str(python_bin), str(_MCP_FIXTURE_SERVER)],
-                            "startup_timeout_seconds": 5,
-                            "request_timeout_seconds": 5,
-                        }
-                    ],
+                    "mcp_servers": mcp_servers,
                 },
             }
         ),
@@ -90,6 +96,27 @@ def test_focus_invokes_mcp_and_persists_completed_tool_event(
                 '"reasoning":"MCP fixture completed."}</finalization_status>'
             ),
         },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "mcp-reload-echo",
+                    "function": {
+                        "name": _MCP_TOOL,
+                        "arguments": {"text": "focus mcp reload proof"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "FOCUS_MCP_RELOAD_OK\n\n"
+                '<finalization_status>{"status":"final_answer",'
+                '"reasoning":"Reloaded MCP fixture completed."}</finalization_status>'
+            ),
+        },
     )
 
     with ollama_fixture_server(responses) as (base_url, _requests):
@@ -116,6 +143,41 @@ def test_focus_invokes_mcp_and_persists_completed_tool_event(
         with probe.session(rows=50, cols=160) as session:
             probe.wait_ready(session)
             probe.run_turn(session, scenario)
+            _write_config(
+                config_path,
+                base_url=base_url,
+                python_bin=python_bin,
+                mcp_enabled=False,
+            )
+            offset = len(session.transcript)
+            session.type_line("/mcp reload")
+            session.wait_for_after(
+                r"MCP reloaded: 0 servers, 0 runtime tools",
+                offset=offset,
+                timeout=30,
+            )
+            _write_config(
+                config_path,
+                base_url=base_url,
+                python_bin=python_bin,
+            )
+            offset = len(session.transcript)
+            session.type_line("/mcp reload")
+            session.wait_for_after(
+                r"MCP reloaded: 1 servers, [1-9][0-9]* runtime tools",
+                offset=offset,
+                timeout=30,
+            )
+            probe.run_turn(
+                session,
+                FocusScenario(
+                    scenario_id="focus-mcp-reloaded",
+                    prompt="Call the reloaded MCP echo tool once and report completion.",
+                    expected_markers=("FOCUS_MCP_RELOAD_OK",),
+                    timeout=180,
+                    requires_approval=True,
+                ),
+            )
 
     events, _messages, _brain_session_id = read_focus_evidence(
         probe.environment(), probe.session_id
@@ -126,12 +188,12 @@ def test_focus_invokes_mcp_and_persists_completed_tool_event(
         if event.event_type == "tool.execution.completed"
         and event.data.get("tool_name") == _MCP_TOOL
     ]
-    assert len(completed) == 1
-    event = completed[0]
-    assert event.turn_id
-    assert event.data["status"] == "succeeded"
-    assert any(
-        item.event_type == "agent.invocation.completed"
-        and item.turn_id == event.turn_id
-        for item in events
-    )
+    assert len(completed) == 2
+    for event in completed:
+        assert event.turn_id
+        assert event.data["status"] == "succeeded"
+        assert any(
+            item.event_type == "agent.invocation.completed"
+            and item.turn_id == event.turn_id
+            for item in events
+        )

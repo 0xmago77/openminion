@@ -438,6 +438,30 @@ def test_live_failure_reads_terminal_provider_error(tmp_path) -> None:
     assert _failure_disposition(["EMPTY_PAYLOAD"]) == "provider_residual"
 
 
+def test_live_failure_reads_phase_timing_provider_attempt_error(tmp_path) -> None:
+    telemetry_path = tmp_path / "telemetry.db"
+    with sqlite3.connect(telemetry_path) as connection:
+        connection.execute(
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, event_type TEXT, data TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO events (event_type, data) VALUES (?, ?)",
+            (
+                "chat.phase_timing",
+                json.dumps(
+                    {
+                        "provider_attempts": [
+                            {"outcome": "error", "error_code": "EMPTY_PAYLOAD"},
+                            {"outcome": "ok", "error_code": ""},
+                        ]
+                    }
+                ),
+            ),
+        )
+
+    assert _provider_failure_categories(telemetry_path) == ["EMPTY_PAYLOAD"]
+
+
 def test_live_evidence_removes_results_replayed_by_later_turns() -> None:
     first = {"call_id": "call-1", "tool_name": "web.search"}
     second = {"call_id": "call-2", "tool_name": "file.write"}

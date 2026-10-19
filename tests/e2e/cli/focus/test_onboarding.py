@@ -106,7 +106,10 @@ def _run_first_task(
         session,
         FocusScenario(
             scenario_id="onboarding-first-task",
-            prompt="List this workspace using the file tools.",
+            prompt=(
+                "List this workspace using the file tools, then reply exactly "
+                "ONBOARDING_OK."
+            ),
             expected_markers=("ONBOARDING_OK",),
             timeout=timeout,
             requires_approval=True,

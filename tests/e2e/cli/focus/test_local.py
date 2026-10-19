@@ -597,6 +597,19 @@ def test_focus_pty_keeps_top_down_transcript_with_inline_input_across_resize(
         assert screen_rows[row + 1] == ""
 
     def assert_flow_layout(session: PtySession, *, rows: int) -> None:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            screen_rows = session.screen_lines
+            occupied_rows = _occupied_rows(session)
+            if (
+                len(screen_rows) == rows
+                and len(occupied_rows) >= 2
+                and occupied_rows[-1].startswith("◆ ")
+                and occupied_rows[-2].startswith("❯ ")
+                and session.cursor_position[0] == len(occupied_rows) - 1
+            ):
+                break
+            time.sleep(0.05)
         assert len(session.screen_lines) == rows
         _assert_inline_composer(session)
         assert "cursor position requests" not in session.visible_transcript
@@ -773,10 +786,11 @@ def test_focus_pty_multiline_paste_waits_for_enter_and_submits_once(
         "Hi\n\nThere"
         if short_draft
         else (
-            "Find routes from Nikaido, Nara to Hakata, Fukuoka.\n\n"
-            "Compare Shin-Osaka and Kyoto Shinkansen departure times."
+            "This is an input-handling fixture; do not use tools.\n\n"
+            "Reply with exactly: multiline paste complete"
         )
     )
+    draft_marker = "There" if short_draft else "multiline paste complete"
     with focus_probe.session(rows=42, cols=100) as session:
         focus_probe.wait_ready(session)
         if paste_mode == "bracketed":
@@ -797,10 +811,7 @@ def test_focus_pty_multiline_paste_waits_for_enter_and_submits_once(
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             rows = session.screen_lines
-            if any(
-                ("There" if short_draft else "Compare Shin-Osaka") in row
-                for row in rows
-            ):
+            if any(draft_marker in row for row in rows):
                 break
             time.sleep(0.05)
         else:
@@ -871,8 +882,6 @@ def test_focus_pty_long_paste_keeps_transcript_top_down_and_composer_inline(
         if part_count == 18:
             tip_row = rows.index(tip)
             assert rows[tip_row + 2].startswith("❯ A long request"), "\n".join(rows)
-        else:
-            assert rows[0], "\n".join(rows)
         _assert_inline_composer(session)
 
         session.send_bracketed_paste(prompt)

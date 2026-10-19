@@ -3982,6 +3982,28 @@ def test_tool_request_rejects_malformed_arguments_before_activation() -> None:
         assert active_specs == []
 
 
+def test_tool_request_normalizes_json_boolean_string_before_activation() -> None:
+    requestable = {spec.name: spec for spec in _tool_specs("web.fetch")}
+    active_names: set[str] = set()
+    active_specs: list[ToolSpec] = []
+
+    result, activated = _tool_request_result(
+        requested_name="web.fetch",
+        active_tool_names=active_names,
+        requestable_specs_by_name=requestable,
+        active_tool_specs=active_specs,
+        arguments={"name": "web.fetch", "terminal_after_success": "false"},
+    )
+
+    assert activated is True
+    assert result.status == "success"
+    assert active_names == {"web.fetch"}
+    assert [spec.name for spec in active_specs] == [
+        "web.fetch",
+        TOOL_REQUEST_TOOL_NAME,
+    ]
+
+
 def test_runtime_scope_excludes_loop_control_tools() -> None:
     runtime = _FakeRuntime(
         responses=[
@@ -5770,6 +5792,63 @@ def test_direct_tool_turn_failed_tool_result_skips_llm_recovery() -> None:
     assert outcome.action_result is not None
     assert outcome.action_result.error is not None
     assert outcome.action_result.error.code == "NOT_FOUND"
+    assert runtime.calls == []
+
+
+def test_operator_denial_stops_before_llm_recovery() -> None:
+    runtime = _FakeRuntime(responses=[])
+    loop_ctx = _LoopContext(
+        state=_state(tool_calls=4),
+        outcomes=[
+            CommandExecutionOutcome(
+                approved_command=SimpleNamespace(),
+                action_result=ActionResult(
+                    command_id=new_uuid(),
+                    status="failed",
+                    summary="Tool execution denied by operator",
+                    error=ActionError(
+                        code="POLICY_DENIED",
+                        message="Tool execution denied by operator.",
+                        details={"reason": "operator_denied"},
+                    ),
+                ),
+            )
+        ],
+    )
+
+    outcome = run_adaptive_tool_loop(
+        loop_ctx,
+        profile=_profile(
+            allowed_tools=frozenset({"skill.ingest"}),
+            allow_llm_recovery_after_tool_failure=True,
+        ),
+        runtime=runtime,
+        model="fake-model",
+        initial_messages=[Message(role="user", content="Save this as a skill")],
+        initial_state=AdaptiveToolLoopState(
+            messages=[Message(role="user", content="Save this as a skill")]
+        ),
+        tool_specs=_tool_specs("skill.ingest"),
+        seed_response=LLMResponse(
+            ok=True,
+            provider="fake",
+            model="fake-model",
+            output_text="",
+            tool_calls=[
+                ToolCall(
+                    id="call-1",
+                    name="skill.ingest",
+                    arguments={"name": "Denied Skill", "markdown": "# Denied"},
+                )
+            ],
+            finish_reason="tool_calls",
+        ),
+    )
+
+    assert outcome.termination_reason == ADAPTIVE_TERM_TOOL_FAILURE_NO_RECOVERY
+    assert outcome.action_result is not None
+    assert outcome.action_result.error is not None
+    assert outcome.action_result.error.details == {"reason": "operator_denied"}
     assert runtime.calls == []
 
 

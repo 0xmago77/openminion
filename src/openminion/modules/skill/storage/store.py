@@ -26,18 +26,21 @@ class _SkillStoreMixin(WorkflowObservationStoreMixin, SkillStore):
         scope: str,
         agent_id: str | None,
         ts: str,
-    ) -> None:
-        self._record_store.execute_count(
-            """
+    ) -> bool:
+        return bool(
+            self._record_store.execute_count(
+                """
             INSERT INTO skills(skill_id, name, status, scope, agent_id, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(skill_id) DO UPDATE SET
-                name=excluded.name,
-                scope=excluded.scope,
-                agent_id=excluded.agent_id,
-                updated_at=excluded.updated_at
+            ON CONFLICT(skill_id) DO UPDATE SET updated_at=skills.updated_at
+            WHERE skills.scope = excluded.scope
+              AND (
+                skills.agent_id = excluded.agent_id
+                OR (skills.agent_id IS NULL AND excluded.agent_id IS NULL)
+              )
             """,
-            (skill_id, name, status, scope, agent_id, ts, ts),
+                (skill_id, name, status, scope, agent_id, ts, ts),
+            )
         )
 
     def insert_skill_version(
@@ -448,7 +451,8 @@ class _SkillStoreMixin(WorkflowObservationStoreMixin, SkillStore):
 
     def get_skill_lifecycle_facts(self, *, skill_id: str) -> dict[str, Any]:
         skill_rows = self._record_store.query_dicts(
-            "SELECT active_version_hash FROM skills WHERE skill_id = ? LIMIT 1",
+            "SELECT active_version_hash, scope, agent_id "
+            "FROM skills WHERE skill_id = ? LIMIT 1",
             (skill_id,),
         )
         admission_rows = self._record_store.query_dicts(
@@ -471,15 +475,14 @@ class _SkillStoreMixin(WorkflowObservationStoreMixin, SkillStore):
         )
         admissions = {str(row["state"]): int(row["n"] or 0) for row in admission_rows}
         outcomes = {str(row["outcome"]): int(row["n"] or 0) for row in run_rows}
+        skill_row = skill_rows[0] if skill_rows else {}
         last_used_at = max(
             (str(row["last_used_at"] or "") for row in run_rows), default=""
         )
         return {
-            "active_version_hash": (
-                str(skill_rows[0].get("active_version_hash") or "")
-                if skill_rows
-                else ""
-            ),
+            "active_version_hash": str(skill_row.get("active_version_hash") or ""),
+            "scope": str(skill_row.get("scope") or ""),
+            "agent_id": skill_row.get("agent_id"),
             "admission_count": sum(admissions.values()),
             "pending_admission_count": admissions.get("pending", 0),
             "use_count": sum(outcomes.values()),

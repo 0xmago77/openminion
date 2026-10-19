@@ -252,6 +252,7 @@ def test_policy_denied_tool_still_routes_to_blocked_tool_response() -> None:
                 error="security_deny",
                 data={
                     "error_code": "POLICY_DENIED",
+                    "error_details": {"reason": "operator_denied"},
                 },
                 call_id="call-1",
                 source="policy",

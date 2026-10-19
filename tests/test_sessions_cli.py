@@ -8,6 +8,11 @@ from unittest.mock import MagicMock, patch
 
 from openminion.cli.commands import sessions as sessions_command
 from openminion.cli.commands.sessions import _build_rows, _age_label, _print_table
+from openminion.base.config import OpenMinionConfig
+from openminion.base.config.env import EnvironmentConfig
+from openminion.modules.artifact.config import from_base_config
+from openminion.modules.artifact.control import ArtifactCtl
+from openminion.modules.storage import build_runtime_storage
 from openminion.modules.storage.runtime.session_store import (
     SessionRecord,
     build_session_key,
@@ -45,6 +50,53 @@ def _make_runtime(sessions: list[SessionRecord]) -> MagicMock:
     runtime.sessions.count_messages.return_value = 5
     runtime.close.return_value = None
     return runtime
+
+
+def _real_delete_case(tmp_path, session_id: str):
+    data_root = tmp_path / ".openminion"
+    config = OpenMinionConfig()
+    config.storage.path = str(data_root / "state" / "openminion.db")
+    env = EnvironmentConfig(
+        values={
+            "OPENMINION_HOME": str(tmp_path),
+            "OPENMINION_DATA_ROOT": str(data_root),
+        }
+    )
+    manager = SimpleNamespace(
+        base_config=config,
+        home_root=tmp_path,
+        data_root=data_root,
+        env=env,
+    )
+    runtime = build_runtime_storage(
+        config.storage.path,
+        env=env,
+        record_backend=config.storage.record_backend(),
+        record_backend_options=config.storage.record_backend_options(),
+    )
+    runtime.sessions.resolve_session(
+        agent_id="agent",
+        channel="cli",
+        target="tests",
+        session_id=session_id,
+    )
+    runtime.close()
+    artifact_config = from_base_config(
+        base_config=config,
+        home_root=tmp_path,
+        data_root=data_root,
+    )
+    with ArtifactCtl(artifact_config) as ctl:
+        ref = ctl.ingest_bytes(b"evidence", original_name="evidence.txt")
+        ctl.ref_add("session", session_id, ref.sha256)
+    args = SimpleNamespace(
+        session_id=session_id,
+        yes=True,
+        config=None,
+        home_root=str(tmp_path),
+        data_root=str(data_root),
+    )
+    return manager, config, env, artifact_config, ref, args
 
 
 # ── _build_rows unit tests ────────────────────────────────────────────────────
@@ -244,6 +296,14 @@ def test_run_sessions_delete_yes_flag(capsys) -> None:
     runtime = MagicMock()
     runtime.sessions.delete_session.return_value = True
     runtime.close.return_value = None
+    artifactctl = MagicMock()
+    artifactctl.__enter__.return_value = artifactctl
+    calls: list[str] = []
+    runtime.sessions.delete_session.side_effect = lambda _session_id: (
+        calls.append("delete") or True
+    )
+    artifactctl.ref_remove_owner.side_effect = lambda *_args: calls.append("edges")
+    manager = MagicMock()
     current = sys.modules.get("openminion.cli.commands.sessions", sessions_command)
     args = SimpleNamespace(
         session_id="sess-abc",
@@ -253,11 +313,18 @@ def test_run_sessions_delete_yes_flag(capsys) -> None:
         data_root=None,
     )
 
-    with patch.object(current, "_load_session_storage", return_value=runtime):
+    with (
+        patch.object(current, "load_cli_manager_from_args", return_value=manager),
+        patch.object(current, "from_base_config", return_value=MagicMock()),
+        patch.object(current, "build_runtime_storage", return_value=runtime),
+        patch.object(current, "ArtifactCtl", return_value=artifactctl),
+    ):
         result = current.run_sessions_delete(args)
 
     assert result == 0
     runtime.sessions.delete_session.assert_called_once_with("sess-abc")
+    artifactctl.ref_remove_owner.assert_called_once_with("session", "sess-abc")
+    assert calls == ["delete", "edges"]
     assert "Deleted session sess-abc" in capsys.readouterr().out
 
 
@@ -272,11 +339,11 @@ def test_run_sessions_delete_prompts_and_can_cancel(capsys) -> None:
     )
 
     with patch("builtins.input", return_value="n"):
-        with patch.object(current, "_load_session_storage") as load_storage:
+        with patch.object(current, "load_cli_manager_from_args") as load_cli_manager:
             result = current.run_sessions_delete(args)
 
     assert result == 1
-    load_storage.assert_not_called()
+    load_cli_manager.assert_not_called()
     assert "Cancelled." in capsys.readouterr().out
 
 
@@ -284,6 +351,9 @@ def test_run_sessions_delete_missing_session(capsys) -> None:
     runtime = MagicMock()
     runtime.sessions.delete_session.return_value = False
     runtime.close.return_value = None
+    artifactctl = MagicMock()
+    artifactctl.__enter__.return_value = artifactctl
+    manager = MagicMock()
     current = sys.modules.get("openminion.cli.commands.sessions", sessions_command)
     args = SimpleNamespace(
         session_id="missing",
@@ -293,11 +363,137 @@ def test_run_sessions_delete_missing_session(capsys) -> None:
         data_root=None,
     )
 
-    with patch.object(current, "_load_session_storage", return_value=runtime):
+    with (
+        patch.object(current, "load_cli_manager_from_args", return_value=manager),
+        patch.object(current, "from_base_config", return_value=MagicMock()),
+        patch.object(current, "build_runtime_storage", return_value=runtime),
+        patch.object(current, "ArtifactCtl", return_value=artifactctl),
+    ):
         result = current.run_sessions_delete(args)
 
     assert result == 1
+    artifactctl.ref_remove_owner.assert_called_once_with("session", "missing")
     assert "session not found" in capsys.readouterr().err
+
+
+def test_run_sessions_delete_surfaces_edge_release_failure(capsys) -> None:
+    runtime = MagicMock()
+    runtime.sessions.delete_session.return_value = True
+    artifactctl = MagicMock()
+    artifactctl.__enter__.return_value = artifactctl
+    artifactctl.ref_remove_owner.side_effect = RuntimeError("edge failure")
+    manager = MagicMock()
+    args = SimpleNamespace(
+        session_id="sess-abc",
+        yes=True,
+        config=None,
+        home_root=None,
+        data_root=None,
+    )
+
+    with (
+        patch.object(
+            sessions_command,
+            "load_cli_manager_from_args",
+            return_value=manager,
+        ),
+        patch.object(
+            sessions_command,
+            "from_base_config",
+            return_value=MagicMock(),
+        ),
+        patch.object(
+            sessions_command,
+            "build_runtime_storage",
+            return_value=runtime,
+        ),
+        patch.object(sessions_command, "ArtifactCtl", return_value=artifactctl),
+    ):
+        result = sessions_command.run_sessions_delete(args)
+
+    assert result == 1
+    runtime.sessions.delete_session.assert_called_once_with("sess-abc")
+    assert "edge failure" in capsys.readouterr().err
+
+
+def test_run_sessions_delete_removes_real_session_and_artifact_edges(
+    tmp_path,
+    capsys,
+) -> None:
+    manager, config, env, artifact_config, ref, args = _real_delete_case(
+        tmp_path,
+        "sess-real",
+    )
+    with patch.object(
+        sessions_command,
+        "load_cli_manager_from_args",
+        return_value=manager,
+    ):
+        result = sessions_command.run_sessions_delete(args)
+
+    assert result == 0
+    assert "Deleted session sess-real" in capsys.readouterr().out
+    reopened = build_runtime_storage(
+        config.storage.path,
+        env=env,
+        record_backend=config.storage.record_backend(),
+        record_backend_options=config.storage.record_backend_options(),
+    )
+    try:
+        assert reopened.sessions.get_session("sess-real") is None
+    finally:
+        reopened.close()
+    with ArtifactCtl(artifact_config) as ctl:
+        assert ref.sha256 not in ctl.index.active_reference_shas()
+
+
+def test_run_sessions_delete_retry_clears_stale_edge_after_release_failure(
+    tmp_path,
+    capsys,
+) -> None:
+    manager, _config, _env, artifact_config, ref, args = _real_delete_case(
+        tmp_path,
+        "sess-retry",
+    )
+
+    class FailingArtifactCtl:
+        def __init__(self, _config) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc) -> None:
+            return None
+
+        def ref_remove_owner(self, _owner_type, _owner_id) -> None:
+            raise RuntimeError("edge failure")
+
+    with (
+        patch.object(
+            sessions_command,
+            "load_cli_manager_from_args",
+            return_value=manager,
+        ),
+        patch.object(sessions_command, "ArtifactCtl", FailingArtifactCtl),
+    ):
+        first = sessions_command.run_sessions_delete(args)
+
+    assert first == 1
+    with ArtifactCtl(artifact_config) as ctl:
+        assert ref.sha256 in ctl.index.active_reference_shas()
+
+    with patch.object(
+        sessions_command,
+        "load_cli_manager_from_args",
+        return_value=manager,
+    ):
+        second = sessions_command.run_sessions_delete(args)
+
+    assert second == 1
+    assert "session not found" in capsys.readouterr().err
+    with ArtifactCtl(artifact_config) as ctl:
+        assert ref.sha256 not in ctl.index.active_reference_shas()
 
 
 def test_run_sessions_show_reports_context(capsys) -> None:

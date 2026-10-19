@@ -8,16 +8,31 @@ from typing import Any, cast
 
 _SENSITIVE_FIELDS = frozenset(
     {
+        "active_state_full",
+        "active_state_prompt_view",
+        "adaptive.finalization_status",
+        "assistant_body",
+        "assistant_text",
+        "body",
         "content",
         "error_text",
+        "final_text",
+        "message",
+        "prompt",
+        "raw_prompt",
+        "raw_response",
+        "response",
+        "summary",
         "system_prompt",
         "system_instructions",
+        "text",
         "user_message",
         "history",
         "input_messages",
         "output_messages",
         "output_text",
         "arguments",
+        "args",
         "result",
         "tool_definitions",
         "file_path",
@@ -32,6 +47,17 @@ _SENSITIVE_FIELDS = frozenset(
         "gen_ai.tool.call.arguments",
         "gen_ai.tool.call.result",
         "gen_ai.tool.definitions",
+    }
+)
+_INHERITED_SENSITIVE_FIELDS = frozenset({"content", "text"})
+_SENSITIVE_TEXT_FIELDS = frozenset(
+    {
+        "goal",
+        "intent",
+        "last_user_input",
+        "latest_user_message",
+        "summary",
+        "task_description",
     }
 )
 _PROHIBITED_FIELDS = frozenset(
@@ -251,9 +277,21 @@ def apply_content_policy(
                 if field in _PROHIBITED_FIELDS or field.endswith("_secret"):
                     removed.append(item_path)
                     continue
-                field_allowed = field in allowed_sensitive_fields
+                field_allowed = item_path.lower() in allowed_sensitive_fields
+                parent_allows_field = (
+                    parent_sensitive_allowed and field in _INHERITED_SENSITIVE_FIELDS
+                )
                 if (
                     field in _SENSITIVE_FIELDS
+                    and not allow_sensitive_content
+                    and not field_allowed
+                    and not parent_allows_field
+                ):
+                    removed.append(item_path)
+                    continue
+                if (
+                    field in _SENSITIVE_TEXT_FIELDS
+                    and isinstance(item, str)
                     and not allow_sensitive_content
                     and not field_allowed
                     and not parent_sensitive_allowed
@@ -263,7 +301,7 @@ def apply_content_policy(
                 result[key] = clean(
                     item,
                     item_path,
-                    parent_sensitive_allowed=parent_sensitive_allowed or field_allowed,
+                    parent_sensitive_allowed=field_allowed or parent_allows_field,
                 )
             return result
         if isinstance(value, list):

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from openminion.modules.brain.runtime.recurrence import RecurringTaskShape
 from openminion.modules.brain.runtime.proposal import (
     SkillProposal,
@@ -57,6 +59,21 @@ def test_proposal_emits_typed_draft_from_shape() -> None:
         "intents": ["latest_news"],
         "steps": [],
     }
+
+
+@pytest.mark.parametrize("risk_level", ["low", "medium", "high"])
+def test_proposal_preserves_typed_workflow_risk(risk_level: str) -> None:
+    shape = SimpleNamespace(
+        task_shape_ref="workflow:deploy",
+        strategy_id="workflow_reuse",
+        capability_category="deployment",
+        intent_category="deploy",
+        risk_level=risk_level,
+    )
+    proposal = propose_skills_from_task_shapes(
+        [shape], current_catalog=[], policy_id="skill_proposal_v1"
+    )[0]
+    assert proposal.proposed_skill_definition.risk_class == risk_level
 
 
 def test_proposal_duplicate_avoidance_against_existing_catalog_signature() -> None:

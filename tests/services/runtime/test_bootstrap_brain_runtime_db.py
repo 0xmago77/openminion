@@ -9,6 +9,9 @@ from unittest import mock
 import pytest
 
 from openminion.base.config import OpenMinionConfig
+from openminion.modules.brain.config import (
+    from_base_config as derive_brain_runtime_config,
+)
 from openminion.modules.brain.paths import (
     resolve_brain_runtime_db_path,
     resolve_brain_sessions_db_path,
@@ -79,12 +82,24 @@ def test_disabled_memory_does_not_install_terminal_capture_writer(
 
 
 @pytest.mark.parametrize("mode", ["auto", "local"])
+@pytest.mark.parametrize(
+    ("brain_tool_policy", "expected_tool_policy"),
+    [({"scope": "POWER_USER"}, {"scope": "POWER_USER"}), ("review-only", None)],
+)
 def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
     tmp_path: Path,
     mode: str,
+    brain_tool_policy: str | dict[str, str],
+    expected_tool_policy: dict[str, str] | None,
 ) -> None:
     config = OpenMinionConfig()
     _csc_install_default_agent(config, provider="echo")
+    config.module_configs["brain"] = {"tool_policy": brain_tool_policy}
+    brain_config = derive_brain_runtime_config(
+        base_config=config,
+        home_root=tmp_path,
+        data_root=tmp_path,
+    ).brain
     session_db_path = tmp_path / "state" / "brain" / "sessions.db"
     expected_runtime_db_path = tmp_path / "state" / "brain" / "brain.db"
     turn_input_queue = object()
@@ -120,7 +135,7 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
         _get_manager_config=lambda _name: None,
         _validate_adapter_contracts=lambda **_kwargs: None,
         _resolve_override_value=lambda _key: "",
-        _resolve_brain_config=lambda: None,
+        _resolve_brain_config=lambda: brain_config,
         _validate_runner_contract=lambda _runner: None,
         _resolve_llm_wrapper=lambda _llm_api: None,
     )
@@ -198,10 +213,11 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
                 return_value=SimpleNamespace(),
             )
         )
-        stack.enter_context(
+        retrieve_api = SimpleNamespace()
+        retrieve_factory = stack.enter_context(
             mock.patch(
                 "openminion.services.brain.service.init_retrieve_adapter",
-                return_value=SimpleNamespace(),
+                return_value=retrieve_api,
             )
         )
         stack.enter_context(
@@ -307,12 +323,15 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
     )
     assert task_manager_factory.call_args.kwargs["db_path"] != session_db_path
     assert tool_api_factory.call_args.kwargs["task_manager"] is shared_task_manager
+    assert tool_api_factory.call_args.kwargs["tool_policy"] == expected_tool_policy
     assert runner_factory.call_args.kwargs["task_manager"] is shared_task_manager
     assert runner_factory.call_args.kwargs["turn_input_queue"] is turn_input_queue
     expected_artifactctl = shared_artifactctl if mode == "auto" else None
     assert artifact_factory.call_count == (1 if mode == "auto" else 0)
     assert context_factory.call_args.kwargs["artifactctl"] is expected_artifactctl
     assert context_factory.call_args.kwargs["owns_artifactctl"] is (mode == "auto")
+    assert retrieve_factory.call_count == 1
+    assert context_factory.call_args.kwargs["retrieve_api"] is retrieve_api
     assert tool_api_factory.call_args.kwargs["artifactctl"] is expected_artifactctl
     assert tool_api_factory.call_args.kwargs["sandbox_runner"] is sandbox_runner
     assert (

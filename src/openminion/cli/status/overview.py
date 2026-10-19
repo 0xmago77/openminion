@@ -71,6 +71,9 @@ class ToolActivityOverview:
     tool_name: str
     event_type: str
     timestamp: str
+    call_id: str = ""
+    status: str = ""
+    error_code: str = ""
 
 
 @dataclass(frozen=True)
@@ -231,6 +234,9 @@ def _recent_tools_overview(
             tool_name=str(event.get("tool_name", "tool")),
             event_type=str(event.get("event_type", "")),
             timestamp=str(event.get("timestamp", "")),
+            call_id=str(event.get("call_id", "")),
+            status=str(event.get("status", "")),
+            error_code=str(event.get("error_code", "")),
         )
         for event in events
     )
@@ -399,10 +405,17 @@ def _render_tools(
     if section.data is not None:
         if not section.data:
             lines.append("none")
-        lines.extend(
-            f"  {item.timestamp or '-'}  {item.tool_name}  {item.event_type}"
-            for item in section.data
-        )
+        for item in section.data:
+            facts = [item.event_type]
+            if item.status:
+                facts.append(f"status={item.status}")
+            if item.error_code:
+                facts.append(f"error={item.error_code}")
+            if item.call_id:
+                facts.append(f"call={item.call_id}")
+            lines.append(
+                f"  {item.timestamp or '-'}  {item.tool_name}  {' · '.join(facts)}"
+            )
     return "\n".join(lines)
 
 

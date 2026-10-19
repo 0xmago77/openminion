@@ -1,8 +1,11 @@
 import importlib
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 import json
 import os
 import subprocess
 import sys
+import threading
 import unittest
 from unittest import mock
 
@@ -114,6 +117,24 @@ class _WeatherCurrentTool(Tool):
         )
 
 
+class _ConcurrentTool(Tool):
+    description = "concurrency test tool"
+
+    def __init__(self, name: str, barrier: threading.Barrier) -> None:
+        self.name = name
+        self._barrier = barrier
+
+    def execute(self, arguments, context: ToolExecutionContext) -> ToolExecutionResult:
+        del arguments, context
+        self._barrier.wait(timeout=2)
+        return ToolExecutionResult(
+            tool_name=self.name,
+            ok=True,
+            content="ok",
+            verified=True,
+        )
+
+
 class _RejectCanonicalNameSpec(ToolSpec):
     def __setattr__(self, name, value):
         if name == "name" and "name" in self.__dict__:
@@ -122,6 +143,31 @@ class _RejectCanonicalNameSpec(ToolSpec):
 
 
 class ToolRegistryTests(unittest.TestCase):
+    def test_independent_tool_executions_do_not_share_registration_lock(self) -> None:
+        barrier = threading.Barrier(2)
+        registry = ToolRegistry(
+            [
+                _ConcurrentTool("concurrent.one", barrier),
+                _ConcurrentTool("concurrent.two", barrier),
+            ]
+        )
+
+        def run(name: str) -> ToolExecutionResult:
+            batch = registry.execute_calls(
+                [ProviderToolCall(name=name, arguments={})],
+                context=ToolExecutionContext(
+                    channel="console",
+                    target="unit-test",
+                    session_id=name,
+                ),
+            )
+            return batch.results[0]
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(run, ("concurrent.one", "concurrent.two")))
+
+        self.assertTrue(all(result.ok for result in results))
+
     def test_register_uses_trimmed_key_without_rewriting_spec_name(self) -> None:
         def handler(args, context):
             del args, context
@@ -569,6 +615,95 @@ class ToolRegistryTests(unittest.TestCase):
             "tool_arg_validation_failed",
         )
 
+    def test_execute_calls_toolspec_decodes_declared_structured_fields(self) -> None:
+        from pydantic import BaseModel
+
+        from openminion.modules.tool.registry import ToolSpec
+
+        class _StructuredArgs(BaseModel):
+            options: dict[str, str]
+            items: list[str]
+            note: str
+
+        registry = ToolRegistry([])
+        registry.add(
+            ToolSpec(
+                name="structured.toolspec",
+                args_model=_StructuredArgs,
+                min_scope="READ_ONLY",
+                handler=lambda args, _ctx: {
+                    "ok": True,
+                    "content": args["note"],
+                    "data": args,
+                },
+            )
+        )
+
+        batch = registry.execute_calls(
+            [
+                ProviderToolCall(
+                    name="structured.toolspec",
+                    arguments={
+                        "options": '{"mode":"safe"}',
+                        "items": '["one","two"]',
+                        "note": '["keep","as","text"]',
+                    },
+                )
+            ],
+            context=ToolExecutionContext(
+                channel="console", target="test", session_id="tests-toolspec"
+            ),
+        )
+
+        assert batch.results[0].ok is True
+        assert batch.results[0].data["options"] == {"mode": "safe"}
+        assert batch.results[0].data["items"] == ["one", "two"]
+        assert batch.results[0].data["note"] == '["keep","as","text"]'
+
+    def test_execute_calls_toolspec_decodes_union_structured_fields(self) -> None:
+        from openminion.modules.tool.registry import ToolSpec
+        from openminion.tools.security.schemas import SecurityReportPublishArgs
+
+        registry = ToolRegistry([])
+        registry.add(
+            ToolSpec(
+                name="security.publish_report",
+                args_model=SecurityReportPublishArgs,
+                min_scope="READ_ONLY",
+                handler=lambda args, _ctx: {"ok": True, "data": args},
+            )
+        )
+        evidence_ref = f"artifact://sha256/{'a' * 64}"
+        batch = registry.execute_calls(
+            [
+                ProviderToolCall(
+                    name="security.publish_report",
+                    arguments={
+                        "scope": (
+                            '{"target":".","target_revision":"'
+                            f"{'b' * 40}"
+                            '","objective":"Audit source.",'
+                            '"requested_checks":["code"]}'
+                        ),
+                        "check_evidence": (
+                            f"[{json.dumps({'check': 'code', 'evidence_ref': evidence_ref})}]"
+                        ),
+                        "findings": "[]",
+                        "summary": "Audit completed.",
+                    },
+                )
+            ],
+            context=ToolExecutionContext(
+                channel="console", target="test", session_id="tests-toolspec"
+            ),
+        )
+
+        assert batch.results[0].ok is True
+        assert batch.results[0].data["scope"]["requested_checks"] == ["code"]
+        assert (
+            batch.results[0].data["check_evidence"][0]["evidence_ref"] == evidence_ref
+        )
+
     def test_execute_calls_toolspec_non_object_arguments_report_contract_payload(
         self,
     ) -> None:
@@ -966,3 +1101,27 @@ def test_registration_debug_report_contract_shape() -> None:
         "runtime_bindings",
     ):
         assert key in manager
+
+
+def test_temporary_registration_scope_preserves_cross_thread_isolation() -> None:
+    registry = ToolRegistry()
+    started = threading.Event()
+    finished = threading.Event()
+
+    def unrelated_read() -> dict[str, object]:
+        started.set()
+        result = registry.list()
+        finished.set()
+        return result
+
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
+        with registry.temporary_registration_scope():
+            owner = pool.submit(copy_context().run, registry.list)
+            assert owner.result(timeout=1) == {}
+            unrelated = pool.submit(unrelated_read)
+            assert started.wait(timeout=1)
+            assert not finished.wait(timeout=0.05)
+        assert unrelated.result(timeout=1) == {}
+    finally:
+        pool.shutdown(wait=True)

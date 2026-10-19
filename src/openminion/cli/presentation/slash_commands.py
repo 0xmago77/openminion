@@ -143,7 +143,11 @@ SLASH_COMMANDS: tuple[SlashCommandMetadata, ...] = (
             "/browser stop [sidecar=0 instance=<id>] [kill=1]",
         ),
     ),
-    SlashCommandMetadata("/mcp", "Show configured MCP servers and tools", ("/mcp",)),
+    SlashCommandMetadata(
+        "/mcp",
+        "Show configured MCP servers and tools or reload their config",
+        ("/mcp", "/mcp reload"),
+    ),
     SlashCommandMetadata(
         "/cost", "Show live token usage and available cost", ("/cost",)
     ),

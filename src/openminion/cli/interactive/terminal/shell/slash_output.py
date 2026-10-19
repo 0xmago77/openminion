@@ -74,6 +74,8 @@ def render_context_review(runtime: Any, args: str) -> str:
 
 
 def render_identity_report(payload: dict[str, Any]) -> str:
+    render = payload.get("render")
+    render_facts = render if isinstance(render, dict) else payload
     lines = [
         f"Identity: {payload.get('display_name') or payload.get('agent_id')}",
         f"Source: {payload.get('source', 'unknown')}",
@@ -81,6 +83,28 @@ def render_identity_report(payload: dict[str, Any]) -> str:
         f"Profile version: {payload.get('profile_version', '')}",
         f"Render version: {payload.get('render_version', '')}",
     ]
+    if source_path := str(payload.get("source_path", "") or "").strip():
+        lines.insert(2, f"Source path: {source_path}")
+    if purpose := str(render_facts.get("purpose", "") or "").strip():
+        lines.append(f"Purpose: {purpose}")
+    budget = render_facts.get("budget")
+    if isinstance(budget, dict):
+        lines.append(
+            f"Render budget: {budget.get('used_tokens', 0)}/{budget.get('max_tokens', 0)} tokens"
+        )
+    included_fields = render_facts.get("included_fields")
+    if isinstance(included_fields, list):
+        lines.append(f"Included fields: {', '.join(included_fields) or 'none'}")
+    omitted_fields = render_facts.get("omitted_fields")
+    if isinstance(omitted_fields, list):
+        lines.append(f"Omitted fields: {', '.join(omitted_fields) or 'none'}")
+    warnings = render_facts.get("warnings")
+    if isinstance(warnings, list):
+        lines.extend(
+            f"Render warning: {warning}"
+            for warning in warnings
+            if isinstance(warning, str) and warning
+        )
     verification = payload.get("verification")
     if isinstance(verification, dict):
         lines.extend(
@@ -90,8 +114,31 @@ def render_identity_report(payload: dict[str, Any]) -> str:
                 f"Sidecars: {verification.get('sidecar_status', 'unknown')}",
             )
         )
-    elif isinstance(validation := payload.get("validation"), dict):
+        issues = verification.get("issues")
+        if isinstance(issues, list):
+            lines.extend(
+                f"Issue: {message}"
+                for issue in issues
+                if isinstance(issue, dict)
+                and isinstance(message := issue.get("message"), str)
+                and message.strip()
+            )
+    if isinstance(validation := payload.get("validation"), dict):
         lines.append(f"Validation: {'ok' if validation.get('ok') else 'failed'}")
+        errors = validation.get("errors")
+        if isinstance(errors, list):
+            lines.extend(
+                f"Validation error: {error}"
+                for error in errors
+                if isinstance(error, str) and error.strip()
+            )
+        warnings = validation.get("warnings")
+        if isinstance(warnings, list):
+            lines.extend(
+                f"Validation warning: {warning}"
+                for warning in warnings
+                if isinstance(warning, str) and warning.strip()
+            )
     if rendered := str(payload.get("rendered_text", "") or "").strip():
         lines.extend(("", rendered))
     return "\n".join(lines)

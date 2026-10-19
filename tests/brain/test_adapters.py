@@ -690,6 +690,51 @@ class ToolAdapterTests(unittest.TestCase):
         self.assertEqual(len(res_art["artifact_refs"]), 1)
         self.assertEqual(res_art["artifact_refs"][0]["ref"], "art_123")
 
+    def test_tool_adapter_decodes_declared_structured_fields(self) -> None:
+        from pydantic import BaseModel
+
+        from openminion.modules.brain.adapters.tool.runtime import ToolAdapter
+        from openminion.modules.tool import ToolRegistry, ToolSpec
+
+        class _StructuredArgs(BaseModel):
+            options: dict[str, str]
+            items: list[str]
+
+        registry = ToolRegistry()
+        registry.add(
+            ToolSpec(
+                name="file.read",
+                args_model=_StructuredArgs,
+                min_scope="READ_ONLY",
+                handler=lambda arguments, _ctx: {
+                    "ok": True,
+                    "content": json.dumps(arguments, sort_keys=True),
+                },
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = ToolAdapter(
+                workspace_root=Path(tmp),
+                runtime_registry=registry,
+            ).execute(
+                command={
+                    "tool_name": "file.read",
+                    "args": {
+                        "options": '{"mode":"safe"}',
+                        "items": '["one","two"]',
+                    },
+                },
+                session_id="s1",
+                trace_id="t1",
+            )
+
+        assert result["status"] == "success"
+        assert json.loads(result["summary"]) == {
+            "items": ["one", "two"],
+            "options": {"mode": "safe"},
+        }
+
     def test_tool_adapter_closes_only_its_default_artifactctl(self) -> None:
         from openminion.modules.brain.adapters.tool.runtime import ToolAdapter
 

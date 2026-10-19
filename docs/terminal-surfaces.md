@@ -129,8 +129,8 @@ canonical CLI, bounded resource commands, and typed APIs:
 | Dashboard area | Replacement |
 | --- | --- |
 | Chat | Bare `openminion`, `openminion run`, or the Python/API runtime. |
-| Tasks | `openminion status`, `openminion tasks`, and typed task lifecycle APIs. |
-| Cron | `openminion cron` and the cron runtime APIs. |
+| Tasks | `openminion tasks list/show/pause/resume/cancel/run-now/update/delete-history`, scheduler controls, and typed task APIs. |
+| Cron | `openminion cron status` for scheduler health and `cron run --job-id` as the exact task run-now compatibility facade. |
 | Rooms | `openminion room` plus a room ID passed through `--session`. |
 | Sessions | Interactive session commands, `openminion sessions`, and `sessctl`. |
 | System | `openminion status`, `openminion doctor`, and system-operation tools. |
@@ -189,6 +189,8 @@ completed/failed call coverage,
 coverage/correlation warnings, outcome signals for run-scoped reports, advisory
 recommendations, and next-step hints. Use `--recent <count>` for a read-only
 rollup across the newest sessions before drilling into one session or run.
+Those selected sessions are ordered by their latest token observation, and the
+text report shows the normalized UTC observation window.
 Add `--agent-id <agent-id>` to scope that recent-session view to one agent.
 Token reports read at most 10,000 relevant events per session by default; use
 `--event-limit` to choose a different positive bound. Limited reports are
@@ -326,7 +328,10 @@ whether external OpenTelemetry export is `disabled`, `ready`, or `incomplete`.
 Local telemetry remains usable when external export is disabled.
 
 `telemetryctl invocation list` lists locally persisted invocation identities
-with filters for agent, status, and event type. Use
+with filters for session, agent, canonical invocation status, and event type.
+Use `telemetryctl debug latest --session-id <session-id>` or
+`openminion status telemetry --session-id <session-id>` to keep latest/failed
+selection within one session. Use
 `telemetryctl invocation show <invocation-id>` for deterministic structural
 events and timing, token, cache, cost, policy, and correlated-log summaries.
 `telemetryctl invocation graph <invocation-id>` shows finite execution

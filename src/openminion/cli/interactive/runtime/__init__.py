@@ -142,6 +142,7 @@ class OpenMinionRuntime(
             self._sync_conversation_id()
             self.restore_session_model_selection(session)
             self.restore_session_permission_posture(session)
+            self._restore_token_usage_accounting()
         elif self._prompt_on_resume:
             self._ensure_agent_resolved()
             if normalized_session_id:
@@ -404,7 +405,7 @@ class OpenMinionRuntime(
         return pairs
 
     def tool_exposure_status(self) -> dict[str, Any]:
-        return self._rt.tool_exposure_status(session_id=self.session_id)
+        return self._rt.tool_exposure_status(session_id=self._turn_session_id())
 
     def activate_tool_profile(
         self,
@@ -422,7 +423,7 @@ class OpenMinionRuntime(
     ) -> dict[str, Any]:
         return self._rt.activate_tool_profile(
             profile_id,
-            session_id=self.session_id,
+            session_id=self._turn_session_id(),
             target_id=target_id,
             target_kind=target_kind,
             credential_scopes=credential_scopes,
@@ -442,7 +443,7 @@ class OpenMinionRuntime(
     ) -> bool:
         return self._rt.deactivate_tool_profile(
             profile_id,
-            session_id=self.session_id,
+            session_id=self._turn_session_id(),
             target_id=target_id,
         )
 
@@ -478,6 +479,7 @@ class OpenMinionRuntime(
             self._sync_conversation_id()
             self.restore_session_model_selection(session)
             self.restore_session_permission_posture(session)
+            self._restore_token_usage_accounting()
 
     def new_session(self) -> str:
         return self.create_new_session()
@@ -498,7 +500,7 @@ class OpenMinionRuntime(
         self.restore_session_model_selection(record)
         self.restore_session_permission_posture(record)
         self._project_context_pending = False
-        self._reset_token_usage_accounting()
+        self._restore_token_usage_accounting()
 
     def _resolve_startup_session(self, session_id: str) -> None:
         self._ensure_agent_resolved()
@@ -523,7 +525,7 @@ class OpenMinionRuntime(
         self.restore_session_model_selection(session)
         self.restore_session_permission_posture(session)
         self._project_context_pending = False
-        self._reset_token_usage_accounting()
+        self._restore_token_usage_accounting()
 
     def create_new_session(self) -> str:
         self._ensure_agent_resolved()

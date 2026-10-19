@@ -177,7 +177,8 @@ def test_scsp04_pilot_anti_spam_blocks_repeat_signature(pilot_env) -> None:
 
     second_pass = run_suggestion_surface_pass(store)
     assert second_pass.surfaced == []
-    assert len(second_pass.auto_dismissed) >= 1
+    assert second_pass.auto_dismissed == []
+    assert second_pass.pending_remaining == 3
     status_payload = suggestion_status(store).to_dict()
     assert status_payload["surfaced_count"] == 3
-    assert status_payload["auto_dismissed_count"] >= 1
+    assert status_payload["auto_dismissed_count"] == 0

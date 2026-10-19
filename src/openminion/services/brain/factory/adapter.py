@@ -41,6 +41,7 @@ def create_tool_api(
     a2a_delegate_api: Any | None = None,
     agent_query: Any | None = None,
     agent_profile: Any | None = None,
+    tool_policy: Mapping[str, Any] | None = None,
     task_manager: Any | None = None,
     scheduler_readiness: Callable[[], dict[str, Any]] | None = None,
     telemetryctl: Any | None = None,
@@ -49,11 +50,15 @@ def create_tool_api(
     security_lab_runner: Any | None = None,
     identity_security_lab_facts: Callable[[], dict[str, Any]] | None = None,
 ) -> Any:
+    if tool_policy is None:
+        profile_policy = getattr(agent_profile, "tool_policy", None)
+        tool_policy = profile_policy if isinstance(profile_policy, Mapping) else None
     return create_tool_adapter(
         mode=mode,
         workspace=workspace_root,
         runtime_config=runtime_config,
         runtime_registry=runtime_registry,
+        policy=tool_policy,
         reactions_enabled=getattr(runtime_config, "reactions_enabled", True),
         agent_id=str(agent_name or "").strip() or None,
         skill_api=skill_api,
@@ -108,7 +113,16 @@ def create_context_api(
     skill_home_root: Any | None = None,
     artifactctl: Any | None = None,
     owns_artifactctl: bool = False,
+    retrieve_api: Any | None = None,
 ) -> Any:
+    plugin_registry = None
+    if retrieve_api is not None:
+        from openminion.modules.context.contracts import PluginRegistry
+        from openminion.services.context.adapter import CompactedEpisodeRetriever
+
+        plugin_registry = PluginRegistry()
+        plugin_registry.register_retriever(CompactedEpisodeRetriever(retrieve_api))
+
     return create_context_adapter(
         mode=mode,
         session_store=session_store,
@@ -122,6 +136,7 @@ def create_context_api(
         skill_home_root=skill_home_root,
         artifactctl=artifactctl,
         owns_artifactctl=owns_artifactctl,
+        plugin_registry=plugin_registry,
     )
 
 

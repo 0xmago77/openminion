@@ -10,6 +10,9 @@ from urllib import parse as urllib_parse
 
 import pytest
 
+import openminion.base.config.mcp as mcp_config_module
+import openminion.tools.mcp.auth as mcp_auth_module
+
 from openminion.base.config.mcp import MCPAuthorizationConfig, MCPServerConfig
 from openminion.base.config.base import ConfigError
 from openminion.base.config import OpenMinionConfig
@@ -41,6 +44,22 @@ from openminion.tools.mcp.transport import (
 )
 
 
+@pytest.fixture
+def allow_loopback_oauth_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep transport breadth local while production OAuth URLs require HTTPS."""
+    normalize_url = mcp_config_module._normalize_mcp_url
+    monkeypatch.setattr(
+        mcp_config_module,
+        "_normalize_mcp_url",
+        lambda value, *_args, **_kwargs: normalize_url(value),
+    )
+    monkeypatch.setattr(
+        mcp_auth_module,
+        "_require_https_url",
+        lambda value, **_kwargs: str(value or "").strip(),
+    )
+
+
 class _RemoteMCPHandler(BaseHTTPRequestHandler):
     server_version = "RemoteMCPFixture/1.0"
 
@@ -62,6 +81,7 @@ class _RemoteMCPHandler(BaseHTTPRequestHandler):
                     {
                         "access_token": "fresh-token",
                         "refresh_token": "rotated-refresh-token",
+                        "token_type": "Bearer",
                         "expires_in": 3600,
                         "scope": "mcp.read",
                     }
@@ -730,7 +750,9 @@ def test_streamable_http_transport_uses_oauth_pkce_access_token_header() -> None
             manager.close()
 
 
-def test_oauth_pkce_metadata_dcr_callback_and_revocation_helpers() -> None:
+def test_oauth_pkce_metadata_dcr_callback_and_revocation_helpers(
+    allow_loopback_oauth_fixture: None,
+) -> None:
     with _remote_mcp_server() as server:
         base_url = f"http://127.0.0.1:{server.server_port}"
         config = MCPAuthorizationConfig(
@@ -812,7 +834,9 @@ def test_oauth_pkce_metadata_dcr_callback_and_revocation_helpers() -> None:
             )
 
 
-def test_oauth_pkce_refreshes_revoked_access_token_via_token_store() -> None:
+def test_oauth_pkce_refreshes_revoked_access_token_via_token_store(
+    allow_loopback_oauth_fixture: None,
+) -> None:
     with _remote_mcp_server(
         expected_bearer_token="fresh-token",
         auth_challenge='Bearer realm="mcp-fixture", scope="mcp.current"',
@@ -1087,6 +1111,56 @@ def test_modern_subscription_dispatches_before_stream_closes() -> None:
             assert not future.done()
             server.subscription_release.set()
             assert future.result(timeout=2)["closed"] == "graceful"
+
+
+def test_transport_close_stops_active_modern_subscription() -> None:
+    with _remote_mcp_server(pause_subscription=True) as server:
+        transport = StreamableHTTPMCPTransport(
+            _http_runtime_config(
+                url=f"http://127.0.0.1:{server.server_port}/mcp"
+            ).mcp_servers[0]
+        )
+        errors: list[BaseException] = []
+        results: list[dict[str, Any]] = []
+
+        def _listen() -> None:
+            try:
+                results.append(
+                    transport.request(
+                        method="subscriptions/listen",
+                        params={
+                            "notifications": {"toolsListChanged": True},
+                            "_meta": {
+                                "io.modelcontextprotocol/protocolVersion": (
+                                    MCP_MODERN_PROTOCOL_VERSION
+                                )
+                            },
+                        },
+                        timeout_seconds=5.0,
+                    )
+                )
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        worker = threading.Thread(target=_listen, daemon=True)
+        worker.start()
+        try:
+            assert server.subscription_event_sent.wait(timeout=2)
+            transport.close()
+            worker.join(timeout=2)
+            assert worker.is_alive() is False
+            assert transport._active_responses == {}  # noqa: SLF001
+        finally:
+            server.subscription_release.set()
+            worker.join(timeout=2)
+
+    assert worker.is_alive() is False
+    assert bool(errors) != bool(results)
+    if errors:
+        assert isinstance(errors[0], MCPProtocolError)
+        assert errors[0].reason_code == "mcp_request_cancelled"
+    else:
+        assert results[0]["closed"] == "graceful"
 
 
 def test_modern_http_emits_encoded_parameter_headers() -> None:

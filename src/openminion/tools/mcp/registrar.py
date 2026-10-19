@@ -21,6 +21,7 @@ from .plugin import (
 if TYPE_CHECKING:
     from openminion.modules.tool.registry import ToolRegistry
     from openminion.modules.tool.runtime.registrar import ToolRegisterContext
+    from openminion.tools.mcp.interfaces import MCPToolRegistrationState
 
 
 def _append_manifest_entry(
@@ -47,63 +48,65 @@ def _append_manifest_entry(
     )
 
 
+def build_mcp_manifest(state: MCPToolRegistrationState) -> ToolBindingManifest:
+    model_tools: list[ModelToolDef] = []
+    runtime_bindings: list[RuntimeBindingDef] = []
+    for tool in state.supported_tools:
+        runtime_tool_name, runtime_binding_id = describe_mcp_tool(tool=tool)
+        _append_manifest_entry(
+            model_tools,
+            runtime_bindings,
+            runtime_tool_name=runtime_tool_name,
+            runtime_binding_id=runtime_binding_id,
+            description=tool.description or runtime_tool_name,
+        )
+    for prompt in state.supported_prompts:
+        runtime_tool_name, runtime_binding_id = describe_mcp_prompt(prompt=prompt)
+        _append_manifest_entry(
+            model_tools,
+            runtime_bindings,
+            runtime_tool_name=runtime_tool_name,
+            runtime_binding_id=runtime_binding_id,
+            description=prompt.description or runtime_tool_name,
+        )
+    for resource in state.supported_resources:
+        runtime_tool_name, runtime_binding_id = describe_mcp_resource(resource=resource)
+        _append_manifest_entry(
+            model_tools,
+            runtime_bindings,
+            runtime_tool_name=runtime_tool_name,
+            runtime_binding_id=runtime_binding_id,
+            description=resource.description
+            or resource.resource_name
+            or runtime_tool_name,
+        )
+    for template in state.supported_resource_templates:
+        runtime_tool_name, runtime_binding_id = describe_mcp_resource_template(
+            template=template
+        )
+        _append_manifest_entry(
+            model_tools,
+            runtime_bindings,
+            runtime_tool_name=runtime_tool_name,
+            runtime_binding_id=runtime_binding_id,
+            description=template.description
+            or template.template_name
+            or runtime_tool_name,
+        )
+    return ToolBindingManifest(
+        module_id="mcp",
+        model_tools=tuple(model_tools),
+        runtime_bindings=tuple(runtime_bindings),
+    )
+
+
 class MCPRegistrar:
     module_id = "mcp"
     is_provider_only = False
 
     def get_manifest(self, ctx: ToolRegisterContext) -> ToolBindingManifest:
         state = require_mcp_tool_registration_state(ctx.prepared_state)
-        model_tools: list[ModelToolDef] = []
-        runtime_bindings: list[RuntimeBindingDef] = []
-        for tool in state.supported_tools:
-            runtime_tool_name, runtime_binding_id = describe_mcp_tool(tool=tool)
-            _append_manifest_entry(
-                model_tools,
-                runtime_bindings,
-                runtime_tool_name=runtime_tool_name,
-                runtime_binding_id=runtime_binding_id,
-                description=tool.description or runtime_tool_name,
-            )
-        for prompt in state.supported_prompts:
-            runtime_tool_name, runtime_binding_id = describe_mcp_prompt(prompt=prompt)
-            _append_manifest_entry(
-                model_tools,
-                runtime_bindings,
-                runtime_tool_name=runtime_tool_name,
-                runtime_binding_id=runtime_binding_id,
-                description=prompt.description or runtime_tool_name,
-            )
-        for resource in state.supported_resources:
-            runtime_tool_name, runtime_binding_id = describe_mcp_resource(
-                resource=resource
-            )
-            _append_manifest_entry(
-                model_tools,
-                runtime_bindings,
-                runtime_tool_name=runtime_tool_name,
-                runtime_binding_id=runtime_binding_id,
-                description=resource.description
-                or resource.resource_name
-                or runtime_tool_name,
-            )
-        for template in state.supported_resource_templates:
-            runtime_tool_name, runtime_binding_id = describe_mcp_resource_template(
-                template=template
-            )
-            _append_manifest_entry(
-                model_tools,
-                runtime_bindings,
-                runtime_tool_name=runtime_tool_name,
-                runtime_binding_id=runtime_binding_id,
-                description=template.description
-                or template.template_name
-                or runtime_tool_name,
-            )
-        return ToolBindingManifest(
-            module_id=self.module_id,
-            model_tools=tuple(model_tools),
-            runtime_bindings=tuple(runtime_bindings),
-        )
+        return build_mcp_manifest(state)
 
     def register(self, registry: ToolRegistry, ctx: ToolRegisterContext = None) -> None:
         from .plugin import register as tool_register
@@ -114,4 +117,4 @@ class MCPRegistrar:
 REGISTRAR = MCPRegistrar()
 
 
-__all__ = ["REGISTRAR"]
+__all__ = ["REGISTRAR", "build_mcp_manifest"]

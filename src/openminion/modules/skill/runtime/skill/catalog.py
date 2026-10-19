@@ -88,6 +88,17 @@ class SkillCatalogMixin:
             )
         return SkillPackage.from_dict(payload)
 
+    def get_skill_owner(self, *, skill_id: str) -> dict[str, str | None] | None:
+        facts = self.store.get_skill_lifecycle_facts(skill_id=skill_id)
+        scope = str(facts.get("scope") or "")
+        if not scope:
+            return None
+        agent_id = facts.get("agent_id")
+        return {
+            "scope": scope,
+            "agent_id": str(agent_id) if agent_id else None,
+        }
+
     def read_skill_resource(
         self,
         *,

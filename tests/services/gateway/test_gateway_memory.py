@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from tests.services.gateway._gateway_service_support import (
     GatewayServiceTestCase,
@@ -52,6 +53,100 @@ def _make_v2_memory(
 
 
 class GatewayServiceMemoryTests(GatewayServiceTestCase):
+    def test_contextctl_fallback_health_persists_and_recovers(self) -> None:
+        memory = _make_v2_memory(Path(self._tmp.name), suffix="-contextctl-health")
+        contextctl = SimpleNamespace(
+            is_enabled=True,
+            build_ctxctl_messages=MagicMock(side_effect=[None, ["selected"]]),
+            select_history=MagicMock(side_effect=lambda **kwargs: kwargs["history"]),
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "OPENMINION_MEMORY_CAPSULE_STRATEGY": "always",
+                "OPENMINION_MEMORY_DYNAMIC_RETRIEVAL_ENABLED": "true",
+            },
+            clear=False,
+        ):
+            gateway, _sink = self._build_gateway(
+                provider=_CaptureProvider(),
+                logger_name="openminion.tests.gateway.contextctl_health",
+                agent_logger_name="openminion.tests.gateway.agent.contextctl_health",
+                agent_memory=memory,
+                contextctl_adapter=contextctl,
+            )
+        session_id = "contextctl-health"
+
+        class _Controls(RuntimeControlsMixin):
+            is_bound = True
+            _rt = SimpleNamespace(sessions=self.sessions)
+
+            def list_memory_records(self):
+                return []
+
+            def list_memory_candidates(self):
+                return []
+
+            def _memory_query_provider(self):
+                return memory
+
+        controls = _Controls()
+        controls.session_id = session_id
+
+        asyncio.run(
+            gateway.run_once(
+                channel="console",
+                target="local-user",
+                message="first",
+                session_id=session_id,
+            )
+        )
+        self.assertIn("recall      degraded", controls.memory_report())
+        first_turn_types = [
+            event.event_type
+            for event in self.sessions.list_events(session_id=session_id, limit=100)
+            if event.event_type
+            in {
+                "memory.context.built",
+                "memory.retrieval.built",
+                "memory.recall.status",
+            }
+        ]
+        self.assertLess(
+            first_turn_types.index("memory.context.built"),
+            first_turn_types.index("memory.recall.status"),
+        )
+        self.assertLess(
+            first_turn_types.index("memory.retrieval.built"),
+            first_turn_types.index("memory.recall.status"),
+        )
+        asyncio.run(
+            gateway.run_once(
+                channel="console",
+                target="local-user",
+                message="second",
+                session_id=session_id,
+            )
+        )
+
+        statuses = [
+            event.payload
+            for event in self.sessions.list_events(session_id=session_id, limit=100)
+            if event.event_type == "memory.recall.status"
+        ]
+        self.assertEqual([item["status"] for item in statuses], ["degraded", "healthy"])
+        self.assertEqual(
+            [item["reason_code"] for item in statuses],
+            ["contextctl_fallback", "contextctl_selected"],
+        )
+        self.assertTrue(
+            all(
+                set(item) == {"run_id", "request_id", "status", "reason_code"}
+                for item in statuses
+            )
+        )
+        self.assertIn("recall      healthy", controls.memory_report())
+
     def test_degraded_capsule_is_not_cached_and_next_build_recovers(self) -> None:
         class _Memory:
             def __init__(self) -> None:

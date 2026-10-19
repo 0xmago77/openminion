@@ -50,6 +50,8 @@ _SAVE_PROMPT = (
     "active_version_hash."
 )
 
+_NUMBERED_PROCEDURE_STEP_RE = re.compile(r"(?m)^\s*(?:#{1,6}\s+)?1\.\s+(.+)$")
+
 
 def _skill_config(probe: FocusProbe):
     env = probe.environment()
@@ -159,16 +161,52 @@ def _write_summary(root: Path, name: str, payload: dict) -> None:
 
 
 def _normalized_step(value: str) -> str:
-    without_number = re.sub(r"^\s*\**\d+(?:[.)]\s*|\s+)", "", value)
-    return re.sub(r"[*_`]", "", without_number).strip().lower()
+    without_markup = re.sub(r"[*_`]", "", value)
+    without_number = re.sub(
+        r"^\s*(?:step\s+)?\d+(?:[.):]\s*|\s+)(?:[-–—:]\s*)?",
+        "",
+        without_markup,
+        flags=re.I,
+    )
+    return re.sub(r"\s*[:–—]\s*", " ", without_number).strip().lower()
 
 
 @pytest.mark.parametrize(
-    "rendered",
-    ("1 Inspect the target", "1. Inspect the target", "1) Inspect the target"),
+    ("rendered", "expected"),
+    (
+        ("1 Inspect the target", "inspect the target"),
+        ("1. Inspect the target", "inspect the target"),
+        ("1) Inspect the target", "inspect the target"),
+        ("**Step 1:** Inspect the target", "inspect the target"),
+        (
+            "**Step 1 — Inspect the target:** Gather metadata",
+            "inspect the target gather metadata",
+        ),
+        (
+            "1. Inspect the target — Gather metadata",
+            "inspect the target gather metadata",
+        ),
+    ),
 )
-def test_normalized_step_accepts_common_numbered_list_markers(rendered: str) -> None:
-    assert _normalized_step(rendered) == "inspect the target"
+def test_normalized_step_accepts_common_numbered_list_markers(
+    rendered: str, expected: str
+) -> None:
+    assert _normalized_step(rendered) == expected
+
+
+@pytest.mark.parametrize(
+    ("snippet", "expected"),
+    (
+        ("1. Inspect the target", "Inspect the target"),
+        ("### 1. Inspect", "Inspect"),
+    ),
+)
+def test_numbered_procedure_step_accepts_plain_text_and_headings(
+    snippet: str, expected: str
+) -> None:
+    match = _NUMBERED_PROCEDURE_STEP_RE.search(snippet)
+    assert match is not None
+    assert match.group(1).strip() == expected
 
 
 def _tree_evidence(probe: FocusProbe) -> dict[str, str]:
@@ -238,7 +276,7 @@ def test_live_confirmed_save_and_fresh_session_reuse(
             purpose="act",
             max_tokens=500,
         )
-        step_match = re.search(r"(?m)^\s*1\.\s+(.+)$", snippet)
+        step_match = _NUMBERED_PROCEDURE_STEP_RE.search(snippet)
         assert step_match is not None, snippet
         expected_step = step_match.group(1).strip()
     finally:

@@ -12,6 +12,7 @@ import openminion.api.routes.tools as api_tools_routes
 import openminion.cli.commands.tools as cli_tools_commands
 from openminion.api.routes.contracts import APIRouteContext
 from openminion.base.config import OpenMinionConfig
+from openminion.base.config.paths import resolve_data_root
 from openminion.base.config.runtime.tools import ToolRuntimeConfig
 from openminion.base.types import Message
 from openminion.modules.brain.adapters.tool import ToolAdapter
@@ -23,6 +24,7 @@ from openminion.modules.session.storage.repository import create_sqlite_cron_rep
 from openminion.modules.storage.runtime.sqlite import resolve_database_path
 from openminion.modules.brain.paths import resolve_brain_sessions_db_path
 from openminion.modules.task import TaskManager
+from openminion.modules.task.constants import DEFAULT_INTEGRATED_SQLITE_SUBPATH
 from openminion.services.agent.execution.fallbacks import AgentToolFallbacksMixin
 from openminion.services.agent.execution.composition import build_service_port
 from openminion.services.agent.execution.runtime import ExecutorRuntime
@@ -192,7 +194,7 @@ def test_turn_executor_injects_sandbox_runner_into_tool_execution_context():
     assert built.sandbox_runner is sentinel_runner
 
 
-def test_api_tools_run_route_injects_runtime_env(monkeypatch):
+def test_api_tools_run_route_injects_runtime_env(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
 
     class _FakeSessions:
@@ -225,6 +227,8 @@ def test_api_tools_run_route_injects_runtime_env(monkeypatch):
     config.runtime.tool_workspace_root = "/configured/tool-workspace"
     fake_runtime = SimpleNamespace(
         config=config,
+        home_root=tmp_path,
+        data_root=tmp_path / ".openminion",
         tool_workspace_root=config.runtime.tool_workspace_root,
         tools=_FakeTools(),
         sessions=_FakeSessions(),
@@ -502,7 +506,10 @@ def test_os_adapter_task_cancel_respects_configured_agent_id(tmp_path, monkeypat
     repo = create_sqlite_cron_repository(db_path=brain_db_path)
     manager = TaskManager.from_cron_repository(
         repo,
-        db_path=getattr(repo, "db_path", None),
+        db_path=(
+            resolve_data_root(tmp_path, env=runtime_env)
+            / DEFAULT_INTEGRATED_SQLITE_SUBPATH
+        ).resolve(),
     )
     task = manager.schedule_task(
         name="cancel-me",

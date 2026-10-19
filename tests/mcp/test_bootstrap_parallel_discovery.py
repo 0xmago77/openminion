@@ -120,8 +120,7 @@ def test_disabled_required_mcp_server_is_not_started() -> None:
     try:
         assert bootstrap.mcp_manager is None
         assert not any(
-            record.label == "MCP" and record.status == "failed"
-            for record in (bootstrap.bootstrap_records or [])
+            record.label == "MCP" for record in (bootstrap.bootstrap_records or [])
         )
     finally:
         _close_bootstrap(bootstrap)

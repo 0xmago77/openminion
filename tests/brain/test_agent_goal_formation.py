@@ -582,7 +582,7 @@ def test_service_create_tool_api_forwards_agent_profile(monkeypatch) -> None:
 
     captured = {}
     agent_query = object()
-    agent_profile = object()
+    agent_profile = SimpleNamespace(tool_policy={"scope": "POWER_USER"})
     memory_service = object()
     scheduler_readiness = object()
     monkeypatch.setattr(
@@ -603,8 +603,29 @@ def test_service_create_tool_api_forwards_agent_profile(monkeypatch) -> None:
 
     assert captured["agent_query"] is agent_query
     assert captured["agent_profile"] is agent_profile
+    assert captured["policy"] == {"scope": "POWER_USER"}
     assert captured["memory_service"] is memory_service
     assert captured["scheduler_readiness"] is scheduler_readiness
+
+    explicit_policy = {"scope": "POWER_USER"}
+    factory.create_tool_api(
+        mode="local",
+        workspace_root=".",
+        runtime_config=SimpleNamespace(reactions_enabled=True),
+        agent_profile=SimpleNamespace(tool_policy=None),
+        tool_policy=explicit_policy,
+    )
+    assert captured["policy"] is explicit_policy
+
+    named_profile = SimpleNamespace(tool_policy="review-only")
+    factory.create_tool_api(
+        mode="local",
+        workspace_root=".",
+        runtime_config=SimpleNamespace(reactions_enabled=True),
+        agent_profile=named_profile,
+    )
+    assert captured["agent_profile"] is named_profile
+    assert captured["policy"] is None
 
 
 def test_bootstrap_passes_default_profile_into_create_tool_api() -> None:

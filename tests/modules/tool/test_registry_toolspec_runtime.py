@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import json
+from dataclasses import fields
 from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
 
 from openminion.modules.tool.base import ToolExecutionContext
+from openminion.modules.tool.runtime import dependencies
+from openminion.modules.tool.runtime import registry_toolspec
 from openminion.modules.tool.runtime.registry_toolspec import execute_tool_spec_call
 
 
@@ -35,6 +41,17 @@ class _ConfirmRequiredTool:
             confirm=ctx.confirm,
             dangerous_default=False,
         )
+        return {"ok": True, "content": "confirmed"}
+
+
+class _DangerousTool:
+    name = "test.dangerous"
+    args_model = dict
+    dangerous = True
+
+    @staticmethod
+    def handler(arguments, ctx):
+        del arguments, ctx
         return {"ok": True, "content": "confirmed"}
 
 
@@ -72,6 +89,35 @@ class _EchoTaskOwnerTool:
         }
 
 
+class _HandlerFailureTool:
+    name = "test.handler_failure"
+    args_model = dict
+
+    @staticmethod
+    def handler(_arguments, _ctx):
+        raise RuntimeError("handler failure")
+
+
+class _MissingHandlerTool:
+    name = "test.missing_handler"
+    args_model = dict
+    handler = None
+
+
+class _ArtifactCtlOwnerTool:
+    name = "test.artifactctl_owner"
+    args_model = dict
+
+    def __init__(self, expected):
+        self.expected = expected
+
+    def handler(self, _arguments, ctx):
+        return {
+            "ok": True,
+            "data": {"same_artifactctl": ctx.artifactctl is self.expected},
+        }
+
+
 def _context(tmp_path, runtime_env):
     return ToolExecutionContext(
         channel="console",
@@ -82,6 +128,11 @@ def _context(tmp_path, runtime_env):
             "runtime_env": runtime_env,
         },
     )
+
+
+def test_tool_execution_context_preserves_confirm_positional_order() -> None:
+    names = [field.name for field in fields(ToolExecutionContext)]
+    assert names[-2:] == ["confirm", "artifactctl"]
 
 
 def test_execute_tool_spec_call_uses_runtime_env_from_metadata_mapping(
@@ -213,6 +264,37 @@ def test_execute_tool_spec_call_requires_confirm_without_replay_metadata(
     assert result.data["error_code"] == "CONFIRM_REQUIRED"
 
 
+def test_execute_tool_spec_call_enforces_dangerous_flag(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENMINION_HOME", str(tmp_path))
+    monkeypatch.setenv("OPENMINION_DATA_ROOT", str(tmp_path / ".openminion"))
+
+    denied = execute_tool_spec_call(
+        tool=_DangerousTool(),
+        arguments={},
+        context=ToolExecutionContext(
+            channel="api",
+            target="tests",
+            session_id="session-dangerous",
+            metadata={"workspace_root": str(tmp_path)},
+        ),
+    )
+    confirmed = execute_tool_spec_call(
+        tool=_DangerousTool(),
+        arguments={},
+        context=ToolExecutionContext(
+            channel="api",
+            target="tests",
+            session_id="session-dangerous",
+            metadata={"workspace_root": str(tmp_path)},
+            confirm=True,
+        ),
+    )
+
+    assert denied.ok is False
+    assert denied.data["error_code"] == "CONFIRM_REQUIRED"
+    assert confirmed.ok is True
+
+
 def test_execute_tool_spec_call_honors_policy_replay_confirmation_metadata(
     tmp_path, monkeypatch
 ):
@@ -258,3 +340,134 @@ def test_execute_tool_spec_call_honors_explicit_context_confirmation(
 
     assert result.ok is True
     assert result.content == "confirmed"
+
+
+def test_execute_tool_spec_call_closes_owned_artifactctl(tmp_path, monkeypatch):
+    owned = MagicMock()
+    monkeypatch.setattr(registry_toolspec, "resolve_artifactctl", lambda: owned)
+
+    result = execute_tool_spec_call(
+        tool=_EchoEnvTool(),
+        arguments={"key": "missing"},
+        context=_context(tmp_path, {}),
+    )
+
+    assert result.ok is True
+    owned.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize("tool", [_HandlerFailureTool(), _MissingHandlerTool()])
+def test_execute_tool_spec_call_closes_owned_artifactctl_on_tool_failure(
+    tmp_path,
+    monkeypatch,
+    tool,
+):
+    owned = MagicMock()
+    monkeypatch.setattr(registry_toolspec, "resolve_artifactctl", lambda: owned)
+
+    result = execute_tool_spec_call(
+        tool=tool,
+        arguments={},
+        context=_context(tmp_path, {}),
+    )
+
+    assert result.ok is False
+    owned.close.assert_called_once_with()
+
+
+def test_execute_tool_spec_call_closes_owned_artifactctl_on_dependency_failure(
+    tmp_path,
+    monkeypatch,
+):
+    owned = MagicMock()
+    monkeypatch.setattr(registry_toolspec, "resolve_artifactctl", lambda: owned)
+
+    def fail_dependency(*_args, **_kwargs):
+        raise RuntimeError("dependency failure")
+
+    monkeypatch.setattr(
+        dependencies,
+        "enforce_tool_dependencies",
+        fail_dependency,
+    )
+
+    result = execute_tool_spec_call(
+        tool=_EchoEnvTool(),
+        arguments={"key": "missing"},
+        context=_context(tmp_path, {}),
+    )
+
+    assert result.ok is False
+    assert "dependency failure" in result.error
+    owned.close.assert_called_once_with()
+
+
+def test_execute_tool_spec_call_closes_owned_artifactctl_on_context_failure(
+    tmp_path,
+    monkeypatch,
+):
+    owned = MagicMock()
+    monkeypatch.setattr(registry_toolspec, "resolve_artifactctl", lambda: owned)
+
+    def fail_context(**_kwargs):
+        raise RuntimeError("context failure")
+
+    monkeypatch.setattr(
+        registry_toolspec,
+        "_build_tool_runtime_context",
+        fail_context,
+    )
+
+    with pytest.raises(RuntimeError, match="context failure"):
+        execute_tool_spec_call(
+            tool=_EchoEnvTool(),
+            arguments={"key": "missing"},
+            context=_context(tmp_path, {}),
+        )
+
+    owned.close.assert_called_once_with()
+
+
+def test_execute_tool_spec_call_does_not_close_borrowed_artifactctl(
+    tmp_path,
+    monkeypatch,
+):
+    borrowed = MagicMock()
+
+    def unexpected_resolve():
+        raise AssertionError("borrowed controller should be reused")
+
+    monkeypatch.setattr(
+        registry_toolspec,
+        "resolve_artifactctl",
+        unexpected_resolve,
+    )
+    context = _context(tmp_path, {})
+    context.artifactctl = borrowed
+
+    result = execute_tool_spec_call(
+        tool=_ArtifactCtlOwnerTool(borrowed),
+        arguments={},
+        context=context,
+    )
+
+    assert result.ok is True
+    assert result.data["same_artifactctl"] is True
+    borrowed.close.assert_not_called()
+
+
+def test_execute_tool_spec_call_propagates_artifactctl_construction_failure(
+    tmp_path,
+    monkeypatch,
+):
+    def fail_resolve():
+        raise RuntimeError("artifact startup failure")
+
+    monkeypatch.setattr(registry_toolspec, "resolve_artifactctl", fail_resolve)
+
+    with pytest.raises(RuntimeError, match="artifact startup failure"):
+        execute_tool_spec_call(
+            tool=_EchoEnvTool(),
+            arguments={"key": "missing"},
+            context=_context(tmp_path, {}),
+        )

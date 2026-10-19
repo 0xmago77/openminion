@@ -5,16 +5,25 @@ from pathlib import Path
 
 import pytest
 
+from openminion.base.config.action_policy import ACTION_POLICY_SESSION_OVERRIDE_KEY
 from openminion.modules.task.autonomy import (
     AutonomyRunError,
     AutonomyRunPhase,
     AutonomyRunStatus,
     AutonomyRunStore,
     EvidenceStatus,
+    autonomy_permission_metadata,
     build_autonomy_run,
     build_local_workspace_ref,
     build_terminal_proof_packet,
 )
+
+
+def test_bypass_autonomy_profile_disables_both_permission_gates() -> None:
+    assert autonomy_permission_metadata("bypass") == {
+        "permission_mode": "bypass",
+        ACTION_POLICY_SESSION_OVERRIDE_KEY: "bypass",
+    }
 
 
 def _run(tmp_path: Path):

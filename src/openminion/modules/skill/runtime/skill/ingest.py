@@ -410,7 +410,7 @@ class SkillIngestMixin:
     ) -> list[str]:
         warnings: list[str] = []
         try:
-            self.store.upsert_skill(
+            owner_preserved = self.store.upsert_skill(
                 skill_id=package.skill_id,
                 name=package.name,
                 status=package.status,
@@ -418,6 +418,12 @@ class SkillIngestMixin:
                 agent_id=package.agent_id,
                 ts=package.updated_at,
             )
+            if not owner_preserved:
+                raise SkillError(
+                    "SKILL_SCOPE_OWNER_CONFLICT",
+                    "Skill ID is already owned by another scope or agent.",
+                    {"skill_id": package.skill_id},
+                )
             self.store.insert_skill_version(
                 skill_id=package.skill_id,
                 version_hash=package.version_hash,
@@ -442,6 +448,8 @@ class SkillIngestMixin:
                     authority_class=admission_authority_class,
                     created_at=package.created_at,
                 )
+        except SkillError:
+            raise
         except Exception as exc:
             self._hybrid_store.write_row(
                 "skill_ingest",

@@ -16,6 +16,7 @@ from openminion.tools.mcp.interfaces import (
 )
 from openminion.tools.mcp.manager import MCPFleetManager, MCPProtocolError
 from openminion.tools.mcp.schemas import MCPRoot, MCPSamplingResult
+from openminion.tools.mcp.session import MCPServerSession
 
 
 FIXTURE_SERVER_PATH = (
@@ -32,6 +33,26 @@ class _FixtureSamplingHandler:
             content={"type": "text", "text": "hello from nested sampling"},
             model="fixture-sampler",
             stop_reason="endTurn",
+        )
+
+
+@pytest.mark.parametrize("max_tokens", (None, True, "32", 1.5, 0, -1))
+def test_sampling_callback_rejects_invalid_wire_max_tokens(max_tokens) -> None:
+    server = _runtime_config().mcp_servers[0]
+    session = MCPServerSession(
+        server,
+        client_capability_state=MCPClientCapabilityState(
+            sampling_handler=_FixtureSamplingHandler()
+        ),
+    )
+
+    with pytest.raises(MCPProtocolError, match="positive integer"):
+        session._handle_server_request(  # noqa: SLF001
+            method="sampling/createMessage",
+            params={
+                "messages": [{"role": "user", "content": "hello"}],
+                "maxTokens": max_tokens,
+            },
         )
 
 
@@ -109,6 +130,59 @@ def test_default_client_capabilities_declare_roots_and_declining_elicitation() -
         assert elicitation_result.content.startswith("elicitation: decline")
     finally:
         _close_bootstrap(bootstrap)
+
+
+def test_default_client_roots_are_scoped_per_server(tmp_path: Path) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    servers = [
+        MCPServerConfig(
+            name="First",
+            command=[sys.executable, "-c", "pass"],
+            cwd=str(first_root),
+            trusted=True,
+        ),
+        MCPServerConfig(
+            name="Second",
+            command=[sys.executable, "-c", "pass"],
+            cwd=str(second_root),
+            trusted=True,
+        ),
+    ]
+    manager = MCPFleetManager(servers=servers)
+    try:
+        first_state = manager._sessions["first"]._client_capability_state
+        second_state = manager._sessions["second"]._client_capability_state
+        assert first_state.roots == (
+            MCPRoot(uri=first_root.resolve().as_uri(), name="first"),
+        )
+        assert second_state.roots == (
+            MCPRoot(uri=second_root.resolve().as_uri(), name="second"),
+        )
+    finally:
+        manager.close()
+
+
+def test_explicit_client_roots_are_shared_unchanged() -> None:
+    explicit_state = MCPClientCapabilityState(
+        roots=(MCPRoot(uri="file:///explicit", name="explicit"),),
+        elicitation_handler=DefaultDeclineElicitationHandler(),
+    )
+    servers = [
+        MCPServerConfig(name=name, command=[sys.executable, "-c", "pass"], trusted=True)
+        for name in ("First", "Second")
+    ]
+    manager = MCPFleetManager(
+        servers=servers,
+        client_capability_state=explicit_state,
+    )
+    try:
+        assert all(
+            session._client_capability_state is explicit_state
+            for session in manager._sessions.values()
+        )
+    finally:
+        manager.close()
 
 
 def test_sampling_capability_is_not_declared_without_handler() -> None:

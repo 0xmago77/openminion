@@ -17,15 +17,25 @@ class _ArtifactCtlRef:
 class _RecordingArtifactCtl:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.closed = False
 
     def ingest_bytes(self, **kwargs: Any) -> _ArtifactCtlRef:
         self.calls.append(dict(kwargs))
         return _ArtifactCtlRef("a" * 64)
 
+    def close(self) -> None:
+        self.closed = True
+
 
 class _FailingArtifactCtl:
+    def __init__(self) -> None:
+        self.closed = False
+
     def ingest_bytes(self, **kwargs: Any) -> Any:
         raise RuntimeError("cas offline")
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _RecordingTelemetryCtl:
@@ -220,6 +230,7 @@ def test_registry_toolspec_runtime_durable_artifact_emits_canonical_ref(
     assert artifactctl.calls
     assert artifactctl.calls[0]["session_id"] == "sess-artifact"
     assert artifactctl.calls[0]["original_name"] == "out.txt"
+    assert artifactctl.closed is True
 
 
 def test_registry_toolspec_runtime_durable_artifact_cas_failure_keeps_local_only(
@@ -228,10 +239,11 @@ def test_registry_toolspec_runtime_durable_artifact_cas_failure_keeps_local_only
 ) -> None:
     from openminion.modules.tool.runtime import registry_toolspec
 
+    artifactctl = _FailingArtifactCtl()
     monkeypatch.setattr(
         registry_toolspec,
         "create_default_artifactctl",
-        lambda: _FailingArtifactCtl(),
+        lambda: artifactctl,
     )
 
     def handler(_args: dict[str, Any], ctx: Any) -> dict[str, Any]:
@@ -288,6 +300,7 @@ def test_registry_toolspec_runtime_durable_artifact_cas_failure_keeps_local_only
     assert any(
         "CAS ingest failed" in str(item.get("msg", "")) for item in result.data["logs"]
     )
+    assert artifactctl.closed is True
 
 
 def test_registry_toolspec_runtime_carries_explicit_memory_service() -> None:

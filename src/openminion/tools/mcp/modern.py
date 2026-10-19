@@ -227,8 +227,8 @@ def _drive_task(
         poll_ms = _nonnegative_int(
             current, "pollIntervalMs", "mcp_task_poll_interval_invalid"
         )
-        if poll_ms:
-            time.sleep(min(poll_ms / 1000.0, max(0.0, deadline - time.monotonic())))
+        poll_seconds = max(poll_ms / 1000.0, 0.05)
+        time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
         current = _require_complete_task_method_result(
             MCP_TASKS_GET_METHOD,
             request(MCP_TASKS_GET_METHOD, {"taskId": task_id}),

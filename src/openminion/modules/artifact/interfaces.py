@@ -111,6 +111,16 @@ class ArtifactCtlInterface(Protocol):
     def close(self) -> None: ...
 
 
+class ArtifactReferenceLifecycle(Protocol):
+    """Reference-edge operations required by artifact lifecycle owners."""
+
+    def ref_add(self, owner_type: str, owner_id: str, ref_or_sha: str) -> None: ...
+
+    def ref_remove(self, owner_type: str, owner_id: str, ref_or_sha: str) -> None: ...
+
+    def ref_remove_owner(self, owner_type: str, owner_id: str) -> None: ...
+
+
 def ensure_artifact_compatibility(
     ctl: Any, strict: bool = True
 ) -> tuple[bool, list[str]]:

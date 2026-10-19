@@ -8394,6 +8394,102 @@ def test_loop_retries_empty_finalization_after_successful_tool_evidence() -> Non
     }
 
 
+def test_loop_recovers_empty_non_typed_closeout_after_bounded_retries() -> None:
+    runtime = _FakeRuntime(
+        responses=[
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="m",
+                output_text="",
+                tool_calls=[
+                    ToolCall(
+                        id="c1",
+                        name="file.read",
+                        arguments={"path": "README.md"},
+                    ),
+                ],
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="m",
+                output_text="",
+                finish_reason="stop",
+            ),
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="m",
+                output_text="",
+                finish_reason="stop",
+            ),
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="m",
+                output_text="",
+                finish_reason="stop",
+            ),
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="m",
+                output_text="",
+                tool_calls=[
+                    ToolCall(
+                        id="final",
+                        name="submit_output",
+                        arguments={
+                            "final_answer": "README verified.",
+                            "status": "final_answer",
+                            "reasoning": "The requested file was read.",
+                        },
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+        ]
+    )
+    loop_ctx = _LoopContext(
+        state=_state(tool_calls=4),
+        outcomes=[_success_outcome("file.read", "README contents")],
+    )
+
+    outcome = run_adaptive_tool_loop(
+        loop_ctx,
+        profile=_profile(
+            allowed_tools=frozenset({"file.read"}),
+            profile_name="coding_adaptive_v1",
+            max_iterations=6,
+        ),
+        runtime=runtime,
+        model="m",
+        initial_messages=[Message(role="user", content="verify the README")],
+        tool_specs=_tool_specs("file.read"),
+    )
+
+    assert outcome.termination_reason == ADAPTIVE_TERM_FINAL_TEXT
+    assert outcome.final_text == "README verified."
+    assert outcome.finalization_status == {
+        "status": "final_answer",
+        "reasoning": "The requested file was read.",
+        "remaining_work": "",
+        "blocking_reason": "",
+    }
+    assert bool(
+        outcome.state.scratchpad.get("empty_final_after_tool_results_retry_used")
+    )
+    assert bool(
+        outcome.state.scratchpad.get("empty_final_after_tool_results_final_retry_used")
+    )
+    assert runtime.calls[-1]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "submit_output"},
+    }
+
+
 def test_loop_preserves_evidence_answer_with_conservative_incomplete_status() -> None:
     runtime = _FakeRuntime(
         responses=[

@@ -1,7 +1,7 @@
 from typing import Any, TYPE_CHECKING
 
 from openminion.modules.tool.schema_service import ToolSchemaService
-from openminion.modules.tool.dispatch import get_registry_manager
+from openminion.modules.tool.registry.runtime import binding_manager
 
 from .parser import normalize_tool_name_for_brain
 
@@ -12,12 +12,19 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 _TOOL_SCHEMA_SERVICE = ToolSchemaService()
 
 
-def _normalize_execution_tool_name(raw_name: str) -> str | None:
+def _normalize_execution_tool_name(
+    raw_name: str,
+    *,
+    registry: Any | None = None,
+) -> str | None:
     token = str(raw_name or "").strip()
     if not token:
         return None
-    manager = get_registry_manager()
-    return manager.normalize_raw_name(token) or normalize_tool_name_for_brain(token)
+    manager = binding_manager(registry)
+    return manager.normalize_raw_name(token) or normalize_tool_name_for_brain(
+        token,
+        registry=registry,
+    )
 
 
 def collect_runtime_tool_schemas(
@@ -29,7 +36,10 @@ def collect_runtime_tool_schemas(
         return []
     schemas = _TOOL_SCHEMA_SERVICE.collect_execution_tool_schemas(
         registry=registry,
-        normalize_name=_normalize_execution_tool_name,
+        normalize_name=lambda raw_name: _normalize_execution_tool_name(
+            raw_name,
+            registry=registry,
+        ),
         metadata=metadata,
     )
     is_allowed = getattr(tool_api, "is_tool_allowed", None)

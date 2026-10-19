@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from functools import partial
 import hashlib
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -21,6 +22,7 @@ from openminion.tools.blockchain.preparations import (
     save_prepared_transaction,
 )
 from openminion.tools.blockchain.runtime import preparation_digest
+from tests.artifact.utils import artifact_ctl
 
 
 def _old() -> str:
@@ -61,8 +63,12 @@ def _save_blockchain_record(tmp_path, session_id: str) -> None:
     )
 
 
+def _store(database_path) -> SQLiteSessionStore:
+    return SQLiteSessionStore(database_path, artifactctl=MagicMock())
+
+
 def test_retention_dry_run_and_purge_delete_dependent_rows() -> None:
-    store = SQLiteSessionStore(":memory:")
+    store = _store(":memory:")
     sid = store.create_session(session_id="retention-old")
     store.append_turn(sid, "user", "delete me")
     store.update_summary(sid, "summary", based_on_seq=1)
@@ -85,7 +91,7 @@ def test_retention_dry_run_and_purge_delete_dependent_rows() -> None:
 
 
 def test_retention_blocks_active_hold_lease_and_share(tmp_path) -> None:
-    store = SQLiteSessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path / "sessions.db")
     sid = store.create_session(session_id="retention-blocked")
     store._record_store.update_rows(
         "sessions", {"session_id": sid}, {"updated_at": _old(), "status": "closed"}
@@ -124,7 +130,7 @@ def test_retention_blocks_active_hold_lease_and_share(tmp_path) -> None:
 
 
 def test_retention_changed_snapshot_refuses_purge() -> None:
-    store = SQLiteSessionStore(":memory:")
+    store = _store(":memory:")
     sid = store.create_session(session_id="retention-drift")
     store._record_store.update_rows(
         "sessions", {"session_id": sid}, {"updated_at": _old(), "status": "closed"}
@@ -145,7 +151,7 @@ def test_retention_changed_snapshot_refuses_purge() -> None:
 
 
 def test_retention_purges_blockchain_records_before_database_rows(tmp_path) -> None:
-    store = SQLiteSessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path / "sessions.db")
     sid = store.create_session(session_id="retention-blockchain")
     store._record_store.update_rows(
         "sessions", {"session_id": sid}, {"updated_at": _old(), "status": "closed"}
@@ -176,7 +182,7 @@ def test_retention_purges_blockchain_records_before_database_rows(tmp_path) -> N
 def test_retention_domain_failure_preserves_database_and_retry_converges(
     tmp_path, monkeypatch
 ) -> None:
-    store = SQLiteSessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path / "sessions.db")
     sid = store.create_session(session_id="retention-retry")
     store._record_store.update_rows(
         "sessions", {"session_id": sid}, {"updated_at": _old(), "status": "closed"}
@@ -214,4 +220,75 @@ def test_retention_domain_failure_preserves_database_and_retry_converges(
 
     monkeypatch.setattr(service, "_purge_session", original)
     service.purge(plan)
+    assert store.get_session(sid) is None
+
+
+def test_retention_purge_removes_real_artifact_owner_edges(tmp_path) -> None:
+    with artifact_ctl(tmp_path) as ctl:
+        store = SQLiteSessionStore(tmp_path / "sessions.db", artifactctl=ctl)
+        sid = store.create_session(session_id="retention-artifact")
+        ref = ctl.ingest_bytes(b"evidence", original_name="evidence.txt")
+        store.append_event(
+            sid,
+            event_type="tool.run",
+            artifact_refs=[ref.ref],
+        )
+        store._record_store.update_rows(
+            "sessions",
+            {"session_id": sid},
+            {"updated_at": _old(), "status": "closed"},
+        )
+        service = SessionRetentionService(store)
+        plan = service.dry_run(
+            policy=SessionRetentionPolicy(
+                inactivity_ttl_seconds=1,
+                closed_retention_seconds=1,
+            )
+        )
+
+        service.purge(plan)
+
+        assert store.get_session(sid) is None
+        assert ref.sha256 not in ctl.index.active_reference_shas()
+
+
+def test_retention_edge_failure_occurs_after_database_delete(tmp_path) -> None:
+    artifactctl = MagicMock()
+    artifactctl.ref_remove_owner.side_effect = RuntimeError("edge failure")
+    store = SQLiteSessionStore(tmp_path / "sessions.db", artifactctl=artifactctl)
+    sid = store.create_session(session_id="retention-edge-failure")
+    store._record_store.update_rows(
+        "sessions", {"session_id": sid}, {"updated_at": _old(), "status": "closed"}
+    )
+    service = SessionRetentionService(store)
+    plan = service.dry_run(
+        policy=SessionRetentionPolicy(
+            inactivity_ttl_seconds=1,
+            closed_retention_seconds=1,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="edge failure"):
+        service.purge(plan)
+
+    assert store.get_session(sid) is None
+    artifactctl.ref_remove_owner.assert_called_once_with("session", sid)
+
+
+def test_retention_purge_supports_explicitly_disabled_artifacts(tmp_path) -> None:
+    store = SQLiteSessionStore(tmp_path / "sessions.db", artifactctl=None)
+    sid = store.create_session(session_id="retention-no-artifacts")
+    store._record_store.update_rows(
+        "sessions", {"session_id": sid}, {"updated_at": _old(), "status": "closed"}
+    )
+    service = SessionRetentionService(store)
+    plan = service.dry_run(
+        policy=SessionRetentionPolicy(
+            inactivity_ttl_seconds=1,
+            closed_retention_seconds=1,
+        )
+    )
+
+    service.purge(plan)
+
     assert store.get_session(sid) is None

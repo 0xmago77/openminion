@@ -35,10 +35,31 @@ from openminion.modules.task.project import (
 )
 from openminion.modules.task.project.turn import (
     ProjectTurnRequest,
+    project_runtime_payload,
     project_turn_from_payload,
     project_turn_inbound_metadata,
     project_turn_result_from_response,
 )
+
+
+def test_local_safe_project_turn_bypasses_only_workspace_file_mutations(
+    tmp_path,
+) -> None:
+    payload = project_runtime_payload(
+        {},
+        permission_profile_id="local-safe",
+        workspace=tmp_path,
+        turn_timeout_seconds=30,
+    )
+
+    metadata = payload["inbound_metadata"]
+    assert json.loads(metadata["permission_overrides"]) == {
+        "file.copy": "bypass",
+        "file.move": "bypass",
+        "file.write": "bypass",
+    }
+    assert "permission_mode" not in metadata
+    assert "session_action_policy_mode_override" not in metadata
 
 
 def _task_record(state: TaskLifecycleState = TaskLifecycleState.ACTIVE):

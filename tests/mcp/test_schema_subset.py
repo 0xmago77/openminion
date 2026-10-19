@@ -246,6 +246,25 @@ def test_invalid_json_schema_is_rejected_at_registration() -> None:
         prepare_mcp_registration_schema({"type": "not-a-json-schema-type"})
 
 
+def test_schema_registration_rejects_excessive_depth_iteratively() -> None:
+    schema: dict = {}
+    cursor = schema
+    for _ in range(101):
+        nested: dict = {}
+        cursor["x-nested"] = nested
+        cursor = nested
+
+    with pytest.raises(MCPUnsupportedSchemaError, match="maximum depth"):
+        prepare_mcp_registration_schema(schema)
+
+
+def test_schema_registration_rejects_excessive_node_count() -> None:
+    schema = {"enum": list(range(10_001))}
+
+    with pytest.raises(MCPUnsupportedSchemaError, match="maximum size"):
+        prepare_mcp_registration_schema(schema)
+
+
 @pytest.mark.parametrize(
     ("schema_type", "value"),
     [

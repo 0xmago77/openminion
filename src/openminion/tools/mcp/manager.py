@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import atexit
+import logging
 import threading
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,9 +25,11 @@ from .errors import (
 )
 from .elicitation import OpenMinionElicitationHandler
 from .interfaces import (
+    MCPCapabilityApplyResult,
     MCPCapabilityChangeListener,
     MCPClientCapabilityState,
     MCPProgressListener,
+    MCPSamplingHandler,
     MCPServerFailure,
 )
 from .sampling import sampling_handler_from_runtime_config
@@ -44,6 +47,9 @@ from .results import MCPCallError, MCPManagerError
 from .session import MCPServerSession
 from .risk import resolve_mcp_tool_posture as _resolve_mcp_tool_posture
 from .transport import MCPAuthorizationError
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -74,9 +80,15 @@ class MCPFleetManager:
         progress_listener: MCPProgressListener | None = None,
         discovery_cache_ttl_seconds: float = 0.0,
         token_store: MCPTokenStore | None = None,
+        sampling_handler: MCPSamplingHandler | None = None,
     ) -> None:
+        explicit_client_capabilities = client_capability_state is not None
         self._client_capability_state = (
-            client_capability_state or _default_client_capability_state(servers)
+            client_capability_state
+            or _default_client_capability_state(
+                servers,
+                sampling_handler=sampling_handler,
+            )
         )
         self._capability_change_listener = capability_change_listener
         self._progress_listener = progress_listener
@@ -98,7 +110,23 @@ class MCPFleetManager:
         self._sessions = {
             server.name: MCPServerSession(
                 server,
-                client_capability_state=self._client_capability_state,
+                client_capability_state=(
+                    self._client_capability_state
+                    if explicit_client_capabilities
+                    else MCPClientCapabilityState(
+                        roots=_default_client_capability_state([server]).roots,
+                        sampling_handler=self._client_capability_state.sampling_handler,
+                        elicitation_handler=(
+                            self._client_capability_state.elicitation_handler
+                        ),
+                        sampling_tools_supported=(
+                            self._client_capability_state.sampling_tools_supported
+                        ),
+                        elicitation_url_supported=(
+                            self._client_capability_state.elicitation_url_supported
+                        ),
+                    )
+                ),
                 capability_change_handler=self._on_capability_change,
                 progress_listener=self._progress_listener,
                 token_store=token_store,
@@ -106,6 +134,7 @@ class MCPFleetManager:
             for server in enabled_servers
         }
         self._refresh_pending: set[tuple[str, str]] = set()
+        self._refresh_dirty: set[tuple[str, str]] = set()
         self._refresh_executor = (
             ThreadPoolExecutor(
                 max_workers=min(len(self._sessions), 4),
@@ -115,6 +144,7 @@ class MCPFleetManager:
             else None
         )
         self._registered_atexit = False
+        self._closed = False
         if self._sessions:
             atexit.register(self.close)
             self._registered_atexit = True
@@ -142,22 +172,11 @@ class MCPFleetManager:
             return cls(servers=[])
         servers = list(runtime_config.mcp_servers)
         sampling_handler = sampling_handler_from_runtime_config(runtime_config)
-        default_state = _default_client_capability_state(servers)
-        client_capability_state = (
-            MCPClientCapabilityState(
-                roots=default_state.roots,
-                sampling_handler=sampling_handler,
-                elicitation_handler=default_state.elicitation_handler,
-                elicitation_url_supported=default_state.elicitation_url_supported,
-            )
-            if sampling_handler is not None
-            else None
-        )
         return cls(
             servers=servers,
-            client_capability_state=client_capability_state,
             discovery_cache_ttl_seconds=runtime_config.mcp_discovery_cache_ttl_seconds,
             token_store=build_runtime_mcp_token_store(runtime_config),
+            sampling_handler=sampling_handler,
         )
 
     def bind_sampling_executor(self, executor: Any) -> None:
@@ -179,6 +198,11 @@ class MCPFleetManager:
         set_url_supported = getattr(handler, "set_url_supported", None)
         if callable(set_url_supported):
             set_url_supported(bool(url_supported))
+
+    def bind_capability_change_listener(
+        self, listener: MCPCapabilityChangeListener | None
+    ) -> None:
+        self._capability_change_listener = listener
 
     def mcp_sampling_events(self) -> list[dict[str, Any]]:
         handler = self._client_capability_state.sampling_handler
@@ -282,7 +306,7 @@ class MCPFleetManager:
             ok=True,
             restart_total=session.restart_total,
         )
-        self._clear_failed_server(session.server_name)
+        self._clear_failed_server(session.server_name, primitive="tools")
         return result
 
     def get_prompt(
@@ -447,8 +471,15 @@ class MCPFleetManager:
 
     def close(self) -> None:
         with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
             refresh_executor = self._refresh_executor
             self._refresh_executor = None
+            registered_atexit = self._registered_atexit
+            self._registered_atexit = False
+        if registered_atexit:
+            atexit.unregister(self.close)
         if refresh_executor is not None:
             refresh_executor.shutdown(wait=True, cancel_futures=True)
         for session in self._sessions.values():
@@ -501,11 +532,7 @@ class MCPFleetManager:
                 server_name = future_map[future]
                 try:
                     items = future.result()
-                except (
-                    MCPServerUnavailableError,
-                    MCPTimeoutError,
-                    MCPProtocolError,
-                ) as exc:
+                except MCPTransportError as exc:
                     self._record_failed_server(
                         server_name=server_name,
                         primitive=primitive,
@@ -594,61 +621,151 @@ class MCPFleetManager:
         key = (server_name, primitive)
         with self._state_lock:
             executor = self._refresh_executor
-            if executor is None or key in self._refresh_pending:
+            if executor is None:
+                return
+            if key in self._refresh_pending:
+                self._refresh_dirty.add(key)
                 return
             self._refresh_pending.add(key)
-            executor.submit(
-                self._run_capability_refresh,
+            self._submit_capability_refresh(
+                executor,
                 server_name=server_name,
                 primitive=primitive,
             )
 
-    def _run_capability_refresh(self, *, server_name: str, primitive: str) -> None:
-        try:
-            self._refresh_capability_change(
+    def _submit_capability_refresh(
+        self,
+        executor: ThreadPoolExecutor,
+        *,
+        server_name: str,
+        primitive: str,
+    ) -> None:
+        future = executor.submit(
+            self._run_capability_refresh,
+            server_name=server_name,
+            primitive=primitive,
+        )
+        future.add_done_callback(
+            lambda completed: self._log_capability_refresh_failure(
+                completed,
                 server_name=server_name,
                 primitive=primitive,
             )
+        )
+
+    @staticmethod
+    def _log_capability_refresh_failure(
+        future: Future[Any], *, server_name: str, primitive: str
+    ) -> None:
+        if future.cancelled():
+            return
+        error = future.exception()
+        if error is None:
+            return
+        logger.error(
+            "Unexpected MCP capability refresh failure for %s/%s",
+            server_name,
+            primitive,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+
+    def _run_capability_refresh(self, *, server_name: str, primitive: str) -> None:
+        key = (server_name, primitive)
+        pending_released = False
+        try:
+            while True:
+                with self._state_lock:
+                    self._refresh_dirty.discard(key)
+                self._refresh_capability_change(
+                    server_name=server_name,
+                    primitive=primitive,
+                )
+                with self._state_lock:
+                    if key in self._refresh_dirty:
+                        continue
+                    self._refresh_pending.discard(key)
+                    pending_released = True
+                    return
         finally:
-            with self._state_lock:
-                self._refresh_pending.discard((server_name, primitive))
+            if not pending_released:
+                with self._state_lock:
+                    executor = self._refresh_executor
+                    if key in self._refresh_dirty and executor is not None:
+                        self._refresh_dirty.discard(key)
+                        self._submit_capability_refresh(
+                            executor,
+                            server_name=server_name,
+                            primitive=primitive,
+                        )
+                    else:
+                        self._refresh_dirty.discard(key)
+                        self._refresh_pending.discard(key)
 
     def _refresh_capability_change(self, *, server_name: str, primitive: str) -> None:
         session = self._sessions.get(server_name)
         if session is None:
             return
-        self.invalidate_discovery_cache(primitive)
-        old_catalog = set(self._catalog_for(primitive, server_name))
-        try:
-            items = self._discover_for_session(primitive=primitive, session=session)
-        except (MCPServerUnavailableError, MCPTimeoutError, MCPProtocolError) as exc:
-            self._record_failed_server(
+        primitives = (
+            ("resources", "resource_templates")
+            if primitive == "resources"
+            else (primitive,)
+        )
+        snapshots: dict[str, tuple[Any, ...]] = {}
+        added_by_primitive: dict[str, tuple[str, ...]] = {}
+        removed_by_primitive: dict[str, tuple[str, ...]] = {}
+        for refreshed_primitive in primitives:
+            self.invalidate_discovery_cache(refreshed_primitive)
+            old_catalog = set(self._catalog_for(refreshed_primitive, server_name))
+            try:
+                items = self._discover_for_session(
+                    primitive=refreshed_primitive,
+                    session=session,
+                )
+            except MCPTransportError as exc:
+                self._record_failed_server(
+                    server_name=server_name,
+                    primitive=refreshed_primitive,
+                    exc=exc,
+                )
+                return
+            self._update_catalog(
+                primitive=refreshed_primitive,
                 server_name=server_name,
-                primitive=primitive,
-                exc=exc,
+                items=items,
             )
-            return
-        self._update_catalog(primitive=primitive, server_name=server_name, items=items)
-        self._clear_failed_server(server_name, primitive=primitive)
-        new_catalog = set(self._catalog_for(primitive, server_name))
-        added = tuple(sorted(new_catalog - old_catalog))
-        removed = tuple(sorted(old_catalog - new_catalog))
-        event = {
-            "server_name": server_name,
-            "primitive": primitive,
-            "added": list(added),
-            "removed": list(removed),
-        }
-        with self._state_lock:
-            self._capability_change_events.append(event)
+            self._clear_failed_server(server_name, primitive=refreshed_primitive)
+            new_catalog = set(self._catalog_for(refreshed_primitive, server_name))
+            snapshots[refreshed_primitive] = tuple(items)
+            added_by_primitive[refreshed_primitive] = tuple(
+                sorted(new_catalog - old_catalog)
+            )
+            removed_by_primitive[refreshed_primitive] = tuple(
+                sorted(old_catalog - new_catalog)
+            )
+
         listener = self._capability_change_listener
-        if listener is not None:
+        apply_result = (
             listener.capability_changed(
                 server_name=server_name,
-                primitive=primitive,
-                added=added,
-                removed=removed,
+                snapshots=snapshots,
+                added=added_by_primitive,
+                removed=removed_by_primitive,
             )
+            if listener is not None
+            else MCPCapabilityApplyResult(status="discovery_only")
+        )
+        with self._state_lock:
+            for refreshed_primitive in primitives:
+                self._capability_change_events.append(
+                    {
+                        "server_name": server_name,
+                        "primitive": refreshed_primitive,
+                        "added": list(added_by_primitive[refreshed_primitive]),
+                        "removed": list(removed_by_primitive[refreshed_primitive]),
+                        "apply_status": apply_result.status,
+                        "apply_error": apply_result.error,
+                    }
+                )
 
     def _catalog_for(self, primitive: str, server_name: str) -> tuple[str, ...]:
         with self._state_lock:
@@ -729,6 +846,8 @@ __all__ = [
 
 def _default_client_capability_state(
     servers: list[MCPServerConfig],
+    *,
+    sampling_handler: MCPSamplingHandler | None = None,
 ) -> MCPClientCapabilityState:
     roots: list[MCPRoot] = []
     seen_uris: set[str] = set()
@@ -754,5 +873,6 @@ def _default_client_capability_state(
         )
     return MCPClientCapabilityState(
         roots=tuple(roots),
+        sampling_handler=sampling_handler,
         elicitation_handler=OpenMinionElicitationHandler(mode="decline"),
     )

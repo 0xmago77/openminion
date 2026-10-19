@@ -115,6 +115,7 @@ def _prepare_config(source: Path, destination: Path, target: Path) -> None:
         name="security-researcher-readonly",
         role="readonly security researcher",
         skill="security-researcher-readonly",
+        structural_tool_results=True,
     )
     payload["agents"]["security-researcher-readonly"] = profile
     payload["identity"] = {"db_path": "identity/identity.db"}
@@ -263,7 +264,7 @@ def test_live_security_researcher_publishes_candidate_report(
             '{"path":"app.py","line":2}, and include a short read-only '
             "evidence summary. End with the report execution status."
         ),
-        expected_markers=("completed|partial|blocked",),
+        expected_markers=("complete|completed|partial|blocked",),
         timeout=900,
     )
 

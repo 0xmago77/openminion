@@ -273,9 +273,8 @@ class LLMCTLBridgeProvider(LLMProvider):
             payload = provider_history_payload(item)
             if payload is not None:
                 messages.append(payload)
-
-        messages.append({"role": "user", "content": str(request.user_message)})
-
+        if request.user_message:
+            messages.append({"role": "user", "content": str(request.user_message)})
         tools = [
             {
                 "name": tool.name,
@@ -309,6 +308,7 @@ class LLMCTLBridgeProvider(LLMProvider):
             tool_choice=request.tool_choice,
             metadata=metadata,
             thinking=request.thinking,
+            max_output_tokens=request.max_output_tokens,
             env=self._env,
             policy=behavior_profile.retry_override_policy,
         )

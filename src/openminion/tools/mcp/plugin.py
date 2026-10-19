@@ -487,25 +487,32 @@ def _describe_runtime_tool_name(runtime_tool_name: str) -> tuple[str, str]:
     )
 
 
+def build_mcp_specs(state: Any) -> tuple[ToolSpec, ...]:
+    specs = [
+        build_mcp_tool_spec(manager=state.manager, tool=tool)
+        for tool in state.supported_tools
+    ]
+    specs.extend(
+        build_mcp_prompt_spec(manager=state.manager, prompt=prompt)
+        for prompt in state.supported_prompts
+    )
+    specs.extend(
+        build_mcp_resource_spec(manager=state.manager, resource=resource)
+        for resource in state.supported_resources
+    )
+    specs.extend(
+        build_mcp_resource_template_spec(manager=state.manager, template=template)
+        for template in state.supported_resource_templates
+    )
+    return tuple(specs)
+
+
 def register(registry: ToolRegistry, ctx: ToolRegisterContext | None = None) -> None:
     state = require_mcp_tool_registration_state(
         ctx.prepared_state if ctx is not None else None
     )
-    for tool in state.supported_tools:
-        registry.register(build_mcp_tool_spec(manager=state.manager, tool=tool))
-    for prompt in state.supported_prompts:
-        registry.register(build_mcp_prompt_spec(manager=state.manager, prompt=prompt))
-    for resource in state.supported_resources:
-        registry.register(
-            build_mcp_resource_spec(manager=state.manager, resource=resource)
-        )
-    for template in state.supported_resource_templates:
-        registry.register(
-            build_mcp_resource_template_spec(
-                manager=state.manager,
-                template=template,
-            )
-        )
+    for spec in build_mcp_specs(state):
+        registry.register(spec)
 
 
 def _mcp_error_details(
@@ -525,6 +532,7 @@ def _mcp_error_details(
 
 __all__ = [
     "MCPArgumentValidationError",
+    "build_mcp_specs",
     "build_mcp_prompt_spec",
     "build_mcp_resource_spec",
     "build_mcp_resource_template_spec",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,7 +9,8 @@ from urllib import parse as urllib_parse
 
 import pytest
 
-from openminion.base.config.io import load_config
+from openminion.base.config.core import OpenMinionConfig
+from openminion.base.config.io import load_config, save_config
 from openminion.base.config.mcp import MCPAuthorizationConfig, MCPServerConfig
 from openminion.cli.commands.mcp import run_mcp
 from openminion.cli.parser.base import build_parser
@@ -20,6 +21,7 @@ from openminion.tools.mcp.auth import (
     SecretServiceMCPTokenStore,
     store_oauth_transaction,
 )
+from openminion.tools.mcp.oauth_callback import MCPOAuthCallbackResult
 
 
 def _args(mcp_command: str, **kwargs):
@@ -217,6 +219,25 @@ def test_mcp_validate_reports_untrusted_stdio(tmp_path: Path, capsys) -> None:
     assert payload["issues"][0]["reason_code"] == "mcp_stdio_untrusted"
 
 
+def test_mcp_validate_allows_untrusted_stdio_when_trust_is_not_required(
+    tmp_path: Path, capsys
+) -> None:
+    config = _write_json(
+        tmp_path / "openminion.json",
+        _runtime_config(
+            {
+                "name": "Fixture",
+                "transport": "stdio",
+                "command": ["python", "server.py"],
+                "stdio_sandbox": {"require_trust": False},
+            }
+        ),
+    )
+
+    assert run_mcp(_args("validate", config=str(config))) == 0
+    assert json.loads(capsys.readouterr().out)["issues"] == []
+
+
 def test_mcp_parser_rejects_unimplemented_lifecycle_commands() -> None:
     parser = build_parser()
     for command in ("restart", "logs"):
@@ -236,6 +257,289 @@ def test_mcp_parser_accepts_stdio_and_http_add_forms() -> None:
     assert stdio.command == ["python", "server.py"]
     assert stdio.trusted is True
     assert remote.url == "https://mcp.example/mcp"
+
+
+def test_mcp_parser_accepts_complete_add_configuration() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "mcp",
+            "add",
+            "local",
+            "--startup-timeout",
+            "20",
+            "--request-timeout",
+            "45",
+            "--stderr-buffer-bytes",
+            "32768",
+            "--env",
+            "MODE=first",
+            "--env",
+            "MODE=last",
+            "--env-secret",
+            "TOKEN=secret://mcp/token",
+            "--auth",
+            "oauth-pkce",
+            "--client-id",
+            "openminion-cli",
+            "--client-issuer",
+            "https://auth.example",
+            "--authorization-metadata-url",
+            "https://auth.example/.well-known/oauth-authorization-server",
+            "--authorization-endpoint",
+            "https://auth.example/authorize",
+            "--token-endpoint",
+            "https://auth.example/token",
+            "--registration-endpoint",
+            "https://auth.example/register",
+            "--revocation-endpoint",
+            "https://auth.example/revoke",
+            "--redirect-uri",
+            "http://127.0.0.1/callback",
+            "--scope",
+            "mcp.read mcp.write",
+            "--access-token-ref",
+            "mcp-access",
+            "--refresh-token-ref",
+            "mcp-refresh",
+            "--approval-mode",
+            "matching",
+            "--approval-tool",
+            "files.*",
+            "--approval-risk",
+            "high",
+            "--no-sandbox-require-trust",
+            "--sandbox-cwd",
+            "/workspace",
+            "--sandbox-env",
+            "MODE",
+            "--sandbox-inherit-env",
+            "PATH",
+            "--sandbox-package-name",
+            "fixture",
+            "--sandbox-package-version",
+            "1.2.3",
+            "--sandbox-trust-reason",
+            "operator reviewed",
+            "--risk-override",
+            '{"pattern":"files.write","min_scope":"POWER_USER","dangerous":true}',
+            "--trusted",
+            "--required",
+            "--command",
+            "python",
+            "server.py",
+        ]
+    )
+
+    assert args.env == [("MODE", "first"), ("MODE", "last")]
+    assert args.env_secret == [("TOKEN", "secret://mcp/token")]
+    assert args.auth == "oauth-pkce"
+    assert args.client_issuer == "https://auth.example"
+    assert args.sandbox_require_trust is False
+    assert args.risk_override[0].pattern == "files.write"
+    assert args.command == ["python", "server.py"]
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--env", "MISSING_SEPARATOR"),
+        ("--env-secret", "TOKEN="),
+        ("--risk-override", "not-json"),
+        ("--risk-override", "[]"),
+    ],
+)
+def test_mcp_parser_rejects_malformed_add_values(option: str, value: str) -> None:
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["mcp", "add", "local", option, value, "--command", "fixture"]
+        )
+
+
+@pytest.mark.parametrize(
+    "option",
+    (
+        "--bearer-token",
+        "--access-token",
+        "--client-secret",
+        "--client-secret-ref",
+        "--package-metadata",
+    ),
+)
+def test_mcp_parser_rejects_plaintext_and_provenance_add_flags(option: str) -> None:
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["mcp", "add", "local", option, "private", "--command", "fixture"]
+        )
+
+
+def test_mcp_add_round_trips_complete_stdio_configuration(
+    tmp_path: Path, capsys
+) -> None:
+    config = _write_json(
+        tmp_path / "openminion.json",
+        {
+            "runtime": {"mcp_servers": []},
+            "agents": {"default": {"provider": "echo"}},
+            "default_agent": "default",
+        },
+    )
+
+    assert (
+        run_mcp(
+            _args(
+                "add",
+                config=str(config),
+                name="Local Fixture",
+                command=["python", "server.py"],
+                url="",
+                cwd=str(tmp_path),
+                trusted=True,
+                required=True,
+                disabled=False,
+                startup_timeout=20.0,
+                request_timeout=45.0,
+                stderr_buffer_bytes=32768,
+                env=[("MODE", "first"), ("MODE", "last")],
+                env_secret=[("TOKEN", "secret://mcp/token")],
+                auth="oauth-pkce",
+                bearer_token_ref="",
+                client_id="openminion-cli",
+                client_issuer="",
+                authorization_metadata_url=(
+                    "https://auth.example/.well-known/oauth-authorization-server"
+                ),
+                authorization_endpoint="https://auth.example/authorize",
+                token_endpoint="https://auth.example/token",
+                registration_endpoint="https://auth.example/register",
+                revocation_endpoint="https://auth.example/revoke",
+                redirect_uri="http://127.0.0.1/callback",
+                scope="mcp.read mcp.write",
+                access_token_ref="mcp-access",
+                refresh_token_ref="mcp-refresh",
+                approval_mode="matching",
+                approval_tool=["files.*"],
+                approval_risk=["high"],
+                sandbox_require_trust=False,
+                sandbox_cwd=[str(tmp_path)],
+                sandbox_env=["MODE"],
+                sandbox_inherit_env=["PATH"],
+                sandbox_package_name="fixture",
+                sandbox_package_version="1.2.3",
+                sandbox_trust_reason="operator reviewed",
+                risk_override=[
+                    {
+                        "pattern": "files.write",
+                        "min_scope": "POWER_USER",
+                        "dangerous": True,
+                        "idempotent": False,
+                    }
+                ],
+            )
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["server"]["startup_timeout_seconds"] == 20.0
+    assert output["server"]["request_timeout_seconds"] == 45.0
+    assert output["server"]["stderr_buffer_bytes"] == 32768
+    assert output["server"]["env"] == {"MODE": "<redacted>"}
+    assert output["server"]["approval"] == {
+        "mode": "matching",
+        "risk_levels": ["high"],
+        "tool_patterns": ["files.*"],
+    }
+    assert output["server"]["stdio_sandbox"] == {
+        "cwd_allowlist": [str(tmp_path)],
+        "env_allowlist": ["MODE"],
+        "inherit_env_allowlist": ["PATH"],
+        "package_name": "fixture",
+        "package_version": "1.2.3",
+        "require_trust": False,
+        "trust_reason": "operator reviewed",
+    }
+    assert output["server"]["tool_risk_overrides"] == [
+        {
+            "dangerous": True,
+            "idempotent": False,
+            "min_scope": "POWER_USER",
+            "pattern": "files.write",
+        }
+    ]
+
+    server = load_config(str(config)).runtime.mcp_servers[0]
+    assert server.required is True
+    assert server.env == {"MODE": "last"}
+    assert server.env_secret_refs == {"TOKEN": "secret://mcp/token"}
+    assert server.authorization.mode == "oauth_pkce"
+    assert server.authorization.authorization_server_metadata_url == (
+        "https://auth.example/.well-known/oauth-authorization-server"
+    )
+    assert server.authorization.authorization_endpoint == (
+        "https://auth.example/authorize"
+    )
+    assert server.authorization.token_endpoint == "https://auth.example/token"
+    assert server.authorization.registration_endpoint == (
+        "https://auth.example/register"
+    )
+    assert server.authorization.revocation_endpoint == "https://auth.example/revoke"
+    assert server.authorization.redirect_uri == "http://127.0.0.1/callback"
+    assert server.authorization.scope == "mcp.read mcp.write"
+    assert server.authorization.access_token_ref == "mcp-access"
+    assert server.authorization.refresh_token_ref == "mcp-refresh"
+    assert server.approval.tool_patterns == ["files.*"]
+    assert server.stdio_sandbox.package_name == "fixture"
+    assert server.tool_risk_overrides[0].pattern == "files.write"
+    assert server.package_metadata.to_dict() == {
+        "install_command": [],
+        "origin": "",
+        "trust_state": "",
+        "version": "",
+    }
+
+
+def test_mcp_add_round_trips_bearer_reference(tmp_path: Path, capsys) -> None:
+    config = _write_json(
+        tmp_path / "openminion.json",
+        {
+            "runtime": {"mcp_servers": []},
+            "agents": {"default": {"provider": "echo"}},
+            "default_agent": "default",
+        },
+    )
+
+    assert (
+        run_mcp(
+            _args(
+                "add",
+                config=str(config),
+                name="Remote Fixture",
+                command=[],
+                url="https://mcp.example/mcp",
+                cwd="",
+                trusted=False,
+                disabled=False,
+                auth="bearer",
+                bearer_token_ref="secret://mcp/bearer",
+            )
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["server"]["authorization"] == {
+        "bearer_token": "",
+        "bearer_token_ref": "secret://mcp/bearer",
+        "mode": "bearer",
+    }
+    authorization = load_config(str(config)).runtime.mcp_servers[0].authorization
+    assert authorization.bearer_token == ""
+    assert authorization.bearer_token_ref == "secret://mcp/bearer"
 
 
 def test_mcp_config_lifecycle_preserves_unrelated_config(
@@ -517,6 +821,46 @@ def test_mcp_test_reports_failed_server(monkeypatch, capsys) -> None:
     }
 
 
+@pytest.mark.parametrize("command", ("test", "browse"))
+def test_mcp_discovery_commands_reject_unknown_server(
+    command: str, tmp_path: Path
+) -> None:
+    config = _write_json(
+        tmp_path / "openminion.json",
+        _runtime_config(
+            {
+                "name": "Fixture",
+                "transport": "stdio",
+                "command": ["python", "server.py"],
+                "trusted": True,
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="MCP server not found: missing"):
+        run_mcp(_args(command, config=str(config), name="missing"))
+
+
+@pytest.mark.parametrize("command", ("test", "browse"))
+def test_mcp_discovery_commands_reject_disabled_server(
+    command: str, tmp_path: Path
+) -> None:
+    config = _write_json(
+        tmp_path / "openminion.json",
+        _runtime_config(
+            {
+                "name": "Fixture",
+                "enabled": False,
+                "transport": "stdio",
+                "command": ["python", "server.py"],
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="MCP server is disabled: fixture"):
+        run_mcp(_args(command, config=str(config), name="fixture"))
+
+
 class _RegistryResponse:
     def __enter__(self):
         return self
@@ -575,7 +919,14 @@ def _oauth_server() -> MCPServerConfig:
 
 
 def test_mcp_login_starts_cimd_pkce_flow(monkeypatch, capsys) -> None:
-    server = _oauth_server()
+    base_server = _oauth_server()
+    server = replace(
+        base_server,
+        authorization=replace(
+            base_server.authorization,
+            client_issuer="https://auth.example",
+        ),
+    )
     secrets = _FakeSecretService()
     config_manager = SimpleNamespace(
         base_config=SimpleNamespace(runtime=SimpleNamespace(mcp_servers=[server])),
@@ -610,12 +961,13 @@ def test_mcp_login_starts_cimd_pkce_flow(monkeypatch, capsys) -> None:
         lambda **_kwargs: secrets,
     )
 
-    assert run_mcp(_args("login", name="remote", code="", issuer="")) == 0
+    assert run_mcp(_args("login", name="remote", code="", issuer="", manual=True)) == 0
     payload = json.loads(capsys.readouterr().out)
     query = urllib_parse.parse_qs(
         urllib_parse.urlparse(payload["authorization_url"]).query
     )
     assert payload["client_registration"] == "cimd"
+    assert server.authorization.client_issuer == "https://auth.example"
     assert payload["issuer_required"] is True
     assert "code_verifier" not in payload
     assert query["resource"] == ["https://mcp.example/mcp"]
@@ -625,6 +977,117 @@ def test_mcp_login_starts_cimd_pkce_flow(monkeypatch, capsys) -> None:
     assert "private-verifier" not in json.dumps(payload)
     assert "code_verifier" in transaction_payload
     assert "https://mcp.example/auth-resource" in transaction_payload
+
+
+def test_mcp_login_automates_dcr_loopback_and_persists_public_client(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    server = MCPServerConfig(
+        name="Remote",
+        transport="streamable_http",
+        url="https://mcp.example/mcp",
+        authorization=MCPAuthorizationConfig(
+            mode="oauth_pkce",
+            access_token_ref="remote-access",
+        ),
+    )
+    config = OpenMinionConfig()
+    config.runtime.mcp_servers = [server]
+    config_path = tmp_path / "config.json"
+    save_config(config, str(config_path), home_root=tmp_path)
+    secrets = _FakeSecretService()
+    config_manager = SimpleNamespace(
+        base_config=config,
+        config_path=config_path,
+        home_root=tmp_path,
+        data_root=tmp_path,
+        env=object(),
+    )
+    metadata = MCPOAuthMetadata(
+        authorization_endpoint="https://auth.example/authorize",
+        token_endpoint="https://auth.example/token",
+        registration_endpoint="https://auth.example/register",
+        issuer="https://auth.example",
+        code_challenge_methods_supported=("S256",),
+    )
+    opened: list[str] = []
+
+    class _Callback:
+        redirect_uri = "http://127.0.0.1:43123/callback"
+
+        def __init__(self, _redirect_uri: str = "") -> None:
+            pass
+
+        def wait(self, *, expected_state: str, timeout_seconds: float):
+            assert expected_state
+            assert timeout_seconds == 7
+            return MCPOAuthCallbackResult(code="authorization-code")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "openminion.cli.config.load_cli_manager_from_args",
+        lambda _args: config_manager,
+    )
+    monkeypatch.setattr(
+        "openminion.modules.secret.factory.build_secret_service",
+        lambda **_kwargs: secrets,
+    )
+    monkeypatch.setattr(
+        "openminion.tools.mcp.transport.probe_oauth_challenge",
+        lambda _server: {
+            "resource_metadata": "https://mcp.example/auth-resource",
+            "scope": "mcp.read",
+        },
+    )
+    monkeypatch.setattr(
+        "openminion.tools.mcp.auth.discover_oauth_metadata",
+        lambda _config, **_kwargs: metadata,
+    )
+    monkeypatch.setattr(
+        "openminion.tools.mcp.auth.register_oauth_client",
+        lambda **_kwargs: {
+            "client_id": "generated-public-client",
+            "token_endpoint_auth_method": "none",
+        },
+    )
+    monkeypatch.setattr(
+        "openminion.tools.mcp.auth.exchange_authorization_code",
+        lambda **_kwargs: MCPOAuthTokenState(access_token="access-secret"),
+    )
+    monkeypatch.setattr(
+        "openminion.tools.mcp.oauth_callback.MCPOAuthCallbackServer",
+        _Callback,
+    )
+    monkeypatch.setattr(
+        "openminion.cli.commands.mcp.webbrowser.open",
+        lambda url: opened.append(url) or False,
+    )
+
+    assert (
+        run_mcp(
+            _args(
+                "login",
+                name="remote",
+                code="",
+                issuer="",
+                manual=False,
+                callback_timeout=7,
+            )
+        )
+        == 0
+    )
+
+    persisted = load_config(str(config_path), home_root=tmp_path)
+    authorization = persisted.runtime.mcp_servers[0].authorization
+    assert authorization.client_id == "generated-public-client"
+    assert authorization.client_issuer == "https://auth.example"
+    assert authorization.redirect_uri == ""
+    assert opened and "generated-public-client" in opened[0]
+    output = capsys.readouterr().out
+    assert "authorization_url" in output
+    assert "authorization-code" not in output
 
 
 class _FakeSecretService:

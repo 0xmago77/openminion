@@ -1,5 +1,6 @@
+import json
 import re
-from typing import Any
+from typing import Any, cast
 from collections.abc import Mapping
 
 from ..contracts.model_ids import (
@@ -147,6 +148,90 @@ def repair_structured_tool_arguments(
     return normalized
 
 
+def repair_model_tool_arguments(
+    arguments: dict[str, Any],
+    *,
+    args_model: Any,
+    channel_name: str,
+) -> dict[str, Any] | str | bytes:
+    return repair_structured_tool_arguments(
+        arguments,
+        channel_name=channel_name,
+        alias_map=_model_alias_map(args_model),
+        type_coercions=_model_type_coercions(args_model),
+    )
+
+
+def validate_model_tool_args(
+    arguments: dict[str, Any], args_model: Any, tool_name: str
+) -> dict[str, Any]:
+    repaired = repair_model_tool_arguments(
+        arguments,
+        args_model=args_model,
+        channel_name=f"model_tool:{tool_name}.args",
+    )
+    return cast(dict[str, Any], args_model.model_validate(repaired).model_dump())
+
+
+def _model_alias_map(args_model: Any) -> dict[str, str]:
+    fields = getattr(args_model, "model_fields", None)
+    if not isinstance(fields, Mapping):
+        return {}
+    alias_map: dict[str, str] = {}
+    for field_name, field_info in fields.items():
+        alias = str(getattr(field_info, "alias", "") or "").strip()
+        canonical = str(field_name or "").strip()
+        if alias and canonical and alias != canonical:
+            alias_map[alias] = canonical
+    return alias_map
+
+
+def _model_type_coercions(args_model: Any) -> dict[str, Any]:
+    schema_builder = getattr(args_model, "model_json_schema", None)
+    if not callable(schema_builder):
+        return {}
+    schema = schema_builder()
+    definitions = schema.get("$defs", {}) if isinstance(schema, Mapping) else {}
+    properties: dict[str, Any] = {}
+    for candidate in (schema, *(schema.get("anyOf", []) or [])):
+        resolved = _resolve_schema(candidate, definitions)
+        if isinstance(resolved, Mapping):
+            properties.update(resolved.get("properties", {}) or {})
+    return {
+        str(name): _decode_json_container
+        for name, field_schema in properties.items()
+        if _structured_schema_field(field_schema, definitions)
+    }
+
+
+def _resolve_schema(schema: Any, definitions: Mapping[str, Any]) -> Any:
+    if not isinstance(schema, Mapping):
+        return schema
+    ref = str(schema.get("$ref", "") or "")
+    prefix = "#/$defs/"
+    if ref.startswith(prefix):
+        return definitions.get(ref[len(prefix) :], schema)
+    return schema
+
+
+def _structured_schema_field(schema: Any, definitions: Mapping[str, Any]) -> bool:
+    resolved = _resolve_schema(schema, definitions)
+    return isinstance(resolved, Mapping) and resolved.get("type") in {
+        "array",
+        "object",
+    }
+
+
+def _decode_json_container(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not stripped.startswith(("{", "[")):
+        return value
+    decoded = json.loads(stripped)
+    return decoded if isinstance(decoded, (dict, list)) else value
+
+
 def extract_single_weather_location(user_input: str) -> str:
     text = _normalize_space(user_input)
     if not text:
@@ -204,8 +289,10 @@ def _sanitize_weather_location_candidate(raw: str) -> str:
 __all__ = [
     "extract_single_weather_location",
     "missing_simple_required_fields",
+    "repair_model_tool_arguments",
     "repair_structured_tool_arguments",
     "simple_required_fields",
     "synthesize_simple_tool_arguments",
     "tool_family_for_argument_repair",
+    "validate_model_tool_args",
 ]

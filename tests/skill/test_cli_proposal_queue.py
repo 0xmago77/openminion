@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import shlex
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -227,6 +228,13 @@ def test_cli_proposal_apply_emits_addition(tmp_path: Path) -> None:
     addition = apply_payload["addition"]
     assert addition["added_skill_id"].startswith("emergent.")
     assert addition["added_by"] == "operator-cli"
+    command = apply_payload["operator_admission_command"]
+    assert command.startswith(f"skillctl --config {shlex.quote(str(cfg))} admit ")
+    assert addition["version_hash"] in apply_payload["operator_admission_command"]
+    rc, admission_out = _run_cli_expect_failure(shlex.split(command)[1:])
+    admission_payload = json.loads(admission_out)
+    assert rc == 1
+    assert admission_payload["error"]["code"] == "SKILL_ADMISSION_VALIDATION_FAILED"
 
 
 def test_cli_proposal_apply_refuses_pending(tmp_path: Path) -> None:

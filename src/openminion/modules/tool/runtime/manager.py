@@ -142,6 +142,41 @@ class ToolRegistryManager:
         self._runtime_schema_by_tool_name = normalized
         self._compiled = None
 
+    def staged_with_module_manifest(
+        self,
+        manifest: ToolBindingManifest,
+        *,
+        runtime_tool_schemas: Mapping[str, Mapping[str, Any]],
+    ) -> "ToolRegistryManager":
+        """Compile a replacement module manifest without mutating this manager."""
+        staged = ToolRegistryManager()
+        staged.set_expected_contract_omissions(
+            model_ids=self._expected_missing_model_ids,
+            runtime_ids=self._expected_missing_runtime_ids,
+        )
+        replaced_candidates: set[str] = set()
+        for current in self._manifests:
+            if current.module_id != manifest.module_id:
+                staged.register_manifest(current)
+            else:
+                replaced_candidates.update(
+                    candidate
+                    for binding in current.runtime_bindings
+                    for candidate in binding.runtime_candidates
+                )
+        staged.register_manifest(manifest)
+        schemas = {
+            name: schema
+            for name, schema in self._runtime_schema_by_tool_name.items()
+            if name not in replaced_candidates
+        }
+        schemas.update(
+            {name: dict(schema) for name, schema in runtime_tool_schemas.items()}
+        )
+        staged.set_runtime_tool_schemas(schemas)
+        staged.compile()
+        return staged
+
     def compile(self) -> None:
         model_tools_by_id: dict[str, ModelToolDef] = {}
         schema_by_model_tool_id: dict[str, dict[str, Any]] = {}

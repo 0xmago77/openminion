@@ -327,6 +327,7 @@ def ingest_skill_url(
     url: str,
     name: str | None = None,
     scope: str = "global",
+    agent_id: str | None = None,
     max_snippet_tokens: int = 500,
     authority: Any = None,
 ) -> dict[str, Any]:
@@ -344,27 +345,16 @@ def ingest_skill_url(
 
     resolved_name = (name or "").strip() or fetch_result["suggested_name"]
     markdown = fetch_result["content"]
-
     risk_level, issues = scan(markdown)
     safe = risk_level != "critical"
     if not safe:
-        return {
-            "ok": False,
-            "error": {
-                "code": "SAFETY_REJECTED",
-                "message": "Skill ingest blocked due to critical safety findings.",
-            },
-            "risk_level": risk_level,
-            "safe": False,
-            "issues": issues,
-            "safety_enforced": True,
-            "source_type": "url",
-            "source_url": url,
-            "name": resolved_name,
-            "content_type": fetch_result.get("content_type"),
-            "content_length": fetch_result.get("content_length"),
-            "truncated": fetch_result.get("truncated"),
-        }
+        return _unsafe_ingest_result(
+            url=url,
+            name=resolved_name,
+            risk_level=risk_level,
+            issues=issues,
+            fetch_result=fetch_result,
+        )
 
     try:
         skill_id, version_hash, warnings = skill_api.ingest_url(
@@ -372,13 +362,14 @@ def ingest_skill_url(
             name=resolved_name,
             markdown=markdown,
             scope=scope,
+            agent_id=agent_id,
             authority=authority,
         )
     except Exception as exc:
         return {
             "ok": False,
             "error": {
-                "code": "INGEST_FAILED",
+                "code": str(getattr(exc, "code", "INGEST_FAILED")),
                 "message": str(exc),
             },
             "source_type": "url",
@@ -386,22 +377,35 @@ def ingest_skill_url(
             "name": resolved_name,
         }
 
-    snippet = ""
-    snippet_hash = ""
-    try:
-        snippet, snippet_hash = skill_api.render_snippet(
-            skill_id=skill_id,
-            version_hash=version_hash,
-            purpose="act",
-            max_tokens=max_snippet_tokens,
-        )
-    except Exception:
-        pass
+    lifecycle = skill_api.get_skill_version_state(
+        skill_id=skill_id,
+        version_hash=version_hash,
+    )
+    if lifecycle is None:
+        return {
+            "ok": False,
+            "error": {
+                "code": "INGEST_NOT_DURABLE",
+                "message": "Skill ingest did not create a canonical staged version.",
+            },
+        }
+
+    admission_command = operator_admission_command(
+        skill_id=skill_id, version_hash=version_hash, lifecycle=lifecycle
+    )
+    snippet, snippet_hash = _render_active_snippet(
+        skill_api,
+        skill_id=skill_id,
+        version_hash=version_hash,
+        active_version_hash=lifecycle["active_version_hash"],
+        max_tokens=max_snippet_tokens,
+    )
 
     return {
         "ok": True,
         "skill_id": skill_id,
         "version_hash": version_hash,
+        "operator_admission_command": admission_command,
         "snippet": snippet,
         "snippet_hash": snippet_hash,
         "warnings": warnings,
@@ -415,7 +419,70 @@ def ingest_skill_url(
         "content_type": fetch_result.get("content_type"),
         "content_length": fetch_result.get("content_length"),
         "truncated": fetch_result.get("truncated"),
+        **lifecycle,
     }
+
+
+def _unsafe_ingest_result(
+    *,
+    url: str,
+    name: str,
+    risk_level: str,
+    issues: list[Any],
+    fetch_result: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": {
+            "code": "SAFETY_REJECTED",
+            "message": "Skill ingest blocked due to critical safety findings.",
+        },
+        "risk_level": risk_level,
+        "safe": False,
+        "issues": issues,
+        "safety_enforced": True,
+        "source_type": "url",
+        "source_url": url,
+        "name": name,
+        "content_type": fetch_result.get("content_type"),
+        "content_length": fetch_result.get("content_length"),
+        "truncated": fetch_result.get("truncated"),
+    }
+
+
+def operator_admission_command(
+    *, skill_id: str, version_hash: str, lifecycle: dict[str, Any]
+) -> str | None:
+    if lifecycle["admission_state"] != "pending":
+        return None
+    return (
+        "openminion skill admit "
+        f"--skill-id {skill_id} --version-hash {version_hash} "
+        f"--expected-active-version-hash {lifecycle['active_version_hash'] or 'none'} "
+        '--target-status verified --reason "Reviewed and approved staged skill"'
+    )
+
+
+def _render_active_snippet(
+    skill_api: Any,
+    *,
+    skill_id: str,
+    version_hash: str,
+    active_version_hash: str | None,
+    max_tokens: int,
+) -> tuple[str, str]:
+    if active_version_hash != version_hash:
+        return "", ""
+    try:
+        snippet, snippet_hash = skill_api.render_snippet(
+            skill_id=skill_id,
+            version_hash=version_hash,
+            purpose="act",
+            max_tokens=max_tokens,
+        )
+        return str(snippet), str(snippet_hash)
+    except Exception:
+        return "", ""
 
 
 __all__ = [

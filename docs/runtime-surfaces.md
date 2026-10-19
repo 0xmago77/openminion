@@ -169,6 +169,19 @@ Notes:
 10. see `docs/graph-viewer.md` and `examples/graph-viewer/` for a copyable
    third-brain provider envelope.
 
+### 6. ACP and published MCP
+
+Use `openminion acp` for a local Agent Client Protocol connection. ACP sends
+assistant text plus tool-call lifecycle updates (`in_progress`, `completed`,
+or `failed`). Tool arguments and tool output are not copied into those progress
+updates; approvals continue through ACP's permission request.
+
+When `runtime.mcp_publish` is enabled, `openminion mcp serve` publishes the
+allowed runtime tools over MCP. Published tools declare input and output
+schemas. Successful calls return the same JSON object as a text content block
+and as `structuredContent`; output that does not match the declared schema is
+returned as an MCP tool error.
+
 ## Example surfaces
 
 The package-owned `examples/` tree is part of the public teaching surface:
