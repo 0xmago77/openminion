@@ -379,8 +379,8 @@ def test_sync_failure_restores_source_store_and_sidecars(
     }
     original_load = ctl.load_profiles_from_path
 
-    def fail_after_sync(path: Path) -> list[str]:
-        original_load(path)
+    def fail_after_sync(path: Path, *, identity_root: Path | None = None) -> list[str]:
+        original_load(path, identity_root=identity_root)
         raise RuntimeError("forced synchronization failure")
 
     monkeypatch.setattr(ctl, "load_profiles_from_path", fail_after_sync)
@@ -421,7 +421,11 @@ def test_empty_sync_result_is_rolled_back(
     source = identity_root / "ops-agent" / "profile.yaml"
     original_yaml = source.read_text(encoding="utf-8")
     original_row = ctl.store.get_profile("ops-agent")
-    monkeypatch.setattr(ctl, "load_profiles_from_path", lambda _path: [])
+    monkeypatch.setattr(
+        ctl,
+        "load_profiles_from_path",
+        lambda _path, *, identity_root=None: [],
+    )
     _write_profile(candidate, _profile_payload(mission="Rejected mission."))
 
     with pytest.raises(IdentityOperatorError, match="synchronization failed"):
