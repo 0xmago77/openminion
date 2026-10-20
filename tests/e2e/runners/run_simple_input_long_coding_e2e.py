@@ -21,11 +21,13 @@ isolate_runtime_roots(prefix="openminion-silc-")
 
 _LOCAL_TARGETS = (
     "tests/e2e/cli/focus/test_simple_input_project.py",
+    "tests/e2e/cli/focus/test_goal_only.py",
     "tests/scripts/test_simple_input_long_coding_runner.py",
 )
 _LIVE_TARGETS = (
     "tests/e2e/cli/focus/test_live_simple_input_project.py",
     "tests/e2e/cli/focus/test_live_model_neutral_tool_exposure.py",
+    "tests/e2e/cli/focus/test_live_goal_only.py",
 )
 _SCENARIOS = (
     "plain-multifile-repair",
@@ -124,6 +126,24 @@ def _mnte_evidence(root: Path, *, live_result: int | None) -> list[dict]:
     return evidence
 
 
+def _goal_only_evidence(root: Path, *, live_result: int | None) -> dict | None:
+    path = root / "aw-01-goal-only-evidence.json"
+    if path.is_file():
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return {
+            "scenario_id": "aw-01-goal-only",
+            "path": path.name,
+            "disposition": payload.get("disposition", "unavailable"),
+        }
+    if live_result is not None:
+        return {
+            "scenario_id": "aw-01-goal-only",
+            "path": None,
+            "disposition": "unavailable",
+        }
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     mode = args[0] if args else "local"
@@ -180,6 +200,9 @@ def main(argv: list[str] | None = None) -> int:
                     root, live_result=results.get("live")
                 ),
                 "mnte_scenario_evidence": _mnte_evidence(
+                    root, live_result=results.get("live")
+                ),
+                "goal_only_evidence": _goal_only_evidence(
                     root, live_result=results.get("live")
                 ),
             },
