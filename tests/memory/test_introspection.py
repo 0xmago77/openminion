@@ -32,7 +32,7 @@ class _SnapshotStore:
         return {
             "session:test-session": [object(), object()],
             "agent:test-agent": [object()],
-            "global": [object()],
+            "global:system": [object()],
         }.get(options.scopes[0], [])
 
     def candidate_list(self, options):  # noqa: ANN001, ANN201
@@ -153,7 +153,7 @@ class TestMemoryRuntimeSnapshot:
         assert store.list_calls[:3] == [
             ["session:test-session"],
             ["agent:test-agent"],
-            ["global"],
+            ["global:system"],
         ]
 
     @pytest.mark.parametrize(
