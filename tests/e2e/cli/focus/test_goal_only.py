@@ -20,6 +20,8 @@ from tests.e2e.cli.focus.harness.goal_only import (
     verify_fixture,
 )
 
+pytestmark = pytest.mark.e2e
+
 
 @pytest.fixture
 def repaired(tmp_path):
