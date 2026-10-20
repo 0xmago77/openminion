@@ -22,9 +22,11 @@ from tests.e2e.runners.run_simple_input_long_coding_e2e import (
     FROZEN_LIVE_AGENT_ID,
     _ARTIFACT_ENV,
     _LIVE_TARGETS,
+    _LOCAL_TARGETS,
     _artifact_root,
     _clean_source_revision,
     _live_agent_id,
+    _goal_only_evidence,
     _mnte_evidence,
     _scenario_evidence,
     main,
@@ -43,7 +45,23 @@ def test_live_runner_executes_silc_and_mnte_in_one_process() -> None:
     assert _LIVE_TARGETS == (
         "tests/e2e/cli/focus/test_live_simple_input_project.py",
         "tests/e2e/cli/focus/test_live_model_neutral_tool_exposure.py",
+        "tests/e2e/cli/focus/test_live_goal_only.py",
     )
+    assert "tests/e2e/cli/focus/test_goal_only.py" in _LOCAL_TARGETS
+
+
+def test_goal_only_evidence_is_separate_from_guided_denominator(tmp_path) -> None:
+    assert _goal_only_evidence(tmp_path, live_result=None) is None
+    assert _goal_only_evidence(tmp_path, live_result=1)["disposition"] == "unavailable"
+    (tmp_path / "aw-01-goal-only-evidence.json").write_text(
+        json.dumps({"scenario_id": "aw-01-goal-only", "disposition": "failed"})
+    )
+    assert _goal_only_evidence(tmp_path, live_result=1) == {
+        "scenario_id": "aw-01-goal-only",
+        "path": "aw-01-goal-only-evidence.json",
+        "disposition": "failed",
+    }
+    assert len(_scenario_evidence(tmp_path, live_result=1)) == 3
 
 
 def test_live_summary_reads_mnte_evidence_from_shared_root(tmp_path) -> None:
