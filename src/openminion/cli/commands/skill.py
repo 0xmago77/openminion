@@ -320,16 +320,23 @@ def _run_skill_list(args, app: Any | None = None) -> int:
                 filters["tool"] = args.tool
 
             skills = ctl.list_skills(filters)
+            pending = ctl.list_pending_skill_versions(filters)
             if args.json:
-                print_json_payload({"ok": True, "skills": skills}, sort_keys=False)
+                payload = {"ok": True, "skills": skills, "pending_versions": pending}
+                print_json_payload(payload, sort_keys=False)
             else:
-                if not skills:
+                if not skills and not pending:
                     print("No skills found.")
-                else:
-                    for skill in skills:
-                        print(
-                            f"{skill['skill_id']} | {skill.get('name', 'N/A')} | {skill.get('status', 'N/A')} | {skill.get('version_hash', 'N/A')[:12]}..."
-                        )
+                for skill in skills:
+                    print(
+                        f"{skill['skill_id']} | {skill.get('name', 'N/A')} | {skill.get('status', 'N/A')} | {skill.get('version_hash', 'N/A')[:12]}..."
+                    )
+                for version in pending:
+                    print(
+                        f"{version['skill_id']} | {version['name']} | pending admission | {version['version_hash']}"
+                    )
+                if pending:
+                    print("Pending versions are inactive; see `skill admit --help`.")
             return 0
         finally:
             ctl.close()

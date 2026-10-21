@@ -6,7 +6,10 @@ import pytest
 
 from openminion.cli.commands.scaffold import _skill_files
 from openminion.modules.skill.errors import SkillError
-from openminion.modules.skill.interfaces import SkillIngestAuthority
+from openminion.modules.skill.interfaces import (
+    SkillIngestAuthority,
+    SkillVerificationEvidence,
+)
 from openminion.modules.skill.runtime.skill import Skill
 
 HELLO_SKILL = (
@@ -88,5 +91,69 @@ def test_front_matter_id_remains_the_explicit_identity(tmp_path: Path) -> None:
     try:
         assert ctl.ingest_file(alpha, authority=_operator())[0] == "verify.alpha"
         assert ctl.ingest_file(both, authority=_operator())[0] == "verify.beta"
+    finally:
+        ctl.close()
+
+
+def test_pending_version_is_listed_for_operators_but_not_selectable(
+    tmp_path: Path,
+) -> None:
+    ctl = Skill(_config(tmp_path))
+    try:
+        skill_id, version_hash, warnings = ctl.ingest_file(
+            HELLO_SKILL, authority=_operator()
+        )
+
+        assert "admission.pending" in warnings
+        pending = ctl.list_pending_skill_versions({"status": ["draft"]})
+        assert [
+            (
+                row["skill_id"],
+                row["version_hash"],
+                row["status"],
+                row["admission_state"],
+            )
+            for row in pending
+        ] == [(skill_id, version_hash, "draft", "pending")]
+        assert ctl.list_pending_skill_versions({"status": ["verified"]}) == []
+        assert ctl.get_skill(skill_id, version_hash).status == "draft"
+
+        assert ctl.list_skills({}) == []
+        assert ctl.catalog_summaries(agent_id="agent.main") == []
+        assert ctl.match(skill_id, None, agent_id="agent.main") == []
+        with pytest.raises(SkillError, match="NOT_FOUND"):
+            ctl.get_skill(skill_id)
+    finally:
+        ctl.close()
+
+
+def test_operator_admission_is_the_only_path_into_selection(tmp_path: Path) -> None:
+    ctl = Skill(_config(tmp_path))
+    try:
+        skill_id, version_hash, _ = ctl.ingest_file(HELLO_SKILL, authority=_operator())
+
+        admitted = ctl.admit_skill_version(
+            skill_id=skill_id,
+            version_hash=version_hash,
+            expected_active_version_hash=None,
+            target_status="verified",
+            reason="reviewed the hello example",
+            authority=_operator(),
+            verification_evidence=SkillVerificationEvidence(
+                check="manual review", result="passed", evidence_ref="review://hello"
+            ),
+        )
+
+        assert admitted["previous_active_version_hash"] is None
+        assert admitted["active_version_hash"] == version_hash
+        assert ctl.list_pending_skill_versions({}) == []
+        assert [row["skill_id"] for row in ctl.list_skills({})] == [skill_id]
+        assert [row["id"] for row in ctl.catalog_summaries(agent_id="agent.main")] == [
+            skill_id
+        ]
+        assert [
+            match.skill_id for match in ctl.match(skill_id, None, agent_id="agent.main")
+        ] == [skill_id]
+        assert ctl.get_skill(skill_id).status == "verified"
     finally:
         ctl.close()

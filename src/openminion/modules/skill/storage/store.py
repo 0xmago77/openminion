@@ -12,11 +12,14 @@ from openminion.modules.storage.runtime.module_store import (
 from openminion.modules.storage.record_store import RecordStore
 
 from .migrations import list_migrations
+from .pending_versions import PendingSkillVersionStoreMixin, skill_scope_clauses
 from .schema import create_skill_schema
 from .workflow_observations import WorkflowObservationStoreMixin
 
 
-class _SkillStoreMixin(WorkflowObservationStoreMixin, SkillStore):
+class _SkillStoreMixin(
+    WorkflowObservationStoreMixin, PendingSkillVersionStoreMixin, SkillStore
+):
     def upsert_skill(
         self,
         *,
@@ -327,18 +330,11 @@ class _SkillStoreMixin(WorkflowObservationStoreMixin, SkillStore):
             where_clauses.append(f"s.status IN ({placeholders})")
             params.extend(status_filter)
 
-        if scopes:
-            placeholders = ",".join(["?"] * len(scopes))
-            where_clauses.append(f"s.scope IN ({placeholders})")
-            params.extend(scopes)
-
-        if agent_id:
-            where_clauses.append(
-                "(s.scope = 'global' OR (s.scope = 'agent' AND (s.agent_id IS NULL OR s.agent_id = ?)))"
-            )
-            params.append(agent_id)
-        else:
-            where_clauses.append("s.scope = 'global'")
+        scope_clauses, scope_params = skill_scope_clauses(
+            scopes=scopes, agent_id=agent_id
+        )
+        where_clauses.extend(scope_clauses)
+        params.extend(scope_params)
 
         where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
