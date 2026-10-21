@@ -1,4 +1,4 @@
-"""Explicit SDK agent selection against session ownership via a local provider."""
+"""Explicit agent selection vs session ownership for direct and submitted turns."""
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -137,6 +137,43 @@ def test_conflicting_explicit_agent_is_rejected_before_provider_io(
         _run(runtime, "agent-b", "hello from agent-b", "shared")
 
     assert requests[mark:] == []
+
+
+def _submit(runtime, agent_id: str | None, message: str, session_id: str):
+    payload = {"message": message, "session_id": session_id, "timeout_seconds": 30}
+    if agent_id is not None:
+        payload["agent_id"] = agent_id
+    return runtime.submit_turn(payload=payload).result(timeout_s=60)
+
+
+def test_submitted_conflicting_explicit_agent_fails_before_provider_io(
+    two_agent_runtime,
+):
+    runtime, requests, state = two_agent_runtime
+    _fail_first_turn(runtime, state, agent_id="agent-b", session_id="owned-by-b")
+    mark = len(requests)
+
+    result = _submit(runtime, "agent-a", "hello from agent-a", "owned-by-b")
+
+    assert [error.code for error in result.errors] == ["invalid_request"]
+    assert (
+        "Session 'owned-by-b' belongs to agent 'agent-b', not 'agent-a'"
+        in result.errors[0].message
+    )
+    assert result.final_text == ""
+    assert requests[mark:] == []
+
+
+@pytest.mark.parametrize("agent_id", ["agent-b", None])
+def test_submitted_turn_follows_session_owner(two_agent_runtime, agent_id):
+    runtime, requests, state = two_agent_runtime
+    _fail_first_turn(runtime, state, agent_id="agent-b", session_id="owned-by-b")
+    mark = len(requests)
+
+    result = _submit(runtime, agent_id, "hello again", "owned-by-b")
+
+    assert result.errors == []
+    assert _models(requests[mark:]) == {"model-b"}
 
 
 def test_fresh_session_uses_requested_agent(two_agent_runtime):
