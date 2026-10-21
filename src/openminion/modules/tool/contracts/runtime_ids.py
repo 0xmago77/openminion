@@ -101,6 +101,7 @@ SECURITY_RUNTIME_BINDING_IDS: tuple[str, ...] = (
     "runtime.security.scan_artifact",
     "runtime.security.scan_secrets",
     "runtime.security.publish_report",
+    "runtime.security.review_report",
 )
 
 RUNTIME_GWS_CALL = "runtime.gws.call"
