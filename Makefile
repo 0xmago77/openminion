@@ -279,6 +279,7 @@ test-e2e-ci: $(DEV_STAMP)
 		"$(REPO_ROOT)/tests/e2e/cli/focus/test_permission_policy_convergence.py" \
 		"$(REPO_ROOT)/tests/e2e/project_worker/test_completion.py" \
 		"$(REPO_ROOT)/tests/e2e/project_worker/test_security_remediation.py" \
+		"$(REPO_ROOT)/tests/e2e/security_lab/test_fixture.py" \
 		"$(REPO_ROOT)/tests/e2e/test_memory_capture_recall_reliability.py" \
 		"$(REPO_ROOT)/tests/e2e/test_tool_transcript_continuity.py" \
 		"$(REPO_ROOT)/tests/e2e/test_project_learning_instruction_loop.py" \
@@ -286,6 +287,7 @@ test-e2e-ci: $(DEV_STAMP)
 		"$(REPO_ROOT)/tests/e2e/cli/focus/test_simple_input_project.py" \
 		"$(REPO_ROOT)/tests/e2e/cli/focus/test_runner_summary.py" \
 		"$(REPO_ROOT)/tests/e2e/cli/focus/test_harness_assertions.py" \
+		"$(REPO_ROOT)/tests/e2e/cli/focus/test_security_harnesses.py" \
 		"$(REPO_ROOT)/tests/e2e/cli/focus/test_goal_only.py" \
 		"$(REPO_ROOT)/tests/e2e/cli/focus/harness/test_provider_session_resilience.py"
 

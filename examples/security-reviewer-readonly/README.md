@@ -39,9 +39,9 @@ First produce a source report using the
 operator, load the report and every cited artifact in the same data root:
 
 ```bash
-openminion artifactctl show <report-ref>
-openminion artifactctl view <report-ref> --type json
-openminion artifactctl view <evidence-ref> --type json
+artifactctl show <report-ref>
+artifactctl view <report-ref> --type json
+artifactctl view <evidence-ref> --type json
 ```
 
 Provide the complete JSON and canonical references to the reviewer. A reference

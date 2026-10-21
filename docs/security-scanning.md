@@ -178,3 +178,61 @@ objective, canonical exec evidence refs, candidate or rejected findings, a
 summary, and limitations. Target, activation, execution status, and container
 identities are resolved from trusted evidence. Reports remain unreviewed and
 sensitive local evidence.
+
+## Opt-in live validation
+
+Three tests exercise the external workflows independently. They stay outside
+ordinary hosted CI. Run from a development checkout with a fresh evidence
+directory for each invocation.
+
+For source remediation, use an approved MiniMax profile with an available key,
+the installed Semgrep executable, and an approved positive per-turn token limit:
+
+```bash
+export OPENMINION_CLI_FOCUS_E2E_CONFIG=/absolute/path/to/minimax-profile.json
+export OPENMINION_CLI_FOCUS_E2E_AGENT=minimax-m2-7
+export OPENMINION_SECURITY_LIVE_MAX_TOKENS=APPROVED_PER_TURN_LIMIT
+export OPENMINION_LIVE_CLI_FOCUS_E2E=1
+export OPENMINION_LIVE_SECURITY_REMEDIATION=1
+export OPENMINION_CLI_FOCUS_E2E_ARTIFACT_ROOT=/absolute/path/to/fresh/evidence
+.venv/bin/python3.11 -m pytest -q \
+  tests/e2e/cli/focus/test_live_security_remediation.py
+```
+
+Replace the limit placeholder with the approved positive integer. This uses the
+existing runtime token budget per turn, not an aggregate campaign or dollar
+cap. Apply any provider-side spend limit separately. The fixture supplies its
+local Semgrep rule and disposable source repository. It records distinct
+researcher/reviewer sessions, the operator-approved project, child verification
+and review, fresh revision, rescan and follow-up artifacts.
+
+For the local lab, first supply a running local Docker socket and two approved,
+already-local images pinned by digest. The target image needs `python3` and its
+standard library; the worker needs `curl`, `python3` and its standard library.
+The Docker daemon must expose cgroup v2 for the resource-limit probes.
+Neither image may declare volumes; both must support numeric UID/GID
+`10001:10001`. The fixture creates its own synthetic HTTP target and decoy.
+
+```bash
+export OPENMINION_TEST_DOCKER_SECURITY_LAB=1
+export OPENMINION_TEST_SECURITY_LAB_DOCKER_SOCKET=unix:///absolute/path/to/docker.sock
+export OPENMINION_TEST_SECURITY_LAB_TARGET_IMAGE='target-repository@sha256:APPROVED_DIGEST'
+export OPENMINION_TEST_SECURITY_LAB_WORKER_IMAGE='worker-repository@sha256:APPROVED_DIGEST'
+.venv/bin/python3.11 -m pytest -q \
+  tests/e2e/security_lab/test_local_lab.py \
+  --basetemp=/absolute/path/to/fresh/docker-evidence
+```
+
+After that passes, retain those Docker inputs and the MiniMax inputs above,
+choose a fresh evidence directory, then run the single Focus lab scenario:
+
+```bash
+export OPENMINION_LIVE_SECURITY_LOCAL_LAB=1
+.venv/bin/python3.11 -m pytest -q \
+  tests/e2e/cli/focus/test_live_security_local_lab.py
+```
+
+The lab harnesses never start Docker, pull/build images, or reuse an existing
+target. They remove only their fixture resources. Missing prerequisites fail
+an explicitly opted-in test; opt-out skips and provider-free checks do not
+establish live proof.

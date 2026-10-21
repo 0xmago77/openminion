@@ -141,30 +141,27 @@ def _install_profile(
     python_bin: Path,
     openminion_root: Path,
     env: dict[str, str],
+    profile_name: str = "security-researcher-readonly",
+    config_path: Path | None = None,
 ) -> None:
-    skill_path = (
-        openminion_root
-        / "examples"
-        / "skills"
-        / "security-researcher-readonly"
-        / "SKILL.md"
-    )
+    cli = (str(python_bin), "-m", "openminion")
+    if config_path is not None:
+        cli += ("--config", str(config_path))
+    skill_path = openminion_root / "examples" / "skills" / profile_name / "SKILL.md"
     ingested = json.loads(
         _run(
             (
-                str(python_bin),
-                "-m",
-                "openminion",
+                *cli,
                 "skill",
                 "ingest",
                 "--file",
                 str(skill_path),
                 "--name",
-                "security-researcher-readonly",
+                profile_name,
                 "--scope",
                 "agent",
                 "--agent-id",
-                "security-researcher-readonly",
+                profile_name,
                 "--trust",
                 "trusted_local",
             ),
@@ -174,13 +171,11 @@ def _install_profile(
     )
     _run(
         (
-            str(python_bin),
-            "-m",
-            "openminion",
+            *cli,
             "skill",
             "admit",
             "--skill-id",
-            "security-researcher-readonly",
+            profile_name,
             "--version-hash",
             ingested["version_hash"],
             "--expected-active-version-hash",
@@ -195,17 +190,10 @@ def _install_profile(
     )
     _run(
         (
-            str(python_bin),
-            "-m",
-            "openminion",
+            *cli,
             "identity",
             "upsert",
-            str(
-                openminion_root
-                / "examples"
-                / "identity"
-                / "security-researcher-readonly.yaml"
-            ),
+            str(openminion_root / "examples" / "identity" / f"{profile_name}.yaml"),
         ),
         cwd=openminion_root,
         env=env,
