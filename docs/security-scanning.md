@@ -93,6 +93,21 @@ report. Findings remain `candidate` or `rejected`, and every report remains
 truncation, `partial` when at least one check is usable and another is not, and
 `blocked` when no check is usable.
 
+## Independent review and approved repair
+
+An optional `security-reviewer-readonly` profile adds `security.review_report`
+behind the separate `security_review` exposure profile. A different readonly
+agent reviews every candidate in a completed source report, publishing an
+immutable decision artifact and an accepted-only remediation brief. Scanners,
+mutation and delegation remain unavailable to this reviewer.
+
+Follow the [review and repair procedure](../examples/security-reviewer-readonly/README.md)
+for complete evidence loading, one accepted finding per approved project,
+failing-before verification, isolated delegated repair, independent child
+review, explicit parent acceptance, a fresh-revision rescan and follow-up review.
+Project launch remains an operator decision. Partial reports cannot enter the
+first review lifecycle, and follow-up does not automatically launch another fix.
+
 ## Results and evidence
 
 Results contain scanner identity/version, bounded normalized findings, target,

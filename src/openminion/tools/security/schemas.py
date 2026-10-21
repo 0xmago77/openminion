@@ -23,6 +23,7 @@ ScanStatus = Literal[
     "timed_out",
 ]
 SecurityAuditCheck = Literal["code", "dependencies", "iac", "secrets"]
+_FINDING_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
 _CANONICAL_REF_PATTERN = r"^artifact://sha256/[0-9a-f]{64}$"
 
 
@@ -169,7 +170,7 @@ class SecurityAuditFindingLocation(BaseModel):
 class SecurityAuditFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    finding_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+    finding_id: str = Field(pattern=_FINDING_ID_PATTERN)
     basis: Literal["scanner", "manual"]
     disposition: Literal["candidate", "rejected"]
     title: str = Field(min_length=1, max_length=300)
@@ -292,7 +293,7 @@ class SecurityLabFindingLocation(BaseModel):
 class SecurityLabFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    finding_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+    finding_id: str = Field(pattern=_FINDING_ID_PATTERN)
     disposition: Literal["candidate", "rejected"]
     title: str = Field(min_length=1, max_length=300)
     category: str = Field(min_length=1, max_length=120)
