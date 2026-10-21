@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from openminion.modules.brain.loop.failures import _provider_failure_error
 from openminion.modules.llm import ProviderError
 from openminion.modules.llm.schemas import Message, ToolCall
 from ..budget import (
@@ -460,6 +461,29 @@ class AdaptiveLoopRunnerPostprocessMixin(
             return closure_tools, "none", True
         return llm_tools, llm_tool_choice, llm_tool_choice == "none"
 
+    def _llm_call_failure_outcome(self, exc: Exception) -> AdaptiveToolLoopOutcome:
+        self.loop_state.termination_reason = ADAPTIVE_TERM_LLM_ERROR
+        emit_adaptive_status(
+            self.loop_ctx,
+            profile=self.profile,
+            loop_state=self.loop_state,
+            detail_text=f"{self.public_mode_tag} LLM call failed",
+            mode_state="llm_error",
+            termination_reason=ADAPTIVE_TERM_LLM_ERROR,
+        )
+        if isinstance(exc, ProviderError):
+            provider_error = _provider_failure_error(exc)
+            if provider_error is not None:
+                raise provider_error from exc
+        return AdaptiveToolLoopOutcome(
+            profile_name=self.profile.profile_name,
+            mode_name=self.profile.mode_name,
+            termination_reason=ADAPTIVE_TERM_LLM_ERROR,
+            state=self.loop_state,
+            allowed_tools=self.allowed_tools,
+            error_message=str(exc),
+        )
+
     def _prepare_llm_response(self) -> Any:
         profile = self.profile
         self.loop_state.iteration += 1
@@ -526,23 +550,7 @@ class AdaptiveLoopRunnerPostprocessMixin(
                     metadata=self.metadata,
                 )
             except Exception as exc:
-                self.loop_state.termination_reason = ADAPTIVE_TERM_LLM_ERROR
-                emit_adaptive_status(
-                    self.loop_ctx,
-                    profile=self.profile,
-                    loop_state=self.loop_state,
-                    detail_text=f"{self.public_mode_tag} LLM call failed",
-                    mode_state="llm_error",
-                    termination_reason=ADAPTIVE_TERM_LLM_ERROR,
-                )
-                return AdaptiveToolLoopOutcome(
-                    profile_name=self.profile.profile_name,
-                    mode_name=self.profile.mode_name,
-                    termination_reason=ADAPTIVE_TERM_LLM_ERROR,
-                    state=self.loop_state,
-                    allowed_tools=self.allowed_tools,
-                    error_message=str(exc),
-                )
+                return self._llm_call_failure_outcome(exc)
         iter_llm_duration_ms = int((time.monotonic() - llm_start) * 1000)
         iter_tool_records: list[IterationToolCallRecord] = []
         iter_input_tokens = iter_output_tokens = 0

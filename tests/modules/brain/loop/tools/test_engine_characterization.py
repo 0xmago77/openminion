@@ -2193,6 +2193,50 @@ def test_loop_llm_error_terminates_with_llm_error_reason() -> None:
     assert outcome.termination_reason == ADAPTIVE_TERM_LLM_ERROR
 
 
+def test_loop_provider_failure_after_tool_raises_typed_error() -> None:
+    failure = ProviderError(
+        "rate limited", code="RATE_LIMITED", details={"status_code": 429}
+    )
+
+    class _RateLimitedAfterToolRuntime(_FakeRuntime):
+        def complete(self, **kwargs):
+            if self.calls:
+                raise failure
+            return super().complete(**kwargs)
+
+    runtime = _RateLimitedAfterToolRuntime(
+        responses=[
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="m",
+                output_text="",
+                tool_calls=[
+                    ToolCall(id="c1", name="file.read", arguments={"path": "x"})
+                ],
+                finish_reason="tool_calls",
+            )
+        ]
+    )
+    loop_ctx = _LoopContext(state=_state(), outcomes=[_success_outcome()])
+
+    with pytest.raises(ProviderError) as raised:
+        run_adaptive_tool_loop(
+            loop_ctx,
+            profile=_profile(allowed_tools=frozenset({"file.read"})),
+            runtime=runtime,
+            model="m",
+            initial_messages=[Message(role="user", content="read x")],
+            tool_specs=_tool_specs("file.read"),
+        )
+
+    assert raised.value.code == "RATE_LIMITED"
+    assert raised.value.details["status_code"] == 429
+    assert raised.value.details["reason_code"] == "provider_rate_limited"
+    assert raised.value.__cause__ is failure
+    assert len(loop_ctx.commands) == 1
+
+
 def test_loop_not_ok_response_terminates_with_llm_error() -> None:
     from openminion.modules.llm.schemas import ResponseError
 
