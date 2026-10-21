@@ -1,11 +1,18 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-19
+Last updated: 2026-10-20
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+## Current package line - 2026-10-20
+
+- Count canonical empty-scope memories in global introspection so global scope
+  reports include every visible memory record.
+- Add deterministic and live goal-only coding acceptance to the hosted E2E
+  gate, including long-coding handoff and repair-progress coverage.
 
 ## Current package line - 2026-10-19
 

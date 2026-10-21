@@ -842,6 +842,7 @@ class FocusProbe:
         scenario: FocusScenario,
         *,
         approval_events: list[dict[str, object]] | None = None,
+        check_approval: Callable[[str, str], None] | None = None,
     ) -> str:
         turn_offset = len(session.visible_transcript)
         completion_probe = self._submit_composer_line(session, scenario.prompt)
@@ -867,6 +868,8 @@ class FocusProbe:
             inline_approval_visible = inline_approval_menu(screen_text) is not None
             sidecar_consent_visible = sidecar_consent_prompt_visible(screen_text)
             if sidecar_consent_visible:
+                if check_approval is not None:
+                    check_approval("sidecar", screen_text)
                 assert scenario.requires_approval, transcript[-2000:]
                 approvals += 1
                 assert approvals <= scenario.max_auto_approvals, transcript[-2000:]
@@ -880,6 +883,8 @@ class FocusProbe:
                 event_offset = len(session.visible_transcript)
                 continue
             if inline_approval_visible:
+                if check_approval is not None:
+                    check_approval("inline", screen_text)
                 assert scenario.requires_approval, transcript[-2000:]
                 approvals += 1
                 assert approvals <= scenario.max_auto_approvals, transcript[-2000:]
@@ -893,6 +898,8 @@ class FocusProbe:
                 event_offset = len(session.visible_transcript)
                 continue
             if approval_needs_reply or approval_visible:
+                if check_approval is not None:
+                    check_approval("policy", screen_text)
                 assert scenario.requires_approval, transcript[-2000:]
                 approvals += 1
                 assert approvals <= scenario.max_auto_approvals, transcript[-2000:]

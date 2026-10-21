@@ -144,7 +144,7 @@ def build_memory_snapshot(
         agent_records = len(
             _list_store_records(store, [f"agent:{agent_id}"], limit=1000)
         )
-        global_records = len(_list_store_records(store, ["global"], limit=1000))
+        global_records = len(_list_store_records(store, ["global:system"], limit=1000))
 
         from openminion.modules.memory.storage.base import CandidateListOptions
 
