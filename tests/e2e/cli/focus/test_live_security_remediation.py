@@ -370,6 +370,7 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
     assert not any(item["event"] == "tool.call.blocked" for item in calls)
     assert not any(str(item["tool"]).startswith("security.") for item in calls)
     _assert_completed_child_lifecycle(children, parent_agent_id=_PARENT)
+    assert children[0]["child_agent_id"] == _IMPLEMENTER
     events = _events(probe.data_root / "telemetry/telemetry.db", 0)
     usage = {}
     for agent_id in (_PARENT, _IMPLEMENTER, _CODE_REVIEWER):
@@ -379,6 +380,9 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
             for event in role_events
             if event["event_type"] == "llm.call.completed"
         ]
+        completions = list(
+            {event["data"]["llm_call_id"]: event for event in completions}.values()
+        )
         assert completions and all(
             isinstance(event["data"].get("usage", {}).get(key), int)
             for event in completions
