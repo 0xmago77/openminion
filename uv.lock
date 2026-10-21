@@ -3057,6 +3057,7 @@ dependencies = [
     { name = "rich" },
     { name = "sophiagraph" },
     { name = "typer" },
+    { name = "tzdata" },
 ]
 
 [package.optional-dependencies]
@@ -3203,6 +3204,7 @@ requires-dist = [
     { name = "twine", marker = "extra == 'dev'", specifier = ">=5,<7" },
     { name = "typer", specifier = ">=0.12" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0,<7" },
+    { name = "tzdata" },
     { name = "unicode-animatio", marker = "extra == 'animations'", specifier = ">=0.0.2" },
     { name = "web3", marker = "extra == 'blockchain'", specifier = ">=7,<8" },
     { name = "web3", marker = "extra == 'dev'", specifier = ">=7,<8" },
