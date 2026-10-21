@@ -13,12 +13,16 @@ from openminion.modules.brain.adapters.policy import LocalPolicyAdapter
 from openminion.modules.brain.adapters.session import LocalSessionStore
 from openminion.modules.brain.adapters.tool import LocalToolAdapter
 from openminion.modules.brain.diagnostics.events import CanonicalEventLogger
+from openminion.modules.brain.execution.closure.checks import _closure_action_outputs
 from openminion.modules.brain.execution.mission import (
     allocate_mission_turn_budget,
     build_mission_state,
     set_mission_status,
 )
-from openminion.modules.brain.constants import MissionStatus
+from openminion.modules.brain.constants import (
+    CLOSURE_TOOL_RESULT_PAYLOAD_MAX_CHARS,
+    MissionStatus,
+)
 from openminion.modules.brain.runner import BrainRunner
 from openminion.modules.brain.runner.lifecycle import run_until_idle
 from openminion.modules.brain.schemas import (
@@ -837,6 +841,44 @@ def test_turn_closure_hints_include_execution_facts_for_partial_scaffolds() -> N
         assert "partial scaffold" in contract
         assert "required headings" in contract
         assert "progress note" in contract
+
+
+def test_closure_action_outputs_keep_bounded_redacted_tool_payload() -> None:
+    long_payload = "order A-104: pickup code ZEBRA-42; api_key=abc123secret " + (
+        "x" * 600
+    )
+    outputs = _closure_action_outputs(
+        ActionResult(
+            command_id="cmd-lookup-order",
+            status="success",
+            summary="Tool executed successfully",
+            outputs={
+                "tool_results": [
+                    {
+                        "tool_name": "lookup_order",
+                        "ok": True,
+                        "verified": True,
+                        "data": {"data": long_payload},
+                    },
+                    {
+                        "tool_name": "browser",
+                        "ok": True,
+                        "data": {"url": "https://example.test", "data": {"html": "x"}},
+                    },
+                ]
+            },
+        )
+    )
+
+    lookup_data = outputs["tool_results"][0]["data"]["data"]
+    assert lookup_data.startswith("order A-104: pickup code ZEBRA-42")
+    assert "abc123secret" not in lookup_data
+    assert "api_key=[REDACTED]" in lookup_data
+    assert lookup_data.endswith("...[truncated]")
+    assert len(lookup_data) <= CLOSURE_TOOL_RESULT_PAYLOAD_MAX_CHARS + len(
+        "...[truncated]"
+    )
+    assert outputs["tool_results"][1]["data"] == {"url": "https://example.test"}
 
 
 def test_turn_closure_repairs_missing_final_answer_before_close() -> None:

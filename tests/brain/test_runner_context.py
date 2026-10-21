@@ -8,14 +8,19 @@ from unittest.mock import MagicMock
 
 
 from openminion.modules.brain.adapters.context import LocalContextAdapter
-from openminion.modules.brain.adapters.llm import LocalLLMAdapter
+from openminion.modules.brain.adapters.factory import create_context_adapter
+from openminion.modules.brain.adapters.llm import LlmctlAdapter, LocalLLMAdapter
 from openminion.modules.brain.adapters.memory import LocalMemoryAdapter
 from openminion.modules.brain.adapters.policy import LocalPolicyAdapter
 from openminion.modules.brain.adapters.session import LocalSessionStore
 from openminion.modules.brain.adapters.tool import LocalToolAdapter
 from openminion.modules.brain.adapters.a2a import LocalA2AAdapter
+from openminion.modules.brain.loop.tools.iteration.helpers import (
+    _tool_result_payload_from_action,
+)
 from openminion.modules.brain.runner import RunnerOptions, BrainRunner
 from openminion.modules.brain.schemas import (
+    ActionResult,
     AgentBudgets,
     AgentDefaults,
     AgentProfile,
@@ -63,6 +68,33 @@ class _StaticEntryLLM:
     def call(self, req: LLMRequest) -> LLMResponse:
         self.request = req
         return self.response
+
+
+class _ClosureJudgeClient:
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    def call(self, req: LLMRequest) -> LLMResponse:
+        self.requests.append(req)
+        return LLMResponse(
+            ok=True,
+            provider="test",
+            model=req.model,
+            output_text="",
+            tool_calls=[
+                ToolCall(
+                    name="submit_output",
+                    arguments={
+                        "satisfied": True,
+                        "reason": "order lookup returned the pickup code",
+                        "next_action": "close",
+                        "final_answer": "Order A-104 is ready; pickup code ZEBRA-42.",
+                    },
+                )
+            ],
+            usage=UsageInfo(total_tokens=1),
+            finish_reason="tool_calls",
+        )
 
 
 def _profile() -> AgentProfile:
@@ -538,3 +570,71 @@ def test_decide_replan_turn_uses_goal_as_query_fallback() -> None:
 
         hints = (context_api.last_context or {}).get("hints") or {}
         assert hints.get("user_input") == "what's weather in SF?"
+
+
+def test_closure_judge_request_renders_custom_tool_result_payload() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        session = LocalSessionStore(root / "sessions")
+        context_api = create_context_adapter(mode="auto", session_store=session)
+        client = _ClosureJudgeClient()
+        runner = BrainRunner(
+            profile=_profile(),
+            session_api=session,
+            context_api=context_api,
+            llm_api=LlmctlAdapter(client),
+            tool_api=LocalToolAdapter(),
+            a2a_api=LocalA2AAdapter(),
+            memory_api=LocalMemoryAdapter(root / "memory"),
+            policy_api=LocalPolicyAdapter(),
+            options=RunnerOptions(metactl_enabled=False),
+        )
+        state = runner._load_or_init_state("ctx-closure-tool-evidence")
+        state.goal = "Check order A-104"
+        lookup_result = _tool_result_payload_from_action(
+            call_id="call-lookup-order",
+            tool_name="lookup_order",
+            action_result=ActionResult(
+                command_id="call-lookup-order",
+                status="success",
+                summary="Tool executed successfully",
+                outputs={"data": "order A-104: ready for pickup, pickup code ZEBRA-42"},
+            ),
+        )
+
+        try:
+            judgment = runner._evaluate_turn_closure(
+                state=state,
+                action_result=ActionResult(
+                    command_id="cmd-act-loop",
+                    status="success",
+                    summary="Looked up order A-104.",
+                    outputs={"tool_results": [lookup_result]},
+                ),
+                logger=MagicMock(),
+                completion_reason="act_adaptive_final_text",
+            )
+        finally:
+            context_api.close()
+
+        assert judgment.next_action == "close"
+        judge_requests = [
+            request
+            for request in client.requests
+            if any("purpose: judge" in message.content for message in request.messages)
+        ]
+        assert len(judge_requests) == 1
+        rendered_lines = [
+            line
+            for message in judge_requests[0].messages
+            for line in message.content.splitlines()
+        ]
+        assert "action_summary: Looked up order A-104." in rendered_lines
+        evidence = [
+            line
+            for line in rendered_lines
+            if line.startswith("closure_action_outputs: ")
+        ]
+        assert len(evidence) == 1
+        assert '"tool_name": "lookup_order"' in evidence[0]
+        assert "pickup code ZEBRA-42" in evidence[0]
