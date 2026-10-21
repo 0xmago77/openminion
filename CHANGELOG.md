@@ -1,11 +1,15 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-20
+Last updated: 2026-10-21
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+- Raise the existing typed provider error when a recognized provider failure
+  interrupts the adaptive tool loop after a tool result, instead of returning
+  the error text as a completed answer; the tool is not re-run (#326).
 
 ## Current package line - 2026-10-20
 
