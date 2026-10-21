@@ -5,6 +5,7 @@ from openminion.modules.skill.runtime.parser import (
     _split_sections,
     build_default_snippets,
     build_recipe,
+    declared_skill_id,
     front_matter_unknown_key_warnings,
     normalize_section_name,
     parse_markdown,
@@ -522,3 +523,31 @@ Use the deployment workflow.
     assert "deploy-runbook" not in snippets["plan"]
     assert "deploy-runbook" not in snippets["act"]
     assert "deploy-runbook" not in snippets["verify"]
+
+
+def test_declared_skill_id_reads_markdown_first_metadata() -> None:
+    _, sections, _, _ = parse_markdown(
+        "# Purpose\nGreet.\n\n# Metadata\n\n"
+        "1. `skill_id`: `hello.greet`\n2. `risk_level`: `low`\n"
+    )
+
+    assert declared_skill_id({}, sections) == "hello.greet"
+    assert declared_skill_id({"id": "verify.alpha"}, sections) == "verify.alpha"
+
+
+def test_declared_skill_id_reads_scaffolded_h2_metadata() -> None:
+    _, sections, _, _ = parse_markdown(
+        "# Skill: probe\n\n## Purpose\n\nProbe.\n\n## Metadata\n\n"
+        "1. `skill_id`: `probe`\n2. `risk_level`: `low`\n\n## Recipe\n\n1. Step.\n"
+    )
+
+    assert declared_skill_id({}, sections) == "probe"
+
+
+def test_declared_skill_id_ignores_items_outside_metadata() -> None:
+    _, sections, _, _ = parse_markdown(
+        "# Purpose\n\n1. `skill_id`: `purpose.item`\n\n# Metadata\n\n"
+        "1. `risk_level`: `low`\n\n# Recipe\n\n- skill_id: recipe.item\n"
+    )
+
+    assert declared_skill_id({}, sections) == ""

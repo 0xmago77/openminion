@@ -21,6 +21,9 @@ except ModuleNotFoundError:  # pragma: no cover
 _FRONTMATTER_BOUNDARY = "---"
 _SECTION_RE = re.compile(r"^\s*#{1,3}\s+(.+?)\s*$")
 _TOOL_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9_]*\.[a-zA-Z][a-zA-Z0-9_\.\-]*\b")
+_METADATA_SKILL_ID_RE = re.compile(
+    r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?`?skill_id`?\s*:\s*`?([^`\s]+)`?\s*$"
+)
 
 RECOGNIZED_FRONT_MATTER_KEYS: frozenset[str] = frozenset(
     {
@@ -190,6 +193,22 @@ def build_recipe(
         ),
         safety_notes=safety_notes,
     ), []
+
+
+def declared_skill_id(front_matter: dict[str, Any], sections: dict[str, str]) -> str:
+    """Return front-matter `id`, else the Markdown-first `Metadata` `skill_id`."""
+    front_matter_id = str(front_matter.get("id", "")).strip()
+    if front_matter_id:
+        return front_matter_id
+    for key, text in sections.items():
+        in_metadata = key == "metadata"
+        for line in text.split("\n"):
+            heading = _SECTION_RE.match(line)
+            if heading is not None:
+                in_metadata = normalize_section_name(heading.group(1)) == "metadata"
+            elif in_metadata and (match := _METADATA_SKILL_ID_RE.match(line)):
+                return match.group(1)
+    return ""
 
 
 def detect_tools(text: str) -> list[str]:
