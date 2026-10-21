@@ -44,7 +44,9 @@ scope	max_python_files	max_loc
 # runtime, agent, brain, and ingress owners without adding a service stack.
 # COLR (2026-10-06) threads commerce runtime and read-only order care through
 # the existing brain, cron, delivery, and routine-context owners.
-services	208	41700
+# Issue 323 (2026-10-21) threads the runtime identity database path through
+# the existing brain context adapter instead of the global identity default.
+services	208	41701
 services/security	6	187
 services/stats	1	25
 services/tool	3	50
