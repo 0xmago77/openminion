@@ -358,6 +358,7 @@ class AgentRuntimeManager:
             mode=str(req.mode or "oneshot"),
             stream=bool(req.stream),
             meta=dict(req.meta or {}),
+            explicit_agent=bool(req.explicit_agent),
         )
         if not request.agent_id:
             raise ValueError("agent_id must be non-empty")

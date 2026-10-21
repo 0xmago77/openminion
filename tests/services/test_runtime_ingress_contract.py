@@ -689,11 +689,22 @@ def _owned_session_runtime(owner: str) -> _RuntimeStub:
     return runtime
 
 
-def test_explicit_agent_rejected_on_session_owned_by_other_agent() -> None:
-    runtime = _owned_session_runtime("main")
-    request = runtime_turn_request_from_payload(
+def _ingress_request(runtime: _RuntimeStub, payload: dict[str, object], managed: bool):
+    if not managed:
+        return runtime_turn_request_from_payload(runtime=runtime, payload=payload)
+    return runtime_turn_request_from_manager_request(
         runtime=runtime,
-        payload={"message": "hi", "agent_id": "review", "session_id": "session-1"},
+        request=build_manager_turn_request(payload, default_agent_id="main"),
+    )
+
+
+@pytest.mark.parametrize("managed", [False, True])
+def test_explicit_agent_rejected_on_session_owned_by_other_agent(managed) -> None:
+    runtime = _owned_session_runtime("main")
+    request = _ingress_request(
+        runtime,
+        {"message": "hi", "agent_id": "review", "session_id": "session-1"},
+        managed,
     )
 
     with pytest.raises(
@@ -706,13 +717,14 @@ def test_explicit_agent_rejected_on_session_owned_by_other_agent() -> None:
     assert runtime.gateway.calls == []
 
 
+@pytest.mark.parametrize("managed", [False, True])
 @pytest.mark.parametrize("agent_id", ["review", None])
-def test_session_owner_keeps_same_agent_and_implicit_turns(agent_id) -> None:
+def test_session_owner_keeps_same_agent_and_implicit_turns(agent_id, managed) -> None:
     runtime = _owned_session_runtime("review")
     payload = {"message": "hi", "session_id": "session-1"}
     if agent_id is not None:
         payload["agent_id"] = agent_id
-    request = runtime_turn_request_from_payload(runtime=runtime, payload=payload)
+    request = _ingress_request(runtime, payload, managed)
 
     result = execute_runtime_turn(runtime=runtime, request=request)
 
@@ -720,20 +732,22 @@ def test_session_owner_keeps_same_agent_and_implicit_turns(agent_id) -> None:
     assert result.agent_id == "review"
 
 
-def test_room_turn_routes_non_participant_requester_by_room_policy() -> None:
+@pytest.mark.parametrize("managed", [False, True])
+def test_room_turn_routes_non_participant_requester_by_room_policy(managed) -> None:
     runtime = _room_runtime(mode="addressed")
     runtime.config.agents["cli"] = AgentProfileConfig(
         name="cli", provider="echo", default_channel="console"
     )
     runtime.sessions.get_session("room-1").session_key = "room:room-1"
-    request = runtime_turn_request_from_payload(
-        runtime=runtime,
-        payload={
+    request = _ingress_request(
+        runtime,
+        {
             "message": "please continue",
             "agent_id": "cli",
             "session_id": "room-1",
             "deliver": False,
         },
+        managed,
     )
 
     execute_runtime_turn(runtime=runtime, request=request)

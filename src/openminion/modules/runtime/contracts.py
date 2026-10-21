@@ -64,6 +64,7 @@ class TurnRequest:
     mode: str = "oneshot"
     stream: bool = False
     meta: dict[str, Any] = field(default_factory=dict)
+    explicit_agent: bool = False
 
 
 @dataclass(frozen=True)
