@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import io
 import json
 from argparse import Namespace
@@ -7,12 +8,15 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from openminion.cli.commands.skill import (
     _run_skill_admission,
     _run_skill_ingest,
     _run_skill_list,
     _run_skill_remove,
     _run_skill_show,
+    register,
 )
 
 
@@ -453,3 +457,14 @@ def test_skill_cli_lists_pending_markdown_skills_until_admission(
     assert code == 0
     assert [item["skill_id"] for item in listed["skills"]] == ["hello.greet"]
     assert [item["skill_id"] for item in listed["pending_versions"]] == ["other.probe"]
+
+
+def test_skill_admit_help_documents_first_admission_sentinel() -> None:
+    parser = argparse.ArgumentParser(prog="openminion")
+    register(parser.add_subparsers())
+    buf = io.StringIO()
+    with redirect_stdout(buf), pytest.raises(SystemExit):
+        parser.parse_args(["skill", "admit", "--help"])
+
+    help_text = " ".join(buf.getvalue().split())
+    assert "use 'none' for the first admission" in help_text

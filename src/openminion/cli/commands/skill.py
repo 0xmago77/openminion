@@ -958,7 +958,9 @@ def _register_skill_reingest_all_subcommand(skill_subcommands) -> None:
 def _register_skill_show_subcommand(skill_subcommands) -> None:
     parser = skill_subcommands.add_parser("show", help="Show skill metadata")
     parser.add_argument("skill_id", help="Skill ID to show")
-    parser.add_argument("--version", default=None, help="Specific version to show")
+    parser.add_argument(
+        "--version", default=None, help="Version to show; required while pending"
+    )
     _add_skill_config_arg(parser)
     parser.set_defaults(handler=_run_skill_show, needs_app=False)
 

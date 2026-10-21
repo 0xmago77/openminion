@@ -35,8 +35,19 @@ def register_skill_admission_subcommands(
 ) -> None:
     admit = skill_subcommands.add_parser("admit", help="Admit a staged skill version")
     admit.add_argument("--skill-id", required=True)
-    admit.add_argument("--version-hash", required=True)
-    admit.add_argument("--expected-active-version-hash", required=True)
+    admit.add_argument(
+        "--version-hash",
+        required=True,
+        help="Staged version hash reported by `skill ingest` or `skill list`",
+    )
+    admit.add_argument(
+        "--expected-active-version-hash",
+        required=True,
+        help=(
+            "Active version hash this admission replaces (compare-and-swap); "
+            "use 'none' for the first admission of a skill"
+        ),
+    )
     admit.add_argument(
         "--target-status", required=True, choices=["verified", "blessed"]
     )

@@ -130,7 +130,10 @@ Admission posture:
    compare-and-swap contract.
 4. Implicit reads and selection resolve only the active admitted version;
    explicit version reads can inspect pending versions.
-5. `skill.version_admitted` records IDs, hashes, authority class, reviewer,
+5. `skill list` reports staged versions as pending admission
+   (`pending_versions` in JSON) without making them selectable. A skill's
+   first admission passes `--expected-active-version-hash none`.
+6. `skill.version_admitted` records IDs, hashes, authority class, reviewer,
    reason, and status without copying skill content.
 
 Operator gate:
