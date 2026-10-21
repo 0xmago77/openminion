@@ -1,11 +1,15 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-20
+Last updated: 2026-10-21
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+- Reject an explicit SDK or `POST /turns` agent that does not own an existing
+  non-room session with `TurnRequestError` (HTTP 400) before any provider
+  request, instead of silently running the session owner (#325).
 
 ## Current package line - 2026-10-20
 
