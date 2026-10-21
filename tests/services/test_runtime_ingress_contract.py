@@ -671,6 +671,76 @@ def test_room_turn_rejects_configured_uninvited_agent_before_call() -> None:
     assert runtime.gateway.calls == []
 
 
+def _owned_session_runtime(owner: str) -> _RuntimeStub:
+    runtime = _RuntimeStub()
+    runtime.config.agents["review"] = AgentProfileConfig(
+        name="review", provider="echo", default_channel="console"
+    )
+    session = SimpleNamespace(
+        id="session-1",
+        session_key=f"agent:{owner}|channel:console|target:api-user|session:session-1",
+        active_agent_id=None,
+        metadata={},
+    )
+    runtime.sessions = SimpleNamespace(
+        get_session=lambda session_id: session,
+        list_participants=lambda session_id: [_room_participant(owner)],
+    )
+    return runtime
+
+
+def test_explicit_agent_rejected_on_session_owned_by_other_agent() -> None:
+    runtime = _owned_session_runtime("main")
+    request = runtime_turn_request_from_payload(
+        runtime=runtime,
+        payload={"message": "hi", "agent_id": "review", "session_id": "session-1"},
+    )
+
+    with pytest.raises(
+        TurnRequestError,
+        match="Session 'session-1' belongs to agent 'main', not 'review'",
+    ):
+        execute_runtime_turn(runtime=runtime, request=request)
+
+    assert runtime.requested_agents == []
+    assert runtime.gateway.calls == []
+
+
+@pytest.mark.parametrize("agent_id", ["review", None])
+def test_session_owner_keeps_same_agent_and_implicit_turns(agent_id) -> None:
+    runtime = _owned_session_runtime("review")
+    payload = {"message": "hi", "session_id": "session-1"}
+    if agent_id is not None:
+        payload["agent_id"] = agent_id
+    request = runtime_turn_request_from_payload(runtime=runtime, payload=payload)
+
+    result = execute_runtime_turn(runtime=runtime, request=request)
+
+    assert runtime.requested_agents == ["review"]
+    assert result.agent_id == "review"
+
+
+def test_room_turn_routes_non_participant_requester_by_room_policy() -> None:
+    runtime = _room_runtime(mode="addressed")
+    runtime.config.agents["cli"] = AgentProfileConfig(
+        name="cli", provider="echo", default_channel="console"
+    )
+    runtime.sessions.get_session("room-1").session_key = "room:room-1"
+    request = runtime_turn_request_from_payload(
+        runtime=runtime,
+        payload={
+            "message": "please continue",
+            "agent_id": "cli",
+            "session_id": "room-1",
+            "deliver": False,
+        },
+    )
+
+    execute_runtime_turn(runtime=runtime, request=request)
+
+    assert runtime.requested_agents == ["main"]
+
+
 def test_room_lookup_failure_is_not_masked() -> None:
     runtime = _RuntimeStub()
 

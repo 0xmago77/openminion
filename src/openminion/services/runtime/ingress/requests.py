@@ -112,6 +112,7 @@ def runtime_turn_request_from_payload(
         ),
         run_profile_overrides=run_profile_overrides,
         trusted_subagent_context=trusted_subagent_context,
+        explicit_agent=bool(requested_agent_id),
     )
 
 
