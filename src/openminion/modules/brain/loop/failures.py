@@ -36,6 +36,14 @@ def _provider_failure_error(exc: Exception) -> ProviderError | None:
     )
 
 
+def _raise_provider_failure(exc: Exception) -> None:
+    if not isinstance(exc, ProviderError):
+        return
+    provider_error = _provider_failure_error(exc)
+    if provider_error is not None:
+        raise provider_error from exc
+
+
 def _provider_failure_reason_code(code: str) -> str:
     return {
         "AUTH_ERROR": "provider_auth_failed",

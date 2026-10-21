@@ -77,15 +77,20 @@ def rejected_provider(request, tmp_path, monkeypatch):
         yield runtime
 
 
-@pytest.fixture(params=["first_call", "after_tool"])
+@pytest.fixture(params=["first_call", "after_tool", "duplicate_closure"])
 def rate_limited_provider(request, tmp_path, monkeypatch):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            has_tool_result = any(
-                message.get("role") == "tool" for message in payload["messages"]
-            )
-            if request.param == "first_call" or has_tool_result:
+            offered = [tool["function"]["name"] for tool in payload.get("tools", [])]
+            limited = {
+                "first_call": True,
+                "after_tool": any(
+                    message.get("role") == "tool" for message in payload["messages"]
+                ),
+                "duplicate_closure": not offered,
+            }[request.param]
+            if limited:
                 _send_json(
                     self,
                     429,
@@ -98,14 +103,24 @@ def rate_limited_provider(request, tmp_path, monkeypatch):
                     },
                 )
                 return
-            tool_call = {
-                "id": "local-call",
-                "type": "function",
-                "function": {
-                    "name": "lookup_order",
-                    "arguments": json.dumps({"order_id": "A-104"}),
-                },
-            }
+            message = {"role": "assistant", "content": "LOCAL_MARKER"}
+            finish_reason = "stop"
+            if "lookup_order" in offered:
+                finish_reason = "tool_calls"
+                message = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "local-call",
+                            "type": "function",
+                            "function": {
+                                "name": "lookup_order",
+                                "arguments": json.dumps({"order_id": "A-104"}),
+                            },
+                        }
+                    ],
+                }
             _send_json(
                 self,
                 200,
@@ -114,15 +129,7 @@ def rate_limited_provider(request, tmp_path, monkeypatch):
                     "object": "chat.completion",
                     "model": "local",
                     "choices": [
-                        {
-                            "index": 0,
-                            "message": {
-                                "role": "assistant",
-                                "content": None,
-                                "tool_calls": [tool_call],
-                            },
-                            "finish_reason": "tool_calls",
-                        }
+                        {"index": 0, "message": message, "finish_reason": finish_reason}
                     ],
                     "usage": {
                         "prompt_tokens": 5,
@@ -161,7 +168,7 @@ def test_agent_provider_failure_precedes_output_coercion(
     assert runs[0]["current_step"] == "turn.failed"
 
 
-def test_agent_rate_limit_raises_before_and_after_tool(rate_limited_provider):
+def test_agent_rate_limit_raises_typed_provider_error(rate_limited_provider):
     runtime, limited_call = rate_limited_provider
     calls = []
 
@@ -171,8 +178,10 @@ def test_agent_rate_limit_raises_before_and_after_tool(rate_limited_provider):
         calls.append(order_id)
         return f"order {order_id}: ready"
 
+    # A repeated call reaches the duplicate-batch closure only without forcing.
+    forced_tools = [] if limited_call == "duplicate_closure" else ["lookup_order"]
     with Agent(
-        runtime=runtime, tools=[lookup_order], forced_tools=["lookup_order"]
+        runtime=runtime, tools=[lookup_order], forced_tools=forced_tools
     ) as agent:
         with pytest.raises(ProviderError) as raised:
             agent.run("Check order A-104", timeout_seconds=30)

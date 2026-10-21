@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from openminion.modules.brain.loop.failures import _provider_failure_error
+from openminion.modules.brain.loop.failures import _raise_provider_failure
 from openminion.modules.llm import ProviderError
 from openminion.modules.llm.schemas import Message, ToolCall
 from ..budget import (
@@ -471,10 +471,7 @@ class AdaptiveLoopRunnerPostprocessMixin(
             mode_state="llm_error",
             termination_reason=ADAPTIVE_TERM_LLM_ERROR,
         )
-        if isinstance(exc, ProviderError):
-            provider_error = _provider_failure_error(exc)
-            if provider_error is not None:
-                raise provider_error from exc
+        _raise_provider_failure(exc)
         return AdaptiveToolLoopOutcome(
             profile_name=self.profile.profile_name,
             mode_name=self.profile.mode_name,

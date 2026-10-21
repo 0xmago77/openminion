@@ -111,6 +111,10 @@ from openminion.modules.brain.loop.tools import (
     run_adaptive_tool_loop,
     semantic_batch_signature,
 )
+from openminion.modules.brain.loop.tools.contracts import DirectToolTurnContext
+from openminion.modules.brain.loop.tools.direct_tool import (
+    _force_direct_tool_answer_only_closure,
+)
 from openminion.modules.brain.loop.entry import decompose_tool_spec
 from openminion.modules.brain.tools.executor import CommandExecutionOutcome
 from openminion.modules.llm.schemas import (
@@ -247,6 +251,30 @@ class _FakeRuntime:
         response = self.responses[self._index]
         self._index += 1
         return response
+
+
+@dataclass
+class _ErrorRuntime:
+    error: Exception
+    calls: list[dict[str, Any]] = field(default_factory=list)
+
+    def complete(self, **kwargs):
+        self.calls.append(kwargs)
+        raise self.error
+
+
+def _rate_limited_error() -> ProviderError:
+    return ProviderError(
+        "rate limited", code="RATE_LIMITED", details={"status_code": 429}
+    )
+
+
+_UNCHANGED_CLOSURE_FAILURES = [
+    pytest.param(
+        lambda: ProviderError("unmapped", code="UNMAPPED_CODE"), id="unrecognized"
+    ),
+    pytest.param(lambda: RuntimeError("runtime forced failure"), id="non-provider"),
+]
 
 
 @dataclass
@@ -6585,6 +6613,50 @@ class TestForceDuplicateBatchAnswerOnlyClosure:
         assert out is not None
         assert out.termination_reason == ADAPTIVE_TERM_LLM_ERROR
 
+    def _close(self, runtime: _ErrorRuntime, loop_ctx: _LoopContext):
+        signature = "sig-provider"
+        return _force_duplicate_batch_answer_only_closure(
+            loop_ctx=loop_ctx,
+            profile=_profile(allowed_tools=frozenset({"file.read"})),
+            loop_state=self._prepare_state_with_facts(signature),
+            runtime=runtime,
+            model="m",
+            tool_calls=[ToolCall(id="c", name="file.read", arguments={})],
+            tool_specs=_tool_specs("file.read"),
+            max_output_tokens=None,
+            metadata=None,
+            allowed_tools=frozenset({"file.read"}),
+            public_mode_tag="act",
+            signature=signature,
+        )
+
+    def test_raises_typed_provider_failure(self) -> None:
+        failure = _rate_limited_error()
+        runtime = _ErrorRuntime(error=failure)
+        loop_ctx = _LoopContext(state=_state())
+
+        with pytest.raises(ProviderError) as raised:
+            self._close(runtime, loop_ctx)
+
+        assert raised.value.code == "RATE_LIMITED"
+        assert raised.value.details["status_code"] == 429
+        assert raised.value.details["reason_code"] == "provider_rate_limited"
+        assert raised.value.__cause__ is failure
+        assert len(runtime.calls) == 1
+        assert loop_ctx.commands == []
+
+    @pytest.mark.parametrize("make_error", _UNCHANGED_CLOSURE_FAILURES)
+    def test_keeps_llm_error_for_other_failures(self, make_error) -> None:
+        error = make_error()
+        runtime = _ErrorRuntime(error=error)
+
+        out, _dur, _tok = self._close(runtime, _LoopContext(state=_state()))
+
+        assert out is not None
+        assert out.termination_reason == ADAPTIVE_TERM_LLM_ERROR
+        assert out.error_message == str(error)
+        assert len(runtime.calls) == 1
+
     def test_returns_llm_error_on_not_ok(self) -> None:
         from openminion.modules.llm.schemas import ResponseError
 
@@ -7118,6 +7190,57 @@ class TestForceDuplicateBatchAnswerOnlyClosure:
         )
         assert out is not None
         assert out.termination_reason == ADAPTIVE_TERM_BUDGET_EXHAUSTED
+
+
+class TestForceDirectToolAnswerOnlyClosure:
+    def _close(self, runtime: _ErrorRuntime, loop_ctx: _LoopContext):
+        return _force_direct_tool_answer_only_closure(
+            loop_ctx=loop_ctx,
+            profile=_profile(allowed_tools=frozenset({"file.read"})),
+            loop_state=AdaptiveToolLoopState(
+                messages=[Message(role="user", content="read x")],
+                direct_tool_turn=DirectToolTurnContext(
+                    requested_tool_names=("file.read",),
+                    requested_batch_signature="",
+                    match_by_name_only=True,
+                ),
+                direct_tool_requested_batch_satisfied=True,
+            ),
+            runtime=runtime,
+            model="m",
+            tool_specs=_tool_specs("file.read"),
+            max_output_tokens=None,
+            metadata=None,
+            allowed_tools=frozenset({"file.read"}),
+            public_mode_tag="act",
+        )
+
+    def test_raises_typed_provider_failure(self) -> None:
+        failure = _rate_limited_error()
+        runtime = _ErrorRuntime(error=failure)
+        loop_ctx = _LoopContext(state=_state())
+
+        with pytest.raises(ProviderError) as raised:
+            self._close(runtime, loop_ctx)
+
+        assert raised.value.code == "RATE_LIMITED"
+        assert raised.value.details["status_code"] == 429
+        assert raised.value.details["reason_code"] == "provider_rate_limited"
+        assert raised.value.__cause__ is failure
+        assert len(runtime.calls) == 1
+        assert loop_ctx.commands == []
+
+    @pytest.mark.parametrize("make_error", _UNCHANGED_CLOSURE_FAILURES)
+    def test_keeps_llm_error_for_other_failures(self, make_error) -> None:
+        error = make_error()
+        runtime = _ErrorRuntime(error=error)
+
+        out, _dur, _tok = self._close(runtime, _LoopContext(state=_state()))
+
+        assert out is not None
+        assert out.termination_reason == ADAPTIVE_TERM_LLM_ERROR
+        assert out.error_message == str(error)
+        assert len(runtime.calls) == 1
 
 
 def test_loop_tool_failure_no_recovery_terminates() -> None:
