@@ -65,6 +65,7 @@ class ProjectTurnResult:
     summary: str
     gateway_run_id: str = ""
     condition: AutonomyLoopConditionKind = AutonomyLoopConditionKind.PRODUCTIVE
+    pending_confirmation_command_id: str = ""
     evidence_refs: tuple[str, ...] = ()
     artifact_refs: tuple[str, ...] = ()
     evidence_kinds: tuple[str, ...] = ()
@@ -153,6 +154,12 @@ def project_cycle_prompt(
     operator_guidance: Mapping[str, object] | None = None,
 ) -> str:
     project_run, checkpoint_payload = checkpoint.project_run, checkpoint.payload
+    pending_id = checkpoint_payload.get("pending_confirmation_command_id")
+    if pending_id and operator_guidance:
+        answers = cast(list[dict[str, object]], operator_guidance.get("answers", []))
+        for answer in reversed(answers):
+            if answer["request_id"] == pending_id:
+                return str(answer["answer"])
     lines = [
         run.goal_text,
         "",
@@ -369,6 +376,7 @@ def project_cycle_checkpoint_payload(
         "plan_revision_required": revision_required,
         "verification_closure": dict(verification_closure),
         "condition": turn.condition.value,
+        "pending_confirmation_command_id": turn.pending_confirmation_command_id,
         "decision_reason": decision_reason,
         **({"detail_code": "waiting_for_checks"} if waiting_for_checks else {}),
         "replan_count": replan_count,
@@ -570,6 +578,9 @@ def project_turn_result_from_response(
         summary=summary,
         gateway_run_id=str(metadata.get("run_id") or "").strip(),
         condition=_project_condition(metadata=metadata, error=error),
+        pending_confirmation_command_id=str(
+            metadata.get("pending_confirmation_command_id") or ""
+        ),
         evidence_refs=tuple(dict.fromkeys((*evidence_refs, *artifact_refs))),
         artifact_refs=artifact_refs,
         evidence_kinds=tuple(

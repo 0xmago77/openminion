@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from typing import cast
 
 from openminion.modules.task.runtime.lifecycle import (
     TaskLifecycleRecord,
@@ -15,6 +16,7 @@ from .constants import (
     REPOSITORY_LIFECYCLE_TEXT_MAX_CHARS,
 )
 from .models import ProjectControlAction, ProjectControlResult
+from .turn import project_checkpoint_guidance
 
 
 def _bounded_guidance_text(value: str | None, *, field: str) -> str:
@@ -119,6 +121,42 @@ def _redirect_project(
     )
 
 
+def _validate_confirmation_guidance(
+    task_manager: TaskManager,
+    record: TaskLifecycleRecord,
+    action: ProjectControlAction,
+    input_request_id: str | None,
+) -> None:
+    if action not in {
+        ProjectControlAction.ANSWER_INPUT,
+        ProjectControlAction.REDIRECT,
+        ProjectControlAction.REPRIORITIZE,
+    }:
+        return
+    checkpoint = load_latest_project_checkpoint(task_manager, task_id=record.task_id)
+    if checkpoint is None or not checkpoint.payload.get(
+        "pending_confirmation_command_id"
+    ):
+        return
+    pending_id = checkpoint.payload["pending_confirmation_command_id"]
+    guidance, _ = project_checkpoint_guidance(record.metadata, checkpoint)
+    answers = cast(list[dict[str, object]], guidance.get("answers", []))
+    confirmation_queued = any(item["request_id"] == pending_id for item in answers)
+    other_queued = bool(guidance.get("direction") or guidance.get("priority")) or any(
+        item["request_id"] != pending_id for item in answers
+    )
+    confirming = (
+        action == ProjectControlAction.ANSWER_INPUT
+        and str(input_request_id or "").strip() == pending_id
+    )
+    if (confirming and other_queued) or (not confirming and confirmation_queued):
+        raise ValueError(
+            "A pending confirmation answer cannot be mixed with other queued guidance. "
+            "Run /project resume to apply the queued input, then /project show and "
+            "answer the current input_request_id before adding further guidance."
+        )
+
+
 def apply_project_control(
     task_manager: TaskManager,
     *,
@@ -135,6 +173,7 @@ def apply_project_control(
     record = task_manager.get_task(task_id)
     if record is None:
         raise KeyError(f"task not found: {task_id}")
+    _validate_confirmation_guidance(task_manager, record, action, input_request_id)
 
     if (
         action == ProjectControlAction.PAUSE

@@ -88,6 +88,7 @@ class ProjectReport(_StrictReportModel):
     verification: tuple[TestEvidence, ...] = ()
     budget: ProjectBudgetCheckResult | None = None
     next_action: str | None = None
+    pending_confirmation_command_id: str | None = None
     baseline_comparisons: tuple[ProjectMetricComparison, ...] = ()
     capability_matrix: ProjectCapabilityMatrix | None = None
     proof_refs: tuple[str, ...] = ()
@@ -208,6 +209,9 @@ def build_project_report_from_task(
             ),
             "budget": budget,
             "next_action": resume.get("next_action"),
+            "pending_confirmation_command_id": checkpoint.payload.get(
+                "pending_confirmation_command_id"
+            ),
         }
     )
 
@@ -269,6 +273,8 @@ def render_project_report(report: ProjectReport) -> str:
         f"next_action: {report.next_action or 'unavailable'}",
         "metrics:",
     ]
+    if report.pending_confirmation_command_id:
+        lines.insert(-1, f"input_request_id: {report.pending_confirmation_command_id}")
     for name, value in report.metrics.model_dump().items():
         lines.append(f"  {name}: {'unknown' if value is None else value}")
     if report.task_plan is not None:

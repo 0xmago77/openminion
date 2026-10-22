@@ -207,6 +207,9 @@ def _attach_postprocess_action_metadata(
     termination_reason: str,
     finalization_payload: dict[str, Any] | None,
 ) -> None:
+    pending_command = step_out.working_state.pending_confirmation_command
+    if pending_command is not None:
+        metadata["pending_confirmation_command_id"] = pending_command.command_id
     cumulative_tool_results_payload = _cumulative_tool_results_from_step_output(
         step_out=step_out, tool_results_payload=tool_results_payload
     )

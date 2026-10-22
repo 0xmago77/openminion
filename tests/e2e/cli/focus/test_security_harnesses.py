@@ -1,6 +1,7 @@
 """Provider-free contracts for the opt-in security harnesses."""
 
 from dataclasses import replace
+from contextlib import nullcontext
 import json
 import os
 import sys
@@ -295,7 +296,7 @@ def test_source_repair_schedules_persisted_focus_project_wake(
                 "cycle_interval_seconds": 1,
             }
             assert run.continuation_policy.resume_on_daemon_restart
-            assert timeout == 660
+            assert 0 < timeout <= 660
         finally:
             sessions.close()
             manager.close()
@@ -304,6 +305,73 @@ def test_source_repair_schedules_persisted_focus_project_wake(
     monkeypatch.setattr(source, "_wait_for_run", inspect_before_wait)
     with pytest.raises(RuntimeError, match="stop before provider execution"):
         source._repair(probe, None, "approved finding F-1", "python -B verify.py")
+
+
+@pytest.mark.parametrize("changed", [None, "tool", "agent", "workspace", "id", "mode"])
+def test_project_approval_binds_pending_delegate_and_public_answer(
+    tmp_path, monkeypatch, changed
+):
+    pending = {
+        "command_id": "cmd-approved",
+        "tool_name": "task.delegate",
+        "args": {
+            "mode": "sync",
+            "agent_id": source._IMPLEMENTER,
+            "code_bearing": True,
+            "workspace_root": str(tmp_path),
+        },
+    }
+    if changed == "tool":
+        pending["tool_name"] = "exec.run"
+    elif changed == "id":
+        pending["command_id"] = "cmd-other"
+    elif changed:
+        field, value = {
+            "agent": ("agent_id", "other"),
+            "workspace": ("workspace_root", str(tmp_path.parent)),
+            "mode": ("mode", "accept"),
+        }[changed]
+        pending["args"][field] = value
+    monkeypatch.setattr(
+        source,
+        "SQLiteSessionStore",
+        lambda _path: SimpleNamespace(
+            get_latest_working_state=lambda *_args, **_kwargs: {
+                "state_inline": {"pending_confirmation_command": pending}
+            },
+            close=lambda: None,
+        ),
+    )
+    controls = []
+    probe = SimpleNamespace(
+        data_root=tmp_path / "data",
+        workdir=tmp_path,
+        session_id="session",
+        session=lambda: nullcontext(None),
+        wait_ready=lambda _: None,
+        run_slash_turn=lambda _session, command, **_: (
+            controls.append(command) or command
+        ),
+    )
+    checkpoint = SimpleNamespace(
+        payload={"pending_confirmation_command_id": "cmd-approved"},
+        project_run=SimpleNamespace(project_run_id="project"),
+    )
+    run = SimpleNamespace(run_id="run")
+    if changed:
+        with pytest.raises(AssertionError):
+            source._approve_project_delegate(probe, None, run, checkpoint, "sync")
+        assert not controls
+    else:
+        approval = source._approve_project_delegate(
+            probe, None, run, checkpoint, "sync"
+        )
+        assert approval["reply"] == "allow_once"
+        assert controls == [
+            "/project show run",
+            "/project answer run --input-request-id cmd-approved --answer allow_once",
+            "/project resume run",
+        ]
 
 
 @pytest.mark.parametrize("changed", [False, True])

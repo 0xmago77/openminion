@@ -48,6 +48,7 @@ from openminion.modules.task.plan import (
 )
 from openminion.modules.task.project import checkpoints as project_checkpoints
 from openminion.modules.task.project.checkpoints import plan_checkpoint_payload
+from openminion.modules.task.project.turn import project_turn_result_from_response
 from openminion.modules.task.project.effects import (
     ProjectEffectRecord,
     ProjectEffectStatus,
@@ -457,6 +458,158 @@ def test_iteration_extension_allows_next_cycle_after_worker_reopen(tmp_path) -> 
     assert second.run.status == AutonomyRunStatus.COMPLETED
     assert second.project_run.cycle_limit == 2
     assert len(requests) == 2
+
+
+def test_pending_confirmation_answers_resume_exact_command_without_verifying_pause(
+    tmp_path,
+) -> None:
+    store, manager, run = _project(tmp_path)
+    run = run.model_copy(
+        update={
+            "execution_selectors": run.execution_selectors.model_copy(
+                update={"verification_commands": (sys.executable,)}
+            )
+        }
+    )
+    store.save(run)
+    requests = []
+    verified = []
+    responses = iter(
+        [
+            {
+                "brain_status": "waiting_user",
+                "pending_confirmation_command_id": "cmd-1",
+            },
+            {
+                "brain_status": "waiting_user",
+                "pending_confirmation_command_id": "cmd-2",
+            },
+            {"brain_status": "done"},
+        ]
+    )
+
+    def turn(request):
+        requests.append(request)
+        return project_turn_result_from_response(
+            response={"summary": "fixture turn", "metadata": next(responses)}
+        )
+
+    worker = ProjectWorker(
+        task_manager=manager,
+        autonomy_store=store,
+        turn=turn,
+        verify=lambda: (
+            verified.append(True) or (_evidence(_TestEvidenceStatus.PASSED),)
+        ),
+    )
+    for command_id in ("cmd-1", "cmd-2"):
+        result = worker.run_cycle(run.run_id)
+        checkpoint = load_latest_project_checkpoint(manager, task_id=run.task_id)
+        assert result.run.status == AutonomyRunStatus.WAITING_FOR_INPUT
+        assert not verified and not checkpoint.payload["plan_revision_required"]
+        assert checkpoint.payload["pending_confirmation_command_id"] == command_id
+        report = build_project_report_from_task(manager, task_id=run.task_id)
+        assert report.pending_confirmation_command_id == command_id
+        assert f"input_request_id: {command_id}" in render_project_report(report)
+        apply_project_control(
+            manager,
+            task_id=run.task_id,
+            action=ProjectControlAction.ANSWER_INPUT,
+            input_request_id=command_id,
+            answer="allow_once",
+        )
+        resume_project_run(manager, store, result.run, workspace=tmp_path, waiver=None)
+    result = worker.run_cycle(run.run_id)
+    checkpoint = load_latest_project_checkpoint(manager, task_id=run.task_id)
+    assert result.run.status == AutonomyRunStatus.COMPLETED and verified == [True]
+    assert [request.prompt for request in requests[1:]] == ["allow_once", "allow_once"]
+    assert all("task.delegate" in request.allowed_tools for request in requests)
+    assert not checkpoint.payload.get("pending_confirmation_command_id")
+    assert checkpoint.payload["operator_guidance_consumed_revision"] == 2
+
+
+@pytest.mark.parametrize("request_id", [None, "unrelated", "cmd-old", "cmd-current"])
+def test_only_fresh_matching_confirmation_answer_is_verbatim(tmp_path, request_id):
+    _, manager, run = _project(tmp_path)
+    checkpoint = load_latest_project_checkpoint(manager, task_id=run.task_id)
+    checkpoint.payload["pending_confirmation_command_id"] = "cmd-current"
+    answers = (
+        [{"request_id": request_id, "answer": "allow_once", "revision": 2}]
+        if request_id is not None
+        else []
+    )
+    guidance, _ = project_operator_guidance(
+        {
+            "operator_answers": answers,
+            "operator_direction": "retain scope",
+            "operator_direction_revision": 2,
+        },
+        consumed_revision=1,
+    )
+    prompt = project_cycle_prompt(run, checkpoint, "repair", operator_guidance=guidance)
+    assert (prompt == "allow_once") == (request_id == "cmd-current")
+    stale, _ = project_operator_guidance(
+        {"operator_answers": answers}, consumed_revision=2
+    )
+    assert (
+        project_cycle_prompt(run, checkpoint, "repair", operator_guidance=stale)
+        != "allow_once"
+    )
+    checkpoint.payload.pop("pending_confirmation_command_id")
+    ordinary = project_cycle_prompt(
+        run, checkpoint, "repair", operator_guidance=guidance
+    )
+    assert run.goal_text in ordinary and "retain scope" in ordinary
+
+
+@pytest.mark.parametrize("answer_first", [False, True])
+@pytest.mark.parametrize("request_id", ["cmd-current", " cmd-current "])
+@pytest.mark.parametrize("other_action", ["redirect", "reprioritize", "answer_input"])
+def test_confirmation_and_other_guidance_cannot_silently_consume_each_other(
+    tmp_path, answer_first, request_id, other_action
+):
+    _, manager, run = _project(tmp_path)
+    apply_project_control(
+        manager, task_id=run.task_id, action=ProjectControlAction.PAUSE
+    )
+    checkpoint = load_latest_project_checkpoint(manager, task_id=run.task_id)
+    save_project_run_checkpoint(
+        manager,
+        checkpoint.project_run,
+        checkpoint_id="pending",
+        payload={
+            **checkpoint.payload,
+            "pending_confirmation_command_id": "cmd-current",
+        },
+    )
+    answer = dict(
+        action=ProjectControlAction.ANSWER_INPUT,
+        input_request_id=request_id,
+        answer="allow_once",
+    )
+    text = "inspect the changed scope first"
+    direction = {
+        "redirect": dict(action=ProjectControlAction.REDIRECT, direction=text),
+        "reprioritize": dict(action=ProjectControlAction.REPRIORITIZE, priority=text),
+        "answer_input": dict(
+            action=ProjectControlAction.ANSWER_INPUT,
+            input_request_id="ordinary-question",
+            answer=text,
+        ),
+    }[other_action]
+    first, second = (answer, direction) if answer_first else (direction, answer)
+    apply_project_control(manager, task_id=run.task_id, **first)
+    original = manager.get_task(run.task_id).metadata
+    with pytest.raises(ValueError, match="Run /project resume"):
+        apply_project_control(manager, task_id=run.task_id, **second)
+    assert manager.get_task(run.task_id).metadata == original
+    checkpoint = load_latest_project_checkpoint(manager, task_id=run.task_id)
+    guidance, _ = project_operator_guidance(original, consumed_revision=0)
+    prompt = project_cycle_prompt(run, checkpoint, "repair", operator_guidance=guidance)
+    if answer_first:
+        assert prompt == "allow_once"
+    else:
+        assert "inspect the changed scope first" in prompt and prompt != "allow_once"
 
 
 def test_operator_guidance_is_checkpointed_and_late_guidance_waits(tmp_path) -> None:

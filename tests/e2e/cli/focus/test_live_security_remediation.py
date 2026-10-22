@@ -408,6 +408,64 @@ def _handoff(
     return redacted
 
 
+def _approve_project_delegate(probe, ctl, run, checkpoint, expected_mode):
+    command_id = checkpoint.payload["pending_confirmation_command_id"]
+    sessions = SQLiteSessionStore(probe.data_root / "state/brain/sessions.db")
+    try:
+        snapshot = sessions.get_latest_working_state(
+            f"{probe.session_id}::conv:{checkpoint.project_run.project_run_id}",
+            agent_id=_PARENT,
+        )
+        pending = snapshot["state_inline"]["pending_confirmation_command"]
+    finally:
+        sessions.close()
+    assert pending["command_id"] == command_id
+    assert pending["tool_name"] == "task.delegate"
+    args = pending["args"]
+    assert expected_mode in {"sync", "review", "accept"}
+    assert args["mode"] == expected_mode
+    if expected_mode == "sync":
+        assert args["agent_id"] == _IMPLEMENTER and args["code_bearing"] is True
+        assert Path(args["workspace_root"]).resolve() == probe.workdir.resolve()
+    else:
+        child = load_child_worktree_record(ctl, args["child_artifact"]["record_alias"])
+        assert child["agent_id"] == _IMPLEMENTER
+        assert child["target_digest"] == args["child_artifact"]["target_digest"]
+        assert Path(child["repository"]).resolve() == probe.workdir.resolve()
+        assert child["touched_paths"] == ["app.py"] and child["validation"]["passed"]
+        if expected_mode == "review":
+            assert args["agent_id"] == _CODE_REVIEWER
+        else:
+            assert child["review_receipt"]["passed"]
+            assert child["review_receipt"]["reviewer_agent_id"] == _CODE_REVIEWER
+    with probe.session() as session:
+        probe.wait_ready(session)
+        shown = probe.run_slash_turn(
+            session,
+            f"/project show {run.run_id}",
+            marker=f"input_request_id: {command_id}",
+        )
+        answered = probe.run_slash_turn(
+            session,
+            f"/project answer {run.run_id} --input-request-id {command_id} --answer allow_once",
+            marker="operator_answers: 1",
+        )
+        resumed = probe.run_slash_turn(
+            session,
+            f"/project resume {run.run_id}",
+            marker=r"task_state: active|status: running",
+        )
+    return {
+        "command_id": command_id,
+        "tool_name": "task.delegate",
+        "mode": expected_mode,
+        "reply": "allow_once",
+        "show": shown,
+        "answer": answered,
+        "resume": resumed,
+    }
+
+
 def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> dict:
     store, manager = _project_owners(probe)
     try:
@@ -420,7 +478,7 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
             repository=probe.workdir,
             require_git_repository=True,
             verification_commands=(command, "git status"),
-            max_iterations=3,
+            max_iterations=6,
             max_tool_calls=28,
             max_wall_clock_ms=600_000,
             config_ref=str(probe.config_path),
@@ -451,14 +509,32 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         )
     finally:
         manager.close()
-    run, checkpoint = _wait_for_run(
-        probe,
-        run.run_id,
-        lambda state, _: state.status == AutonomyRunStatus.COMPLETED,
-        timeout=660,
-    )
+    approvals = []
+    deadline = time.monotonic() + 660
+    for mode in ("sync", "review", "accept", None):
+        run, checkpoint = _wait_for_run(
+            probe,
+            run.run_id,
+            lambda state, _: (
+                state.status
+                in {AutonomyRunStatus.COMPLETED, AutonomyRunStatus.WAITING_FOR_INPUT}
+            ),
+            timeout=max(1, int(deadline - time.monotonic())),
+        )
+        if run.status == AutonomyRunStatus.COMPLETED:
+            break
+        approvals.append(_approve_project_delegate(probe, ctl, run, checkpoint, mode))
+        (probe.data_root.parent / "repair.approvals.json").write_text(
+            json.dumps(approvals, indent=2)
+        )
+    assert run.status == AutonomyRunStatus.COMPLETED
+    approved_ids = {item["command_id"] for item in approvals}
     calls, children, _ = _tool_evidence(probe, after_event_id=0)
-    assert not any(item["event"] == "tool.call.blocked" for item in calls)
+    assert all(
+        item["call_id"] in approved_ids
+        for item in calls
+        if item["event"] == "tool.call.blocked"
+    )
     assert not any(str(item["tool"]).startswith("security.") for item in calls)
     _assert_completed_child_lifecycle(children, parent_agent_id=_PARENT)
     assert children[0]["child_agent_id"] == _IMPLEMENTER
@@ -480,7 +556,11 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
             for key in ("input_tokens", "output_tokens")
         ), f"missing provider usage for {agent_id}"
         assert not any(
-            event["event_type"] in {"llm.call.failed", "tool.call.blocked"}
+            event["event_type"] == "llm.call.failed"
+            or (
+                event["event_type"] == "tool.call.blocked"
+                and event["data"]["call_id"] not in approved_ids
+            )
             for event in role_events
         )
         assert not any(
@@ -534,6 +614,7 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         "accepted_child_ref": accepted_ref,
         "child": child,
         "tool_calls": calls,
+        "approvals": approvals,
         "focus_status": status,
         "usage_by_role": usage,
     }

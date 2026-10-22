@@ -14,7 +14,7 @@ from openminion.modules.memory.storage.memory import InMemoryMemoryStore
 from openminion.modules.brain.loop.context.pending_turn import (
     PENDING_TURN_CONTEXT_MAX_STALE_TURNS,
 )
-from openminion.modules.brain.schemas import BudgetCounters, WorkingState
+from openminion.modules.brain.schemas import BudgetCounters, ToolCommand, WorkingState
 from openminion.modules.tool import ToolRegistry, ToolSpec
 from openminion.modules.tool.diagnostics.events import structural_tool_result
 from openminion.modules.storage.runtime.migrations import migrate_database
@@ -2800,6 +2800,63 @@ def test_follow_up_after_tool_preserves_typed_cache_usage_in_completed_event() -
     assert completed["payload"]["provider"] == "fake-provider"
 
 
+@pytest.mark.parametrize("pending", [False, True])
+def test_postprocess_turn_exposes_only_pending_confirmation_identity(
+    pending: bool,
+) -> None:
+    bridge = DummyBridge()
+    bridge._config = OpenMinionConfig()
+    _csc_install_default_agent(bridge._config)
+    bridge._provider = SimpleNamespace(name="fake-provider")
+    bridge._telemetryctl = None
+    bridge._identity_metadata = dict
+    state = WorkingState(
+        session_id="s-confirmation",
+        agent_id="test-agent",
+        budgets_remaining=BudgetCounters(
+            ticks=8, tool_calls=8, a2a_calls=0, tokens=1000, time_ms=1000
+        ),
+        pending_confirmation_command=(
+            ToolCommand(
+                command_id="pending-delegation-1",
+                title="Delegate repair",
+                tool_name="task.delegate",
+                args={"task": "PRIVATE_PENDING_ARGUMENT_CANARY"},
+                requires_confirmation=True,
+            )
+            if pending
+            else None
+        ),
+    )
+    response = asyncio.run(
+        bridge._postprocess_turn(
+            runner=_DummyRunner({}),
+            step_out=SimpleNamespace(
+                message="Confirmation required." if pending else "Done.",
+                status="waiting_user" if pending else "done",
+                action_result=None,
+                working_state=state,
+            ),
+            message=Message(channel="console", target="user", body="Repair"),
+            history=[],
+            session_id="s-confirmation",
+            request_id="trace-confirmation",
+            turn_id="turn-confirmation",
+            turn_start_time=0.0,
+        )
+    )
+    if pending:
+        assert (
+            response.metadata["pending_confirmation_command_id"]
+            == "pending-delegation-1"
+        )
+    else:
+        assert "pending_confirmation_command_id" not in response.metadata
+    serialized = json.dumps(response.metadata)
+    assert "PRIVATE_PENDING_ARGUMENT_CANARY" not in serialized
+    assert '"pending_confirmation_command"' not in serialized
+
+
 def test_postprocess_turn_attaches_clarify_request_metadata() -> None:
     bridge = DummyBridge()
     bridge._config = OpenMinionConfig()
@@ -2813,6 +2870,7 @@ def test_postprocess_turn_attaches_clarify_request_metadata() -> None:
         status="waiting_user",
         action_result=None,
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="plan",
@@ -2891,6 +2949,7 @@ def test_postprocess_turn_attaches_tool_and_security_metadata() -> None:
         status="running",
         action_result=action_result,
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[_Step()]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -2940,6 +2999,7 @@ def test_postprocess_turn_prefixes_response_with_selected_runtime_agent() -> Non
         status="done",
         action_result=SimpleNamespace(outputs={}),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3001,6 +3061,7 @@ def test_postprocess_turn_preserves_explicit_duplicate_termination_reason() -> N
         status="running",
         action_result=action_result,
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=None,
             llm_calls_used=4,
             active_mode_name="act",
@@ -3066,6 +3127,7 @@ def test_postprocess_turn_uses_aggregated_tool_results_from_action_outputs() -> 
             },
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3123,6 +3185,7 @@ def test_postprocess_turn_rejects_empty_aggregated_model_continuation() -> None:
             },
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3170,6 +3233,7 @@ def test_postprocess_turn_preserves_no_tool_termination_reason() -> None:
             ),
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3253,6 +3317,7 @@ def test_postprocess_turn_exposes_cumulative_tool_results_from_last_result(
             },
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3320,6 +3385,7 @@ def test_postprocess_turn_ignores_last_result_from_prior_turn() -> None:
         status="done",
         action_result=None,
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="respond",
@@ -3382,6 +3448,7 @@ def test_postprocess_turn_uses_current_adaptive_snapshot_tool_results(
         status="done",
         action_result=None,
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=2,
             active_mode_name="respond",
@@ -3486,6 +3553,7 @@ def test_postprocess_turn_attaches_watch_outcome_metadata() -> None:
             },
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3563,6 +3631,7 @@ def test_postprocess_turn_attaches_structured_action_output_metadata() -> None:
             },
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3624,6 +3693,7 @@ def test_postprocess_turn_salvages_finalization_status_trailer_from_message() ->
             outputs={},
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3673,6 +3743,7 @@ def test_postprocess_turn_salvages_attribute_style_finalization_status_trailer()
             outputs={},
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3720,6 +3791,7 @@ def test_postprocess_turn_salvages_summary_alias_finalization_status_trailer() -
             outputs={},
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3896,6 +3968,7 @@ def test_postprocess_turn_emits_mode_aware_tool_and_tick_telemetry() -> None:
             outputs={},
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             llm_calls_used=1,
             active_mode_name="plan",
             trace_id="trace-1",
@@ -3945,6 +4018,7 @@ def _fael_make_step_out(message_text: str) -> SimpleNamespace:
             outputs={},
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
