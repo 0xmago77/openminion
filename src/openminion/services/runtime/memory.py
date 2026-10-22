@@ -240,8 +240,7 @@ def build_memory_v2_runtime_assembly(
         return RuntimeMemoryAssembly(gateway=adapter)
     db_path = memory_root / SERVICES_MEMORY_DB_FILENAME
     try:
-        factory = artifactctl_factory or _runtime_artifactctl_factory(config_manager)
-        artifactctl = factory()
+        artifactctl = _runtime_artifactctl(artifactctl_factory, config_manager)
     except Exception:
         artifactctl = None
     resolved = resolve_memory_backend(
@@ -307,13 +306,16 @@ def build_memory_v2_runtime_assembly(
     )
 
 
-def _runtime_artifactctl_factory(
+def _runtime_artifactctl(
+    artifactctl_factory: Callable[[], Any] | None,
     config_manager: ConfigManager | None,
-) -> Callable[[], Any]:
+) -> Any:
+    if artifactctl_factory is not None:
+        return artifactctl_factory()
     artifact_config = None
     if config_manager is not None and config_manager.is_registered("artifact"):
         artifact_config = config_manager.get("artifact")
-    return lambda: create_default_artifactctl(artifact_config)
+    return create_default_artifactctl(artifact_config)
 
 
 def _resolve_project_id(
