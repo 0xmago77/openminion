@@ -167,14 +167,13 @@ def test_closure_submit_output_schema_requires_verdict_fields() -> None:
 def test_closure_final_answer_only_reply_does_not_replace_grounded_answer() -> None:
     client = _JudgeClient({"final_answer": _REFUSAL})
 
-    with tempfile.TemporaryDirectory() as tmp:
-        judgment = _evaluate_closure(Path(tmp), client)
+    with (
+        tempfile.TemporaryDirectory() as tmp,
+        pytest.raises(RuntimeError, match="LLM did not return structured output"),
+    ):
+        _evaluate_closure(Path(tmp), client)
 
     assert len(client.requests) == 1
-    assert judgment.satisfied is False
-    assert judgment.next_action == "continue"
-    assert judgment.reason == "closure_gate_invalid_structured_output"
-    assert judgment.final_answer is None
 
 
 def test_closure_complete_close_verdict_keeps_model_final_answer() -> None:

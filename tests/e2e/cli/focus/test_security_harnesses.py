@@ -73,7 +73,7 @@ def test_source_publication_recovery_preserves_failure_boundaries(
     events += publication + failure if after_publish else failure + publication
     expected = [tool] if review_turn else ["security.scan_code", tool]
     if accepted:
-        assert source._assert_readonly_outcomes(events, expected) == [
+        assert source._assert_readonly_outcomes(events, expected, ["done"]) == [
             {"call_id": "failed", "tool_name": failed_tool, "error_code": code}
         ]
         # A second successful scan or publication still violates the lifecycle.
@@ -85,10 +85,29 @@ def test_source_publication_recovery_preserves_failure_boundaries(
                     complete("duplicate"),
                 ],
                 expected,
+                ["done"],
             )
     else:
         with pytest.raises(AssertionError):
-            source._assert_readonly_outcomes(events, expected)
+            source._assert_readonly_outcomes(events, expected, ["done"])
+
+
+@pytest.mark.parametrize(
+    "terminal_statuses",
+    [[], [None], ["error"], ["failed"], ["active"], ["done", "error"]],
+)
+def test_source_publication_requires_successful_terminal_turn(terminal_statuses):
+    events = [
+        (
+            "tool.call.requested",
+            {"call_id": "review", "canonical_name": "security.review_report"},
+        ),
+        ("tool.call.completed", {"call_id": "review", "status": "success"}),
+    ]
+    with pytest.raises(AssertionError, match="turn did not complete"):
+        source._assert_readonly_outcomes(
+            events, ["security.review_report"], terminal_statuses
+        )
 
 
 @pytest.fixture

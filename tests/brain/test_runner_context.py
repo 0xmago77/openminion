@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 
 from openminion.modules.brain.adapters.context import LocalContextAdapter
 from openminion.modules.brain.adapters.factory import create_context_adapter
@@ -572,7 +574,44 @@ def test_decide_replan_turn_uses_goal_as_query_fallback() -> None:
         assert hints.get("user_input") == "what's weather in SF?"
 
 
-def test_closure_judge_request_renders_custom_tool_result_payload() -> None:
+@pytest.mark.parametrize(
+    ("tool_name", "tool_outputs", "expected_evidence"),
+    [
+        (
+            "lookup_order",
+            {"data": "order A-104: ready for pickup, pickup code ZEBRA-42"},
+            ["pickup code ZEBRA-42"],
+        ),
+        (
+            "security.review_report",
+            {
+                "ok": True,
+                "review_id": "initial-review",
+                "schema_version": "security_review.v1",
+                "review_kind": "initial",
+                "review_status": "accepted",
+                "finding_count": 1,
+                "accepted_count": 1,
+                "redaction_count": 0,
+                "review_ref": "artifact://sha256/" + "a" * 64,
+                "source_report_ref": "artifact://sha256/" + "b" * 64,
+                "target_revision": "c" * 40,
+                "remediation_brief": [{"fix": "Replace the unsafe call"}],
+                "artifact_ref": "artifact://sha256/" + "a" * 64,
+                "artifact_refs": ["artifact://sha256/" + "a" * 64],
+                "content": "Published security review with status=accepted; api_key=private-fixture-key",
+            },
+            [
+                "artifact://sha256/" + "a" * 64,
+                "Published security review with status=accepted",
+            ],
+        ),
+    ],
+    ids=["wrapped-string", "review-mapping"],
+)
+def test_closure_judge_request_renders_custom_tool_result_payload(
+    tool_name: str, tool_outputs: dict, expected_evidence: list[str]
+) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         session = LocalSessionStore(root / "sessions")
@@ -593,12 +632,12 @@ def test_closure_judge_request_renders_custom_tool_result_payload() -> None:
         state.goal = "Check order A-104"
         lookup_result = _tool_result_payload_from_action(
             call_id="call-lookup-order",
-            tool_name="lookup_order",
+            tool_name=tool_name,
             action_result=ActionResult(
                 command_id="call-lookup-order",
                 status="success",
                 summary="Tool executed successfully",
-                outputs={"data": "order A-104: ready for pickup, pickup code ZEBRA-42"},
+                outputs=tool_outputs,
             ),
         )
 
@@ -636,5 +675,6 @@ def test_closure_judge_request_renders_custom_tool_result_payload() -> None:
             if line.startswith("closure_action_outputs: ")
         ]
         assert len(evidence) == 1
-        assert '"tool_name": "lookup_order"' in evidence[0]
-        assert "pickup code ZEBRA-42" in evidence[0]
+        assert f'"tool_name": "{tool_name}"' in evidence[0]
+        assert all(value in evidence[0] for value in expected_evidence)
+        assert "private-fixture-key" not in evidence[0]

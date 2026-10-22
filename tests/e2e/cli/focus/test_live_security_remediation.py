@@ -216,7 +216,7 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
         probe.run_slash(
             session, f"/tools deactivate {profile}", marker=f"Deactivated: {profile}"
         )
-    observed, _, brain_session = read_focus_evidence(
+    observed, messages, brain_session = read_focus_evidence(
         probe.environment(), probe.session_id
     )
     events = [
@@ -242,7 +242,12 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
         if probe.agent_id == _RESEARCHER
         else ["security.review_report"]
     )
-    recovered = _assert_readonly_outcomes(events, expected_security)
+    terminal_statuses = [
+        message.metadata.get("brain_status")
+        for message in messages
+        if message.role == "outbound"
+    ]
+    recovered = _assert_readonly_outcomes(events, expected_security, terminal_statuses)
     usage = _usage(
         _events(probe.data_root / "telemetry/telemetry.db", 0),
         probe.session_id,
@@ -269,6 +274,7 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
         "exposed_tools": sorted(allowed),
         "calls": calls,
         "recovered_validation_attempts": recovered,
+        "terminal_statuses": terminal_statuses,
         "approvals": approvals,
         "usage": usage,
         "tool_transcript": f"{name}.tools.json",
@@ -276,7 +282,10 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
     }
 
 
-def _assert_readonly_outcomes(events: list, expected_security: list[str]) -> list[dict]:
+def _assert_readonly_outcomes(
+    events: list, expected_security: list[str], terminal_statuses: list
+) -> list[dict]:
+    assert terminal_statuses == ["done"], f"turn did not complete: {terminal_statuses}"
     calls = {
         data["call_id"]: data["canonical_name"]
         for kind, data in events
