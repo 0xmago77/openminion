@@ -7,6 +7,9 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Raise the existing typed provider error when a recognized provider failure
+  interrupts the adaptive tool loop after a tool result, instead of returning
+  the error text as a completed answer; the tool is not re-run (#326).
 - Reject an explicit SDK, `POST /turns`, or submitted-turn agent that does not
   own an existing non-room session (`TurnRequestError`, HTTP 400, or an
   `invalid_request` turn error) before any provider request, instead of

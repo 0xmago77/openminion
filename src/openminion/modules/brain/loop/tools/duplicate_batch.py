@@ -8,6 +8,7 @@ from openminion.modules.brain.constants import (
     BRAIN_ACTION_STATUS_NEEDS_USER,
     BRAIN_ACTION_STATUS_RETRY,
 )
+from openminion.modules.brain.loop.failures import _raise_provider_failure
 from openminion.modules.brain.schemas import ActionError, ActionResult, new_uuid
 from openminion.modules.llm.schemas import Message
 
@@ -384,6 +385,35 @@ def _duplicate_batch_empty_final_outcome(
     )
 
 
+def _duplicate_batch_closure_call_failure(
+    *,
+    loop_ctx: AdaptiveToolLoopContext,
+    profile: AdaptiveToolLoopProfile,
+    loop_state: AdaptiveToolLoopState,
+    allowed_tools: frozenset[str],
+    public_mode_tag: str,
+    error: Exception,
+) -> AdaptiveToolLoopOutcome:
+    loop_state.termination_reason = ADAPTIVE_TERM_LLM_ERROR
+    emit_adaptive_status(
+        loop_ctx,
+        profile=profile,
+        loop_state=loop_state,
+        detail_text=f"{public_mode_tag} duplicate batch closure failed",
+        mode_state="llm_error",
+        termination_reason=ADAPTIVE_TERM_LLM_ERROR,
+    )
+    _raise_provider_failure(error)
+    return AdaptiveToolLoopOutcome(
+        profile_name=profile.profile_name,
+        mode_name=profile.mode_name,
+        termination_reason=ADAPTIVE_TERM_LLM_ERROR,
+        state=loop_state,
+        allowed_tools=allowed_tools,
+        error_message=str(error),
+    )
+
+
 def _force_duplicate_batch_answer_only_closure(
     *,
     loop_ctx: AdaptiveToolLoopContext,
@@ -447,23 +477,14 @@ def _force_duplicate_batch_answer_only_closure(
             metadata=metadata,
         )
     except Exception as exc:  # noqa: BLE001
-        loop_state.termination_reason = ADAPTIVE_TERM_LLM_ERROR
-        emit_adaptive_status(
-            loop_ctx,
-            profile=profile,
-            loop_state=loop_state,
-            detail_text=f"{public_mode_tag} duplicate batch closure failed",
-            mode_state="llm_error",
-            termination_reason=ADAPTIVE_TERM_LLM_ERROR,
-        )
         return (
-            AdaptiveToolLoopOutcome(
-                profile_name=profile.profile_name,
-                mode_name=profile.mode_name,
-                termination_reason=ADAPTIVE_TERM_LLM_ERROR,
-                state=loop_state,
+            _duplicate_batch_closure_call_failure(
+                loop_ctx=loop_ctx,
+                profile=profile,
+                loop_state=loop_state,
                 allowed_tools=allowed_tools,
-                error_message=str(exc),
+                public_mode_tag=public_mode_tag,
+                error=exc,
             ),
             0,
             0,

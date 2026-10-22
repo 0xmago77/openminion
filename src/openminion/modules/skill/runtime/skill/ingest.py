@@ -39,6 +39,7 @@ from openminion.modules.skill.runtime.skill.resources import collect_bundle_reso
 from openminion.modules.skill.runtime.parser import (
     build_default_snippets,
     build_recipe,
+    declared_skill_id,
     detect_tools,
     front_matter_unknown_key_warnings,
     parse_markdown,
@@ -566,7 +567,7 @@ class SkillIngestMixin:
             )
         )
 
-        raw_skill_id = str(front_matter.get("id", "")).strip() or slugify(name)
+        raw_skill_id = declared_skill_id(front_matter, sections) or slugify(name)
         requested_status = normalize_status(
             str(front_matter.get("status", SKILL_STATUS_DRAFT))
         )

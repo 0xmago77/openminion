@@ -16,6 +16,9 @@ from openminion.api.handoff import (
     build_delegate_tool,
     subagent,
 )
+from openminion.modules.controlplane.constants import (
+    CALLER_HANDLES_DELIVERY_METADATA_KEY,
+)
 from openminion.modules.policy.models import PolicyConfig
 from openminion.modules.policy.runtime.service import PolicyCtl
 from openminion.modules.tool.registry import ToolRegistry
@@ -328,7 +331,7 @@ def test_subagent_run_threads_context_as_runtime_metadata() -> None:
     assert payload["allowed_tools"] == ["safe.read"]
     assert payload["timeout_seconds"] == 30
     assert "subagent_context" not in payload
-    assert "inbound_metadata" not in payload
+    assert payload["inbound_metadata"] == {CALLER_HANDLES_DELIVERY_METADATA_KEY: "true"}
     context = runtime.last_trusted_subagent_context
     assert context is not None
     assert context.parent_agent_id == "parent"

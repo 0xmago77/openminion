@@ -4,6 +4,7 @@ from typing import Any, Callable, Mapping, Sequence
 from ..constants import (
     ARTIFACT_PREVIEW_MAX_BULLETS,
     ARTIFACT_PREVIEW_MAX_CHARS,
+    JUDGE_ACTION_OUTPUTS_MAX_CHARS,
 )
 from ..schemas import (
     ArtifactDigest,
@@ -27,13 +28,19 @@ def _request_hints_for_purpose(
 
 
 def _append_json_context_line(
-    lines: list[str], label: str, value: Any, *, sort_keys: bool = True
+    lines: list[str],
+    label: str,
+    value: Any,
+    *,
+    sort_keys: bool = True,
+    max_chars: int | None = None,
 ) -> None:
     if not value:
         return
-    lines.append(
-        f"{label}: " + json.dumps(value, ensure_ascii=True, sort_keys=sort_keys)
-    )
+    text = json.dumps(value, ensure_ascii=True, sort_keys=sort_keys)
+    if max_chars is not None and len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "...[truncated]"
+    lines.append(f"{label}: {text}")
 
 
 def render_compacted_session_context(
@@ -194,6 +201,17 @@ def judge_context_section(request: BuildPackRequest) -> str:
     action_summary = str(hints.get("closure_action_summary") or "").strip()
     if action_summary:
         lines.append(f"action_summary: {action_summary}")
+
+    action_outputs = hints.get("closure_action_outputs")
+    if isinstance(action_outputs, dict):
+        # Builder order puts tool results first, so the cap trims later fields first.
+        _append_json_context_line(
+            lines,
+            "closure_action_outputs",
+            action_outputs,
+            sort_keys=False,
+            max_chars=JUDGE_ACTION_OUTPUTS_MAX_CHARS,
+        )
 
     sub_intents = hints.get("closure_sub_intents")
     if isinstance(sub_intents, list):
