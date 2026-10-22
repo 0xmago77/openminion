@@ -355,7 +355,7 @@ def _assert_completed_child_lifecycle(
 ) -> None:
     assert [item["mode"] for item in child_state] == ["sync", "review", "accept"]
     by_mode = {str(item["mode"]): item for item in child_state}
-    assert by_mode["sync"]["status"] == "completed"
+    assert by_mode["sync"]["status"] == "success"
     assert by_mode["review"]["status"] == "passed"
     assert by_mode["accept"]["status"] == "accepted"
     assert isinstance(by_mode["review"]["findings"], list)

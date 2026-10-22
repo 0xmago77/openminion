@@ -444,20 +444,28 @@ def _approve_project_delegate(probe, ctl, run, checkpoint, expected_mode):
             assert child["review_receipt"]["reviewer_agent_id"] == _CODE_REVIEWER
     with probe.session() as session:
         probe.wait_ready(session)
-        shown = probe.run_slash_turn(
+        shown = probe.run_slash(
             session,
             f"/project show {run.run_id}",
             marker=f"input_request_id: {command_id}",
         )
-        answered = probe.run_slash_turn(
+        answered = probe.run_slash(
             session,
             f"/project answer {run.run_id} --input-request-id {command_id} --answer allow_once",
-            marker="operator_answers: 1",
+            marker=f"input_request_id: {command_id}",
         )
-        resumed = probe.run_slash_turn(
+        _, manager = _project_owners(probe)
+        try:
+            answers = manager.get_task(run.task_id).metadata["operator_answers"]
+            assert len(answers) == 1
+            assert answers[0]["request_id"] == command_id
+            assert answers[0]["answer"] == "allow_once"
+        finally:
+            manager.close()
+        resumed = probe.run_slash(
             session,
             f"/project resume {run.run_id}",
-            marker=r"task_state: active|status: running",
+            marker="task_state: active",
         )
     return {
         "command_id": command_id,
@@ -577,6 +585,7 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
             "completed_calls": completions,
         }
     child = load_child_worktree_record(ctl, str(children[-1]["record_alias"]))
+    assert child["status"] == "completed"
     assert child["integration_status"] == "accepted" and child["cleaned_up"]
     assert child["validation"]["passed"] and child["review_receipt"]["passed"]
     assert child["review_receipt"]["reviewer_agent_id"] == _CODE_REVIEWER
@@ -605,11 +614,10 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         manager.close()
     with probe.session() as session:
         probe.wait_ready(session)
-        status = probe.run_slash_turn(
+        status = probe.run_slash(
             session,
             f"/project show {run.run_id}",
             marker="outcome: completed-verified",
-            timeout=60,
         )
     return {
         "launch": "operator-approved existing launch_project + schedule_project_wake APIs",

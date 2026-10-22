@@ -277,7 +277,7 @@ def test_child_oracle_rejects_unresolved_or_digestless_child() -> None:
     valid = [
         {
             "mode": "sync",
-            "status": "completed",
+            "status": "success",
             "child_agent_id": "implementer",
             "record_alias": "artifact-1",
             "target_digest": "digest-1",

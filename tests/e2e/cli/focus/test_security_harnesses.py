@@ -4,6 +4,7 @@ from dataclasses import replace
 from contextlib import nullcontext
 import json
 import os
+import sqlite3
 import sys
 import subprocess
 from types import SimpleNamespace
@@ -307,6 +308,105 @@ def test_source_repair_schedules_persisted_focus_project_wake(
         source._repair(probe, None, "approved finding F-1", "python -B verify.py")
 
 
+def test_code_bearing_tool_evidence_keeps_success_distinct_from_child_status(tmp_path):
+    database = tmp_path / "telemetry" / "telemetry.db"
+    database.parent.mkdir()
+    artifact = {"record_alias": "a2a-child:fixture", "target_digest": "digest"}
+    outputs = [
+        {"status": "success", "agent_id": "implementer", "child_artifact": artifact},
+        {
+            "status": "passed",
+            "agent_id": "reviewer",
+            "child_artifact": artifact,
+            "review_receipt": {"findings": []},
+        },
+        {"status": "accepted", "target_digest": "digest"},
+    ]
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, agent_id TEXT, "
+            "session_id TEXT, event_type TEXT, data TEXT)"
+        )
+        for mode, output in zip(("sync", "review", "accept"), outputs, strict=True):
+            events = (
+                (
+                    "tool.call.requested",
+                    {
+                        "canonical_name": "task.delegate",
+                        "sanitized_normalized_arguments": {
+                            "mode": mode,
+                            "child_artifact": artifact,
+                        },
+                    },
+                ),
+                (
+                    "tool.call.completed",
+                    {"status": "success", "output": {"outputs": output}},
+                ),
+            )
+            for event, payload in events:
+                connection.execute(
+                    "INSERT INTO events (agent_id, session_id, event_type, data) VALUES (?, ?, ?, ?)",
+                    (
+                        "parent",
+                        "session",
+                        event,
+                        json.dumps({"call_id": mode, **payload}),
+                    ),
+                )
+    probe = SimpleNamespace(data_root=tmp_path, agent_id="parent", session_id="session")
+    _, children, _ = source._tool_evidence(probe, after_event_id=0)
+    assert [item["status"] for item in children] == ["success", "passed", "accepted"]
+    source._assert_completed_child_lifecycle(children, parent_agent_id="parent")
+    children[0]["status"] = "completed"
+    with pytest.raises(AssertionError):
+        source._assert_completed_child_lifecycle(children, parent_agent_id="parent")
+
+
+def test_public_project_answer_returns_pending_report_and_persists_exact_reply(
+    tmp_path, monkeypatch
+):
+    from tests.e2e.cli.focus.test_goal_composition import _CronStore, _project_runtime
+    from tests.e2e.cli.focus.test_simple_input_project import _manager
+
+    runtime, _, _ = _project_runtime(tmp_path)
+    cron = _CronStore()
+    monkeypatch.setattr(
+        "openminion.cli.commands.autonomy_project.ensure_project_daemon_ready",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "openminion.cli.commands.autonomy_project.configured_cron_store",
+        lambda *_args, **_kwargs: cron,
+    )
+    request = runtime.prepare_project_command(
+        f"/project start --goal fixture --verify-command '{sys.executable} -c pass'"
+    )
+    assert runtime.launch_prepared_project(request)[0] == "system"
+    run = request.run
+    runtime.execute_project_control(f"/project pause {run.run_id}")
+    manager = _manager(runtime)
+    try:
+        checkpoint_id, checkpoint = manager.get_latest_checkpoint(run.task_id)
+        checkpoint["payload"]["pending_confirmation_command_id"] = "cmd-current"
+        manager.save_checkpoint(run.task_id, checkpoint_id, checkpoint)
+        for command in (
+            f"/project show {run.run_id}",
+            f"/project answer {run.run_id} --input-request-id cmd-current --answer allow_once",
+        ):
+            kind, output = runtime.execute_project_control(command)
+            assert kind == "system" and "input_request_id: cmd-current" in output
+            assert "operator_answers:" not in output
+        answers = manager.get_task(run.task_id).metadata["operator_answers"]
+        assert [(item["request_id"], item["answer"]) for item in answers] == [
+            ("cmd-current", "allow_once")
+        ]
+        output = runtime.execute_project_control(f"/project resume {run.run_id}")[1]
+        assert "task_state: active" in output
+    finally:
+        manager.close()
+
+
 @pytest.mark.parametrize("changed", [None, "tool", "agent", "workspace", "id", "mode"])
 @pytest.mark.parametrize("legacy_workspace", [None, "/unrelated-legacy-workspace"])
 def test_project_approval_binds_pending_delegate_and_public_answer(
@@ -344,15 +444,37 @@ def test_project_approval_binds_pending_delegate_and_public_answer(
         ),
     )
     controls = []
+    markers = []
+
+    def local_control(_session, command, *, marker):
+        controls.append(command)
+        markers.append(marker)
+        return marker + "\nChoices: allow_once, allow_session, deny"
+
+    monkeypatch.setattr(
+        source,
+        "_project_owners",
+        lambda _: (
+            None,
+            SimpleNamespace(
+                get_task=lambda _: SimpleNamespace(
+                    metadata={
+                        "operator_answers": [
+                            {"request_id": "cmd-approved", "answer": "allow_once"}
+                        ]
+                    }
+                ),
+                close=lambda: None,
+            ),
+        ),
+    )
     probe = SimpleNamespace(
         data_root=tmp_path / "data",
         workdir=tmp_path,
         session_id="session",
         session=lambda: nullcontext(None),
         wait_ready=lambda _: None,
-        run_slash_turn=lambda _session, command, **_: (
-            controls.append(command) or command
-        ),
+        run_slash=local_control,
     )
     checkpoint = SimpleNamespace(
         payload={"pending_confirmation_command_id": "cmd-approved"},
@@ -361,7 +483,7 @@ def test_project_approval_binds_pending_delegate_and_public_answer(
             workspace_ref=f"local:{tmp_path.parent if changed == 'workspace' else tmp_path}",
         ),
     )
-    run = SimpleNamespace(run_id="run")
+    run = SimpleNamespace(run_id="run", task_id="task")
     if changed:
         with pytest.raises(AssertionError):
             source._approve_project_delegate(probe, None, run, checkpoint, "sync")
@@ -371,6 +493,11 @@ def test_project_approval_binds_pending_delegate_and_public_answer(
             probe, None, run, checkpoint, "sync"
         )
         assert approval["reply"] == "allow_once"
+        assert markers == [
+            "input_request_id: cmd-approved",
+            "input_request_id: cmd-approved",
+            "task_state: active",
+        ]
         assert controls == [
             "/project show run",
             "/project answer run --input-request-id cmd-approved --answer allow_once",
