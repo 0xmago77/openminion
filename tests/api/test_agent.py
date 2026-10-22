@@ -15,6 +15,9 @@ from openminion.api.agent import (
     AgentRunResult,
     _extract_json_object,
 )
+from openminion.modules.controlplane.constants import (
+    CALLER_HANDLES_DELIVERY_METADATA_KEY,
+)
 from openminion.modules.tool.registry import ToolRegistry
 
 
@@ -86,6 +89,7 @@ def test_agent_run_returns_raw_text_when_no_output_type() -> None:
         "message": "hi there",
         "session_id": "sdk-session",
         "deliver": False,
+        "inbound_metadata": {CALLER_HANDLES_DELIVERY_METADATA_KEY: "true"},
         "override_system_prompt": "be brief",
     }
 
@@ -116,6 +120,9 @@ def test_agent_run_accepts_a_session_override() -> None:
 
     assert runtime.last_payload["session_id"] == "request-session"
     assert runtime.last_payload["deliver"] is False
+    assert runtime.last_payload["inbound_metadata"] == {
+        CALLER_HANDLES_DELIVERY_METADATA_KEY: "true"
+    }
 
 
 def test_agent_profile_id_propagates_to_payload() -> None:
