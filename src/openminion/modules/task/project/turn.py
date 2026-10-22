@@ -566,7 +566,12 @@ def project_turn_result_from_response(
         else None
     )
     tool_results = _project_tool_results(metadata)
-    artifact_refs = project_metadata_refs(metadata, "artifact_refs")
+    collected_artifacts = list(project_metadata_refs(metadata, "artifact_refs"))
+    for item in tool_results:
+        data = item.get("data")
+        if item.get("ok") and isinstance(data, Mapping):
+            collected_artifacts.extend(project_metadata_refs(data, "artifact_refs"))
+    artifact_refs = tuple(dict.fromkeys(collected_artifacts))
     evidence_refs = project_metadata_refs(metadata, "evidence_refs")
     evidence_kinds = project_metadata_refs(metadata, "evidence_kinds")
     repository_status_recorded = any(

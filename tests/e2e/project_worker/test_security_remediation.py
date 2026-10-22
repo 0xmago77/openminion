@@ -12,6 +12,14 @@ from openminion.cli.commands.autonomy_project import (
     launch_project,
 )
 from openminion.modules.brain.adapters.tool import ToolAdapter
+from openminion.modules.brain.schemas import ActionResult
+from openminion.modules.brain.loop.tools.iteration.helpers import (
+    _tool_result_payload_from_action,
+)
+from openminion.services.brain.post_execution.postprocess_metadata import (
+    _attach_cumulative_tool_result_metadata,
+)
+from openminion.modules.task.project.turn import project_turn_result_from_response
 from openminion.modules.brain.execution.worktree_children import (
     load_child_worktree_record,
 )
@@ -22,7 +30,7 @@ from openminion.modules.task.project.verification import (
 )
 from openminion.modules.telemetry.trace.metadata import structural_tool_payload
 from openminion.modules.tool.runtime.delegation import A2ADelegateResult
-from openminion.services.runtime.project_worker import ProjectWorker, ProjectTurnResult
+from openminion.services.runtime.project_worker import ProjectWorker
 from openminion.tools.security.plugin import (
     _h_publish_report,
     _h_review_report,
@@ -239,19 +247,28 @@ def run_security_lifecycle(ctx, tmp_path, *, installed=False):
             child_artifact=artifact,
             review_criteria=decision["verification_criteria"],
         )
-        delegate("accept", child_artifact=artifact)
+        accepted = delegate("accept", child_artifact=artifact)
         record = load_child_worktree_record(ctx.artifactctl, artifact["record_alias"])
         assert record["integration_status"] == "accepted" and record["cleaned_up"]
         assert _git("diff", "--cached", "--name-only", cwd=repo) == "app.py"
         _git("add", "app.py", cwd=repo)
         _git("commit", "-qm", "fix: authorize only the admin fixture role", cwd=repo)
         accepted_ref = ctx.artifactctl.alias_resolve(artifact["record_alias"]).ref
-        return ProjectTurnResult(
-            summary="Reviewed repair accepted.",
-            artifact_refs=(accepted_ref,),
-            evidence_refs=(accepted_ref,),
-            evidence_kinds=("artifact",),
+        action = ActionResult(command_id="accept", **accepted)
+        metadata = {}
+        _attach_cumulative_tool_result_metadata(
+            metadata=metadata,
+            tool_results_payload=[
+                _tool_result_payload_from_action(
+                    call_id="accept", tool_name="task.delegate", action_result=action
+                )
+            ],
         )
+        result = project_turn_result_from_response(
+            response={"summary": "Reviewed repair accepted.", "metadata": metadata}
+        )
+        assert result.artifact_refs == (accepted_ref,)
+        return result
 
     finished = ProjectWorker(
         task_manager=manager, autonomy_store=store, turn=turn, verify=verify

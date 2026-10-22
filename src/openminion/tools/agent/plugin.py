@@ -793,11 +793,12 @@ def _handle_child_artifact_disposition(
             artifactctl=artifactctl,
         )
     if result.get("ok") is True:
-        save_child_worktree_record(artifactctl, record)
+        record_alias = save_child_worktree_record(artifactctl, record)
+        record_ref = artifactctl.alias_resolve(record_alias).ref
         _emit_child_disposition(
             ctx, AGENT_HANDOFF_COMPLETED, disposition_payload, status="completed"
         )
-        return {"ok": True, "mode": args.mode, **result}
+        return {"ok": True, "mode": args.mode, **result, "artifact_refs": [record_ref]}
     _emit_child_disposition(
         ctx,
         AGENT_HANDOFF_FAILED,

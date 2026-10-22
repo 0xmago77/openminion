@@ -734,7 +734,9 @@ def test_replay_proof_binds_actual_session_records_to_approved_requests(
         ),
         ("tool.request", "file.read", "POLICY_DENIED", source._PARENT, False),
         ("tool.request", "file.read", "NOT_FOUND", source._PARENT, False),
-        ("plan", "p1", "PLAN_REVISION_REQUIRED", source._PARENT, False),
+        ("plan", "p1", "PLAN_REVISION_REQUIRED", source._PARENT, True),
+        ("plan", "p1", "PLAN_STEPS_UNRESOLVED", source._PARENT, True),
+        ("plan", "p1", "PLAN_SESSION_UNAVAILABLE", source._PARENT, False),
         ("plan", "p1", "EXEC_ERROR", source._PARENT, False),
         ("plan", "p1", "PLAN_VALIDATION_FAILED", source._IMPLEMENTER, False),
     ],
@@ -746,7 +748,12 @@ def test_repair_argument_corrections_preserve_failure_boundaries(
         return {"agent_id": actor, "event_type": kind, "data": data}
 
     args = (
-        {"action": "declare", "plan_id": target} if tool == "plan" else {"name": target}
+        {
+            "action": "complete" if code == "PLAN_STEPS_UNRESOLVED" else "declare",
+            "plan_id": target,
+        }
+        if tool == "plan"
+        else {"name": target}
     )
     events = [
         event(
@@ -774,5 +781,44 @@ def test_repair_argument_corrections_preserve_failure_boundaries(
             source._corrected_parent_arguments(events[2:] + events[:2])
         key = "plan_id" if tool == "plan" else "name"
         events[2]["data"]["sanitized_normalized_arguments"][key] = "different-target"
+        with pytest.raises(AssertionError, match="uncorrected argument error"):
+            source._corrected_parent_arguments(events)
+
+
+@pytest.mark.parametrize("abandoned_id", ["p1", "unrelated"])
+def test_repair_plan_correction_requires_canonical_replacement(abandoned_id):
+    def event(kind, **data):
+        return {"agent_id": source._PARENT, "event_type": kind, "data": data}
+
+    def request(call_id, plan_id):
+        return event(
+            "tool.call.requested",
+            call_id=call_id,
+            canonical_name="plan",
+            sanitized_normalized_arguments={"action": "declare", "plan_id": plan_id},
+        )
+
+    events = [
+        request("bad", "p1"),
+        event(
+            "tool.call.blocked",
+            call_id="bad",
+            status="error",
+            error={"code": "PLAN_REVISION_REQUIRED"},
+        ),
+        request("fixed", "p2"),
+        event(
+            "task_plan.abandoned",
+            plan_id=abandoned_id,
+            reason="replaced_by_new_task_plan",
+        ),
+        event("task_plan.declared", plan={"plan_id": "p2"}),
+        event("tool.call.completed", call_id="fixed", status="success"),
+    ]
+    if abandoned_id == "p1":
+        corrected = source._corrected_parent_arguments(events)
+        assert corrected[0]["target"] == "p1"
+        assert corrected[0]["corrected_target"] == "p2"
+    else:
         with pytest.raises(AssertionError, match="uncorrected argument error"):
             source._corrected_parent_arguments(events)

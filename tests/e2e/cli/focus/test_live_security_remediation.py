@@ -528,18 +528,31 @@ def _corrected_parent_arguments(events: list[dict]) -> list[dict]:
     requests = {}
     failures = []
     successes = []
+    replacements = []
+    replacing = None
     for position, event in enumerate(events):
         if event["agent_id"] != _PARENT:
             continue
         data = event["data"]
         kind = event["event_type"]
-        if kind == "tool.call.requested":
+        if (
+            kind == "task_plan.abandoned"
+            and data.get("reason") == "replaced_by_new_task_plan"
+        ):
+            replacing = (position, data["plan_id"])
+        elif kind == "task_plan.declared" and replacing is not None:
+            abandoned_at, old_id = replacing
+            replacements.append(
+                (old_id, data["plan"]["plan_id"], abandoned_at, position)
+            )
+            replacing = None
+        elif kind == "tool.call.requested":
             tool = data["canonical_name"]
             args = data["sanitized_normalized_arguments"]
             if tool == "tool.request" and args.get("name") == "file.read":
-                key = (tool, "file.read", "TOOL_REQUEST_INVALID_ARGUMENTS")
-            elif tool == "plan" and args.get("action") == "declare":
-                key = (tool, args["plan_id"], "PLAN_VALIDATION_FAILED")
+                key = (tool, "file.read", "request")
+            elif tool == "plan" and args.get("action") in {"declare", "complete"}:
+                key = (tool, args["plan_id"], args["action"])
             else:
                 continue
             requests[data["call_id"]] = (position, key)
@@ -548,25 +561,46 @@ def _corrected_parent_arguments(events: list[dict]) -> list[dict]:
             if call_id not in requests:
                 continue
             requested_at, key = requests[call_id]
-            if kind == "tool.call.blocked" and data["error"]["code"] == key[2]:
-                failures.append((position, call_id, key))
+            if kind == "tool.call.blocked":
+                code = data["error"]["code"]
+                if key[2] == "declare":
+                    allowed = {"PLAN_VALIDATION_FAILED", "PLAN_REVISION_REQUIRED"}
+                elif key[2] == "complete":
+                    allowed = {"PLAN_STEPS_UNRESOLVED"}
+                else:
+                    allowed = {"TOOL_REQUEST_INVALID_ARGUMENTS"}
+                if code in allowed:
+                    failures.append((position, call_id, key, code))
             elif kind == "tool.call.completed" and data["status"] == "success":
                 successes.append((requested_at, position, call_id, key))
     corrected = []
-    for failed_at, call_id, key in failures:
+    for failed_at, call_id, key, code in failures:
         matches = [
-            corrected_id
+            (corrected_id, corrected_key[1])
             for requested_at, completed_at, corrected_id, corrected_key in successes
-            if failed_at < requested_at < completed_at and corrected_key == key
+            if failed_at < requested_at < completed_at
+            and (
+                corrected_key == key
+                or (
+                    key[0] == corrected_key[0] == "plan"
+                    and key[2] == corrected_key[2] == "declare"
+                    and any(
+                        (old_id, new_id) == (key[1], corrected_key[1])
+                        and requested_at < abandoned_at < declared_at < completed_at
+                        for old_id, new_id, abandoned_at, declared_at in replacements
+                    )
+                )
+            )
         ]
         assert matches, f"uncorrected argument error: {call_id}"
         corrected.append(
             {
                 "call_id": call_id,
-                "corrected_call_id": matches[0],
+                "corrected_call_id": matches[0][0],
+                "corrected_target": matches[0][1],
                 "tool_name": key[0],
                 "target": key[1],
-                "error_code": key[2],
+                "error_code": code,
             }
         )
     return corrected
