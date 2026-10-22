@@ -91,7 +91,10 @@ class TaskDelegateArgs(BaseModel):
             "Delegation lifecycle action. Use sync or async to start child work; "
             "use list for recent owned work; use status, result, or cancel with "
             "task_id; resume is a deprecated unsupported spelling; use review, accept, or "
-            "reject only after a child_artifact is returned. There is no create mode."
+            "reject only after a child_artifact is returned. Required inputs: sync/async "
+            "require agent_id and instruction; review requires agent_id, instruction, "
+            "child_artifact, and review_criteria; accept/reject require child_artifact. "
+            "There is no create mode."
         ),
     )
     agent_id: str = Field(
@@ -105,7 +108,8 @@ class TaskDelegateArgs(BaseModel):
     instruction: str = Field(
         default="",
         description=(
-            "Instruction for sync/async work or the exact review objective. For "
+            "Required for sync, async, and review: the work instruction or exact "
+            "review objective, supplied separately from review_criteria. For "
             "code_bearing work, name files relative to the repository; do not "
             "prescribe the parent workspace path. The runtime supplies the "
             "isolated checkout. Request edits and a change summary from the child; "
@@ -152,7 +156,10 @@ class TaskDelegateArgs(BaseModel):
     )
     review_criteria: list[str] = Field(
         default_factory=list,
-        description="Explicit criteria for read-only review.",
+        description=(
+            "Required nonempty criteria for read-only review; these do not replace "
+            "instruction, which supplies the review objective."
+        ),
     )
     repository_instructions: str = Field(
         default="",

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from pydantic import ValidationError
 
 from openminion.api.core.profiles import _build_agent_discovery_record
 from openminion.base.config import AgentProfileConfig
@@ -157,6 +158,31 @@ def test_task_delegate_requires_fields() -> None:
         TaskDelegateArgs(agent_id="", instruction="hi")  # type: ignore[call-arg]
     with pytest.raises(Exception):
         TaskDelegateArgs(agent_id="x", instruction="")  # type: ignore[call-arg]
+
+
+def test_review_schema_requires_objective_separately_from_criteria() -> None:
+    properties = TaskDelegateArgs.model_json_schema()["properties"]
+    assert (
+        "review requires agent_id, instruction, child_artifact, and review_criteria"
+        in properties["mode"]["description"]
+    )
+    assert (
+        "Required for sync, async, and review"
+        in properties["instruction"]["description"]
+    )
+    assert "do not replace instruction" in properties["review_criteria"]["description"]
+    request = {
+        "mode": "review",
+        "agent_id": "security-code-reviewer",
+        "child_artifact": {"record_alias": "a2a-child:review-candidate"},
+        "review_criteria": ["Only an explicitly allowed role is authorized."],
+    }
+    with pytest.raises(ValidationError, match="instruction.*required for review"):
+        TaskDelegateArgs.model_validate(request)
+    request["instruction"] = (
+        "Review the exact child change for authorization correctness."
+    )
+    assert TaskDelegateArgs.model_validate(request).mode == "review"
 
 
 def test_task_delegate_timeout_bounds() -> None:
