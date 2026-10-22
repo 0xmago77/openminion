@@ -401,7 +401,7 @@ def _handoff(
             "operator_approved": True,
             "delivery": f"Delegate exactly one code-bearing child to {_IMPLEMENTER}; parent must not edit app.py. "
             "Instruct that child to edit only app.py using the existing file.write allowance; leave verification to the runtime. "
-            f"Use task.delegate review with distinct {_CODE_REVIEWER}, then explicitly accept only a passing artifact. "
+            f"Use task.delegate mode=review with distinct {_CODE_REVIEWER}, then mode=accept only for a passing artifact. "
             "No security tools, network, installation, push or PR. Do not commit; operator commits accepted patch. "
             "Use the configured verifier and git.status; retain the actual child artifact ref and complete the public task plan.",
         }
@@ -426,7 +426,7 @@ def _approve_project_delegate(probe, ctl, run, checkpoint, expected_mode):
     assert pending["tool_name"] == "task.delegate"
     args = pending["args"]
     assert expected_mode in {"sync", "review", "accept"}
-    assert args["mode"] == expected_mode
+    assert args.get("mode", "sync") == expected_mode
     child_ref = None
     if expected_mode == "sync":
         assert args["agent_id"] == _IMPLEMENTER and args["code_bearing"] is True

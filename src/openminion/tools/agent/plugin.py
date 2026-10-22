@@ -88,6 +88,9 @@ class TaskDelegateArgs(BaseModel):
     mode: str = Field(
         default="sync",
         description=(
+            'Omitting mode starts sync work; for artifact review set mode="review". '
+            "child_artifact and review_criteria do not select mode. "
+            'After passing review, set mode="accept" to integrate or mode="reject" to discard. '
             "Delegation lifecycle action. Use sync or async to start child work; "
             "use list for recent owned work; use status, result, or cancel with "
             "task_id; resume is a deprecated unsupported spelling; use review, accept, or "

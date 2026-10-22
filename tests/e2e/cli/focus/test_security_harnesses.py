@@ -422,7 +422,19 @@ def test_public_project_answer_returns_pending_report_and_persists_exact_reply(
         manager.close()
 
 
-@pytest.mark.parametrize("changed", [None, "tool", "agent", "workspace", "id", "mode"])
+@pytest.mark.parametrize(
+    "changed",
+    [
+        None,
+        "tool",
+        "agent",
+        "workspace",
+        "id",
+        "mode",
+        "omitted-sync",
+        "omitted-review",
+    ],
+)
 @pytest.mark.parametrize("legacy_workspace", [None, "/unrelated-legacy-workspace"])
 def test_project_approval_binds_pending_delegate_and_public_answer(
     tmp_path, monkeypatch, changed, legacy_workspace
@@ -448,6 +460,8 @@ def test_project_approval_binds_pending_delegate_and_public_answer(
             "mode": ("mode", "accept"),
         }[changed]
         pending["args"][field] = value
+    elif changed in {"omitted-sync", "omitted-review"}:
+        pending["args"].pop("mode")
     monkeypatch.setattr(
         source,
         "SQLiteSessionStore",
@@ -499,9 +513,15 @@ def test_project_approval_binds_pending_delegate_and_public_answer(
         ),
     )
     run = SimpleNamespace(run_id="run", task_id="task")
-    if changed:
+    if changed not in {None, "omitted-sync"}:
         with pytest.raises(AssertionError):
-            source._approve_project_delegate(probe, None, run, checkpoint, "sync")
+            source._approve_project_delegate(
+                probe,
+                None,
+                run,
+                checkpoint,
+                "review" if changed == "omitted-review" else "sync",
+            )
         assert not controls
     else:
         approval = source._approve_project_delegate(

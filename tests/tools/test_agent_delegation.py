@@ -162,6 +162,9 @@ def test_task_delegate_requires_fields() -> None:
 
 def test_review_schema_requires_objective_separately_from_criteria() -> None:
     properties = TaskDelegateArgs.model_json_schema()["properties"]
+    assert "Omitting mode starts sync work" in properties["mode"]["description"]
+    assert 'set mode="review"' in properties["mode"]["description"]
+    assert "do not select mode" in properties["mode"]["description"]
     assert (
         "review requires agent_id, instruction, child_artifact, and review_criteria"
         in properties["mode"]["description"]
@@ -183,6 +186,8 @@ def test_review_schema_requires_objective_separately_from_criteria() -> None:
         "Review the exact child change for authorization correctness."
     )
     assert TaskDelegateArgs.model_validate(request).mode == "review"
+    request.pop("mode")
+    assert TaskDelegateArgs.model_validate(request).mode == "sync"
 
 
 def test_task_delegate_timeout_bounds() -> None:
