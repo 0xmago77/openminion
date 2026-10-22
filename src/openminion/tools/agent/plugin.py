@@ -91,13 +91,11 @@ class TaskDelegateArgs(BaseModel):
             'Omitting mode starts sync work; for artifact review set mode="review". '
             "child_artifact and review_criteria do not select mode. "
             'After passing review, set mode="accept" to integrate or mode="reject" to discard. '
-            "Delegation lifecycle action. Use sync or async to start child work; "
-            "use list for recent owned work; use status, result, or cancel with "
-            "task_id; resume is a deprecated unsupported spelling; use review, accept, or "
-            "reject only after a child_artifact is returned. Required inputs: sync/async "
-            "require agent_id and instruction; review requires agent_id, instruction, "
-            "child_artifact, and review_criteria; accept/reject require child_artifact. "
-            "There is no create mode."
+            "Use sync or async to start child work with agent_id and instruction. "
+            "Use list for recent owned work; status/result/cancel require task_id; "
+            "resume is deprecated and unsupported. After a child_artifact is returned, "
+            "review requires agent_id, instruction, child_artifact, and review_criteria; "
+            "accept/reject require child_artifact. There is no create mode."
         ),
     )
     agent_id: str = Field(
