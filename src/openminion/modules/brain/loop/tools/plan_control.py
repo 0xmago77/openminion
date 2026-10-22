@@ -195,11 +195,15 @@ def build_plan_tool_spec() -> ToolSpec:
                 "blocker_type": {"type": "string"},
                 "blocker_details": {"type": "string"},
                 "reason": {"type": "string"},
-                "revision_id": {"type": "string"},
+                "revision_id": {
+                    "type": "string",
+                    "description": "Required and nonempty for action=revise in a project turn; use a new revision ID. Optional outside project turns.",
+                },
                 "predecessor_revision_id": {"type": "string"},
                 "verifier_refs": {
                     "type": "array",
                     "items": {"type": "string"},
+                    "description": "Required nonempty array for action=revise in a project turn; reference the existing verifier evidence supporting this revision. Optional outside project turns.",
                 },
                 "revised_steps": {
                     "type": "array",

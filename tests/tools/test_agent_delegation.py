@@ -769,6 +769,12 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
             return
         assert result["status"] == "success", result
         artifact = result["outputs"]["child_artifact"]
+        assert "Child edits passed verification" in result["summary"]
+        assert "parent checkout is unchanged" in result["summary"]
+        assert "task.delegate mode=review" in result["summary"]
+        assert "explicit mode=accept after a passing review" in result["summary"]
+        assert artifact["integration_status"] == "pending_parent_review"
+        assert (repository / "value.py").read_text() == "VALUE = 0\n"
         review = adapter.execute(
             command={
                 "tool_name": "task.delegate",

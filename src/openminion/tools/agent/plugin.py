@@ -627,8 +627,13 @@ def _handle_code_bearing_delegate(
         "agent_id": args.agent_id,
         "mode": "sync",
         "status": "success",
-        "content": result.content,
+        "summary": (
+            "Child edits passed verification in an isolated checkout; the parent "
+            "checkout is unchanged. Use the returned child_artifact with "
+            "task.delegate mode=review, then explicit mode=accept after a passing review."
+        ),
         "child_artifact": child_artifact,
+        "content": result.content,
         "outputs": {**dict(result.outputs or {}), "child_artifact": child_artifact},
         "trace_id": result.trace_id,
         "task_id": result.task_id,

@@ -151,6 +151,11 @@ def test_plan_tool_spec_advertises_bounded_step_schema() -> None:
     assert "revision_id" in spec.input_schema["properties"]
     assert "predecessor_revision_id" in spec.input_schema["properties"]
     assert "verifier_refs" in spec.input_schema["properties"]
+    for field_name in ("revision_id", "verifier_refs"):
+        description = spec.input_schema["properties"][field_name]["description"]
+        assert "action=revise in a project turn" in description
+        assert "Optional outside project turns" in description
+    assert spec.input_schema["required"] == ["action", "plan_id"]
 
 
 def test_plan_closeout_guidance_repeats_the_original_request() -> None:
