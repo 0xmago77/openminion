@@ -52,9 +52,9 @@ class PlanReconciliationFact(BaseModel):
 class ClosureJudgment(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    satisfied: bool = True
+    satisfied: bool
     reason: str = ""
-    next_action: Literal["close", "continue", "replan"] = "close"
+    next_action: Literal["close", "continue", "replan"]
     final_answer: str | None = None
     memory_use_refs: list[MemoryUseRef] = Field(default_factory=list)
     mutation_claimed: bool = False

@@ -188,6 +188,8 @@ def test_closure_memory_use_receives_success_feedback() -> None:
     runner = BrainRunner.__new__(BrainRunner)
     runner.memory_api = memory_api
     judgment = ClosureJudgment(
+        satisfied=True,
+        next_action="close",
         final_answer="Answer grounded in memory.",
         memory_use_refs=[
             {
@@ -218,6 +220,8 @@ def test_closure_memory_use_receives_success_feedback() -> None:
 def test_closure_memory_use_must_match_available_context() -> None:
     state = SimpleNamespace(decision_memory_refs=["available-memory"])
     judgment = ClosureJudgment(
+        satisfied=True,
+        next_action="close",
         final_answer="Answer grounded in memory.",
         memory_use_refs=[
             {
@@ -243,6 +247,8 @@ def test_closure_memory_use_must_match_available_context() -> None:
 def test_closure_memory_use_must_match_closure_call() -> None:
     state = SimpleNamespace(decision_memory_refs=["available-memory"])
     judgment = ClosureJudgment(
+        satisfied=True,
+        next_action="close",
         final_answer="Answer grounded in memory.",
         memory_use_refs=[
             {
