@@ -294,7 +294,8 @@ def _assert_readonly_outcomes(events: list, expected_security: list[str]) -> lis
         finished.add(call_id)
         if kind == "tool.call.blocked":
             code = data["error"]["code"]
-            assert tool == "security.publish_report" and tool in expected_security
+            assert tool in {"security.publish_report", "security.review_report"}
+            assert tool in expected_security
             assert code == "INVALID_ARGUMENT"
             assert tool not in successful_security, "error after successful publication"
             recovered.append(
@@ -605,7 +606,8 @@ def test_live_security_remediation(
                 "Independently review this complete source evidence and inspect app.py/verify.py readonly. "
                 "Call security.review_report review_kind=initial for the exact report ref, disposition each candidate once, "
                 "using JSON arrays for finding_reviews and verification_criteria, not objects with item keys, "
-                "and give accepted findings a minimal objective and explicit regression criteria, with the complete remediation brief under 1000 characters. Do not repair.\n"
+                "and give accepted findings a minimal objective and explicit regression criteria, with the complete remediation brief under 1000 characters. "
+                "If review publication rejects arguments, correct them using its feedback; stop after successful publication. Do not repair.\n"
                 + _operator_evidence(
                     reviewer, ctl, [report_ref, *report.evidence_refs]
                 ),
@@ -689,7 +691,8 @@ def test_live_security_remediation(
                 "Call security.review_report review_kind=follow_up with the initial review ref and rescan report ref, "
                 "one closure per accepted finding and decisions for unmatched current candidates. "
                 "Use JSON arrays for closure_reviews, new_finding_reviews and current_finding_ids, including [] when empty. "
-                "Use evidence to choose resolved/residual/not_reproduced. Do not repair.\n"
+                "Use evidence to choose resolved/residual/not_reproduced. "
+                "If review publication rejects arguments, correct them using its feedback; stop after successful publication. Do not repair.\n"
                 + _operator_evidence(
                     reviewer,
                     ctl,

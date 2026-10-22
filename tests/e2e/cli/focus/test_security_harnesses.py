@@ -30,19 +30,24 @@ pytestmark = pytest.mark.e2e
 
 
 @pytest.mark.parametrize(
-    ("failed_tool", "code", "after_publish", "accepted"),
+    ("review_turn", "failed_tool", "code", "after_publish", "accepted"),
     [
-        ("security.publish_report", "INVALID_ARGUMENT", False, True),
-        ("security.publish_report", "POLICY_DENIED", False, False),
-        ("security.publish_report", "EXEC_ERROR", False, False),
-        ("security.scan_code", "INVALID_ARGUMENT", False, False),
-        ("security.review_report", "INVALID_ARGUMENT", False, False),
-        ("file.read", "POLICY_DENIED", False, False),
-        ("security.publish_report", "INVALID_ARGUMENT", True, False),
+        (False, "security.publish_report", "INVALID_ARGUMENT", False, True),
+        (False, "security.publish_report", "POLICY_DENIED", False, False),
+        (False, "security.publish_report", "EXEC_ERROR", False, False),
+        (False, "security.scan_code", "INVALID_ARGUMENT", False, False),
+        (False, "security.review_report", "INVALID_ARGUMENT", False, False),
+        (False, "file.read", "POLICY_DENIED", False, False),
+        (False, "security.publish_report", "INVALID_ARGUMENT", True, False),
+        (True, "security.review_report", "INVALID_ARGUMENT", False, True),
+        (True, "security.publish_report", "INVALID_ARGUMENT", False, False),
+        (True, "security.review_report", "POLICY_DENIED", False, False),
+        (True, "security.review_report", "EXEC_ERROR", False, False),
+        (True, "security.review_report", "INVALID_ARGUMENT", True, False),
     ],
 )
 def test_source_publication_recovery_preserves_failure_boundaries(
-    failed_tool, code, after_publish, accepted
+    review_turn, failed_tool, code, after_publish, accepted
 ):
     def request(call_id, tool):
         return "tool.call.requested", {"call_id": call_id, "canonical_name": tool}
@@ -57,13 +62,16 @@ def test_source_publication_recovery_preserves_failure_boundaries(
             {"call_id": "failed", "status": "error", "error": {"code": code}},
         ),
     ]
-    events = [request("scan", "security.scan_code"), complete("scan")]
+    events = (
+        [] if review_turn else [request("scan", "security.scan_code"), complete("scan")]
+    )
+    tool = "security.review_report" if review_turn else "security.publish_report"
     publication = [
-        request("published", "security.publish_report"),
+        request("published", tool),
         complete("published"),
     ]
     events += publication + failure if after_publish else failure + publication
-    expected = ["security.scan_code", "security.publish_report"]
+    expected = [tool] if review_turn else ["security.scan_code", tool]
     if accepted:
         assert source._assert_readonly_outcomes(events, expected) == [
             {"call_id": "failed", "tool_name": failed_tool, "error_code": code}
@@ -73,7 +81,7 @@ def test_source_publication_recovery_preserves_failure_boundaries(
             source._assert_readonly_outcomes(
                 events
                 + [
-                    request("duplicate", "security.publish_report"),
+                    request("duplicate", tool),
                     complete("duplicate"),
                 ],
                 expected,
