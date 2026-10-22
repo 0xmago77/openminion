@@ -580,7 +580,9 @@ def test_task_delegate_rejects_incompatible_child_permission_modes(
         TaskDelegateArgs.model_validate(arguments)
 
 
-@pytest.mark.parametrize("entry", ["native", "confirmation_replay", "generic_only"])
+@pytest.mark.parametrize(
+    "entry", ["native", "confirmation_replay", "generic_only", "failed_review"]
+)
 def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -710,7 +712,7 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
                 target_agent_id=kwargs["reviewer_agent_id"],
                 outputs={
                     "review_receipt": {
-                        "passed": True,
+                        "passed": entry != "failed_review",
                         "reviewer_agent_id": kwargs["reviewer_agent_id"],
                         "target_digest": kwargs["target_digest"],
                         "bundle_ref": kwargs["bundle_ref"],
@@ -823,6 +825,17 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
             trace_id="turn-2",
         )
         assert review["status"] == "success", review
+        review_status = "correction_required" if entry == "failed_review" else "passed"
+        assert review["outputs"]["status"] == review_status
+        assert f"Review {review_status}" in review["summary"]
+        assert (
+            "parent checkout unchanged until explicit mode=accept" in review["summary"]
+        )
+        assert review["outputs"]["child_artifact"] == artifact
+        reviewed = load_child_worktree_record(ctl, artifact["record_alias"])
+        assert reviewed["review_receipt"]["passed"] is (entry != "failed_review")
+        assert reviewed["integration_status"] == "pending_parent_review"
+        assert (repository / "value.py").read_text() == "VALUE = 0\n"
         accepted = adapter.execute(
             command={
                 "tool_name": "task.delegate",
@@ -833,6 +846,11 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
             session_id="session-1",
             trace_id="turn-3",
         )
+        if entry == "failed_review":
+            assert accepted["error"]["code"] == "POLICY_DENIED"
+            assert (repository / "value.py").read_text() == "VALUE = 0\n"
+            manager.close()
+            return
         assert accepted["status"] == "success", accepted
         record = load_child_worktree_record(ctl, artifact["record_alias"])
 

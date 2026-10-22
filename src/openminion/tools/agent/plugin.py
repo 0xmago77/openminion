@@ -92,8 +92,7 @@ class TaskDelegateArgs(BaseModel):
             "child_artifact and review_criteria do not select mode. "
             'After passing review, set mode="accept" to integrate or mode="reject" to discard. '
             "Use sync or async to start child work with agent_id and instruction. "
-            "Use list for recent owned work; status/result/cancel require task_id; "
-            "resume is deprecated and unsupported. After a child_artifact is returned, "
+            "list shows recent work; status/result/cancel require task_id; resume is unsupported. "
             "review requires agent_id, instruction, child_artifact, and review_criteria; "
             "accept/reject require child_artifact. There is no create mode."
         ),
@@ -878,21 +877,22 @@ def _handle_child_artifact_review(
                 "target_digest": str(record.get("target_digest") or ""),
             },
         )
-    record["review_receipt"] = dict(result.outputs["review_receipt"])
+    receipt = dict(result.outputs["review_receipt"])
+    record["review_receipt"] = receipt
     save_child_worktree_record(artifactctl, record)
+    status = "passed" if receipt["passed"] is True else "correction_required"
     return {
         "ok": True,
         "mode": "review",
-        "status": "passed"
-        if record["review_receipt"]["passed"] is True
-        else "correction_required",
+        "status": status,
+        "summary": f"Review {status}; parent checkout unchanged until explicit mode=accept.",
         "agent_id": args.agent_id,
         "child_artifact": {
             "record_alias": record["record_alias"],
             "target_digest": record["target_digest"],
             "integration_status": record["integration_status"],
         },
-        "review_receipt": record["review_receipt"],
+        "review_receipt": receipt,
     }
 
 
