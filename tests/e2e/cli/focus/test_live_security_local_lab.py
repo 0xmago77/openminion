@@ -201,7 +201,9 @@ def _assert_evidence(probe, lab, command, evidence):
         if event["event_type"] == "brain.execution_status"
         and event["data"].get("adaptive.allowed_tools")
     ]
-    assert allowed and all(tools == _TOOLS - {"respond", "clarify"} for tools in allowed)
+    assert allowed and all(
+        tools == _TOOLS - {"respond", "clarify"} for tools in allowed
+    )
     requested = {
         (event["execution_id"], event["data"]["call_id"]): event["data"][
             "canonical_name"
