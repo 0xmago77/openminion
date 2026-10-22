@@ -714,7 +714,8 @@ def _delegate_and_verify_code(
             agent_id=args.agent_id,
             instruction=instruction,
             timeout_seconds=args.timeout_seconds,
-            permission_mode=str(getattr(ctx, "permission_mode", "ask") or "ask"),
+            permission_mode=ctx.base_permission_mode,
+            permission_overrides=ctx.permission_overrides,
             workspace_root=str(lease.worktree),
             cwd=str(lease.worktree),
         )

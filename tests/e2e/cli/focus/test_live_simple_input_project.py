@@ -240,7 +240,7 @@ def _tool_evidence(
         tool_rows = connection.execute(
             "SELECT event_type, data FROM events WHERE id > ? AND agent_id = ? "
             "AND event_type IN ('tool.call.requested', 'tool.call.completed', "
-            "'tool.call.blocked') "
+            "'tool.call.blocked', 'tool.request', 'tool.completed') "
             "ORDER BY id",
             (after_event_id, probe.agent_id),
         ).fetchall()
@@ -250,6 +250,15 @@ def _tool_evidence(
             (after_event_id, probe.session_id, probe.agent_id),
         ).fetchall()
     events = [(kind, json.loads(raw)) for kind, raw in (*tool_rows, *timing_rows)]
+    native_ids = {
+        str(event["call_id"]) for kind, event in events if kind.startswith("tool.call.")
+    }
+    events = [
+        (kind, event)
+        for kind, event in events
+        if kind not in {"tool.request", "tool.completed"}
+        or str(event["command_id"]) not in native_ids
+    ]
     requested = {
         str(event.get("call_id")): event
         for kind, event in events
@@ -259,10 +268,12 @@ def _tool_evidence(
         {
             "event": kind,
             "tool": event.get("canonical_name")
+            or event.get("tool_name")
             or requested.get(str(event.get("call_id")), {}).get("canonical_name"),
-            "call_id": event.get("call_id"),
+            "call_id": event.get("call_id") or event.get("command_id"),
             "mode": (event.get("sanitized_normalized_arguments") or {}).get("mode"),
             "status": event.get("status"),
+            "error_code": (event.get("error") or {}).get("code"),
         }
         for kind, event in events
         if kind != "chat.phase_timing"
@@ -323,7 +334,8 @@ def _assert_required_completed_tools(
     completed = {
         str(item["tool"])
         for item in calls
-        if item["event"] == "tool.call.completed" and item["status"] == "success"
+        if item["event"] in {"tool.call.completed", "tool.completed"}
+        and item["status"] == "success"
     }
     assert required <= completed
 

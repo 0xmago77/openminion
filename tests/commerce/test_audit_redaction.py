@@ -85,7 +85,7 @@ def _command(args: dict[str, object]) -> dict[str, object]:
             "confirmation_source": "policy_replay",
             "confirmation_grant_id": "grant-1",
         },
-        "meta": {"orchestration": {"task_backed_task_id": "task-1"}},
+        "meta": {"orchestration": {"project_task_id": "task-1"}},
     }
 
 

@@ -76,13 +76,27 @@ def _make_runner() -> SimpleNamespace:
     )
 
 
-def test_tool_lineage_carries_runtime_session_into_tool_metadata() -> None:
+@pytest.mark.parametrize("base_mode", ["ask", "readonly"])
+@pytest.mark.parametrize("project_task_id", [None, "project-task-1"])
+def test_tool_lineage_carries_runtime_session_into_tool_metadata(
+    project_task_id,
+    base_mode,
+) -> None:
     state = _make_state()
     state.runtime_session_id = "focus-session"
     state.runtime_conversation_id = "focus-conversation"
-    state.task_backed_task_id = "project-task-1"
+    state.task_backed_task_id = "internal-task-1"
+    state.resume_task_id_hint = project_task_id
+    state.permission_mode = base_mode
+    state.permission_overrides = {"file.write": "bypass"}
     command = _make_command(tool_name="task.schedule")
-    payload: dict[str, Any] = {}
+    payload: dict[str, Any] = {
+        "meta": {
+            "orchestration": {"project_task_id": "stale-model-input"},
+            "permission_overrides": {"exec.run": "bypass"},
+            "base_permission_mode": "bypass",
+        }
+    }
 
     lineage = _command_lineage_payload(state=state, command=command)
     _inject_runtime_tool_metadata(payload, state=state, lineage=lineage)
@@ -90,7 +104,10 @@ def test_tool_lineage_carries_runtime_session_into_tool_metadata() -> None:
     assert payload["meta"]["orchestration"]["runtime_session_id"] == "focus-session"
     assert payload["meta"]["orchestration"]["conversation_id"] == "focus-conversation"
     assert payload["meta"]["orchestration"]["brain_session_id"] == "s-readonly-gate"
-    assert payload["meta"]["orchestration"]["task_backed_task_id"] == "project-task-1"
+    assert payload["meta"]["orchestration"]["task_backed_task_id"] == "internal-task-1"
+    assert payload["meta"]["orchestration"].get("project_task_id") == project_task_id
+    assert payload["meta"]["permission_overrides"] == {"file.write": "bypass"}
+    assert payload["meta"]["base_permission_mode"] == base_mode
 
 
 # ── readonly mode blocks write-capable tools ───────────────────────

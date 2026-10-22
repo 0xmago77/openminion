@@ -247,7 +247,7 @@ def _command(*, idempotency_key: str = "update-pr-1") -> dict[str, Any]:
         "tool_name": "github.update_pr",
         "args": dict(_ARGS),
         "idempotency_key": idempotency_key,
-        "meta": {"orchestration": {"task_backed_task_id": "task-1"}},
+        "meta": {"orchestration": {"project_task_id": "task-1"}},
     }
 
 

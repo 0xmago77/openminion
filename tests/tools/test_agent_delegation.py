@@ -534,9 +534,11 @@ def test_task_delegate_rejects_incompatible_child_permission_modes(
         TaskDelegateArgs.model_validate(arguments)
 
 
+@pytest.mark.parametrize("entry", ["native", "confirmation_replay", "generic_only"])
 def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    entry: str,
 ) -> None:
     from openminion.modules.brain.execution.worktree_children import (
         load_child_worktree_record,
@@ -625,6 +627,11 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
 
     class _Seam:
         def delegate(self, **kwargs):
+            assert kwargs["permission_mode"] == "ask"
+            assert kwargs["permission_overrides"] == {
+                "file.write": "bypass",
+                "task.delegate": "bypass",
+            }
             delegate_timeouts.append(kwargs["timeout_seconds"])
             child = Path(kwargs["workspace_root"])
             (child / "value.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -665,23 +672,73 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
             task_manager=manager,
             agent_id="parent",
         )
-        result = adapter.execute(
-            command={
-                "tool_name": "task.delegate",
-                "command_id": "delegate-code",
-                "args": {
-                    "mode": "sync",
-                    "agent_id": "implementer",
-                    "instruction": "Set VALUE to 1.",
-                    "code_bearing": True,
-                    "timeout_seconds": 31,
-                },
-                "inputs": {"permission_mode": "bypass"},
-                "meta": {"orchestration": {"task_backed_task_id": "task-1"}},
-            },
-            session_id="session-1",
-            trace_id="turn-1",
+        from openminion.modules.brain.schemas import (
+            BudgetCounters,
+            ToolCommand,
+            WorkingState,
         )
+        from openminion.modules.brain.tools.executor.dispatch import (
+            _command_lineage_payload,
+        )
+        from openminion.modules.brain.tools.executor.tool import _tool_dispatch_payload
+        from openminion.modules.brain.runner.tick.confirmation import (
+            _prepare_confirmation_replay_commands,
+        )
+
+        state = WorkingState(
+            session_id="session-1",
+            agent_id="parent",
+            budgets_remaining=BudgetCounters(
+                ticks=10, tool_calls=5, a2a_calls=5, tokens=1000, time_ms=10000
+            ),
+        )
+        state.task_backed_task_id = (
+            "task-1" if entry == "generic_only" else "internal-task"
+        )
+        state.resume_task_id_hint = None if entry == "generic_only" else "task-1"
+        state.permission_mode = "ask"
+        state.permission_overrides = {"file.write": "bypass", "task.delegate": "bypass"}
+        command = ToolCommand(
+            kind="tool",
+            command_id="delegate-code",
+            idempotency_key="delegate-code",
+            title="Delegate fixture repair",
+            tool_name="task.delegate",
+            args={
+                "mode": "sync",
+                "agent_id": "implementer",
+                "instruction": "Set VALUE to 1.",
+                "code_bearing": True,
+                "timeout_seconds": 31,
+            },
+        )
+        if entry == "confirmation_replay":
+            command = _prepare_confirmation_replay_commands(
+                runner=SimpleNamespace(),
+                state=state,
+                confirmed=command,
+                session_grant=False,
+                logger=SimpleNamespace(),
+            )[0]
+            assert command.inputs["confirmation_source"] == "policy_replay"
+        payload = _tool_dispatch_payload(
+            command=command,
+            state=state,
+            lineage=_command_lineage_payload(state=state, command=command),
+            permission_mode="default" if entry == "confirmation_replay" else "bypass",
+        )
+        result = adapter.execute(
+            command=payload, session_id="session-1", trace_id="turn-1"
+        )
+        if entry == "generic_only":
+            manager.close()
+            assert (
+                result["error"]["details"]["reason_code"]
+                == "project_context_unavailable"
+            )
+            assert not delegate_timeouts
+            assert (repository / "value.py").read_text() == "VALUE = 0\n"
+            return
         assert result["status"] == "success", result
         artifact = result["outputs"]["child_artifact"]
         review = adapter.execute(
@@ -775,6 +832,8 @@ def test_code_bearing_delegate_releases_worktree_when_delegate_raises(
                     workspace=tmp_path,
                     task_manager=object(),
                     project_task_id="task-1",
+                    base_permission_mode="ask",
+                    permission_overrides={},
                 ),
             ),
         )
@@ -889,7 +948,7 @@ def test_code_bearing_delegate_normalizes_non_project_checkpoint_through_adapter
                 "code_bearing": True,
             },
             "inputs": {"permission_mode": "bypass"},
-            "meta": {"orchestration": {"task_backed_task_id": "task-1"}},
+            "meta": {"orchestration": {"project_task_id": "task-1"}},
         },
         session_id="session-1",
         trace_id="turn-1",
@@ -934,7 +993,7 @@ def test_code_bearing_delegate_preserves_malformed_project_checkpoint_error(
                 "code_bearing": True,
             },
             "inputs": {"permission_mode": "bypass"},
-            "meta": {"orchestration": {"task_backed_task_id": "task-1"}},
+            "meta": {"orchestration": {"project_task_id": "task-1"}},
         },
         session_id="session-1",
         trace_id="turn-1",

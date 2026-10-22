@@ -15,7 +15,11 @@ from openminion.modules.brain.constants import (
     BRAIN_STATE_ERROR,
 )
 from openminion.modules.brain.interfaces import BRAIN_ADAPTER_INTERFACE_VERSION
-from .permission_mode import permission_mode_from_inputs
+from .permission_mode import (
+    canonical_permission_mode,
+    canonical_permission_overrides,
+    permission_mode_from_inputs,
+)
 from openminion.modules.tool import (
     Policy,
     RuntimeContext,
@@ -411,6 +415,17 @@ class ToolAdapter:
         args = dict(raw_args) if isinstance(raw_args, Mapping) else {}
         inputs = command.get("inputs")
         permission_mode = permission_mode_from_inputs(inputs)
+        command_metadata = command.get("meta")
+        base_permission_mode = canonical_permission_mode(
+            command_metadata.get("base_permission_mode")
+            if isinstance(command_metadata, Mapping)
+            else None
+        )
+        permission_overrides = canonical_permission_overrides(
+            command_metadata.get("permission_overrides")
+            if isinstance(command_metadata, Mapping)
+            else None
+        )
         replay_confirmation_metadata = _confirmation_replay_metadata(inputs)
         start_time = time.monotonic()
         runtime_message_ref = _extract_runtime_message_ref(command=command, args=args)
@@ -567,7 +582,7 @@ class ToolAdapter:
                 },
             )
         background_write_authorized = _background_write_authorized(inputs)
-        raw_project_task_id = orchestration_metadata.get("task_backed_task_id")
+        raw_project_task_id = orchestration_metadata.get("project_task_id")
         project_task_id = str(raw_project_task_id or "").strip()
         auto_confirm = _resolve_auto_confirm(
             tool_name=tool_name,
@@ -626,6 +641,8 @@ class ToolAdapter:
             telemetry_session_id=session_id,
             telemetry_turn_id=trace_id,
             permission_mode=permission_mode,
+            base_permission_mode=base_permission_mode,
+            permission_overrides=permission_overrides,
             agent_profile=self.agent_profile,
             tool_registry=self.registry,
             task_manager=self.task_manager,

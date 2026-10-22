@@ -161,7 +161,7 @@ def _command(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         "tool_name": tool_name,
         "args": args,
         "idempotency_key": f"{tool_name}-1",
-        "meta": {"orchestration": {"task_backed_task_id": "task-1"}},
+        "meta": {"orchestration": {"project_task_id": "task-1"}},
     }
 
 

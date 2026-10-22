@@ -56,7 +56,6 @@ from tests.e2e.cli.focus.test_live_security_researcher import (
     _install_profile,
 )
 from tests.e2e.cli.focus.test_live_simple_input_project import (
-    _assert_completed_child_lifecycle,
     _git,
     _project_owners,
     _tool_evidence,
@@ -399,6 +398,7 @@ def _handoff(
             "failing_before_exit_code": 1,
             "operator_approved": True,
             "delivery": f"Delegate exactly one code-bearing child to {_IMPLEMENTER}; parent must not edit app.py. "
+            "Instruct that child to edit only app.py using the existing file.write allowance; leave verification to the runtime. "
             f"Use task.delegate review with distinct {_CODE_REVIEWER}, then explicitly accept only a passing artifact. "
             "No security tools, network, installation, push or PR. Do not commit; operator commits accepted patch. "
             "Use the configured verifier and git.status; retain the actual child artifact ref and complete the public task plan.",
@@ -425,6 +425,7 @@ def _approve_project_delegate(probe, ctl, run, checkpoint, expected_mode):
     args = pending["args"]
     assert expected_mode in {"sync", "review", "accept"}
     assert args["mode"] == expected_mode
+    child_ref = None
     if expected_mode == "sync":
         assert args["agent_id"] == _IMPLEMENTER and args["code_bearing"] is True
         assert (
@@ -432,7 +433,8 @@ def _approve_project_delegate(probe, ctl, run, checkpoint, expected_mode):
             == probe.workdir.resolve()
         )
     else:
-        child = load_child_worktree_record(ctl, args["child_artifact"]["record_alias"])
+        child_ref = ctl.alias_resolve(args["child_artifact"]["record_alias"]).ref
+        child = json.loads(ctl.read_bytes(child_ref))
         assert child["agent_id"] == _IMPLEMENTER
         assert child["target_digest"] == args["child_artifact"]["target_digest"]
         assert Path(child["repository"]).resolve() == probe.workdir.resolve()
@@ -472,10 +474,51 @@ def _approve_project_delegate(probe, ctl, run, checkpoint, expected_mode):
         "tool_name": "task.delegate",
         "mode": expected_mode,
         "reply": "allow_once",
+        "args": args,
+        "child_ref_before": child_ref,
         "show": shown,
         "answer": answered,
         "resume": resumed,
     }
+
+
+def _approved_replays(probe, project_run_id, approvals):
+    session_id = f"{probe.session_id}::conv:{project_run_id}"
+    with sqlite3.connect(probe.data_root / "state/brain/sessions.db") as connection:
+        rows = connection.execute(
+            "SELECT event_type, payload_json FROM session_events "
+            "WHERE session_id = ? AND actor_id = ? AND event_type IN "
+            "('brain.confirm_replay', 'tool.request', 'tool.completed') ORDER BY seq",
+            (session_id, _PARENT),
+        ).fetchall()
+    events = [(kind, json.loads(raw)) for kind, raw in rows]
+    replay_ids = [
+        data["command_id"] for kind, data in events if kind == "brain.confirm_replay"
+    ]
+    assert len(replay_ids) == len(set(replay_ids)) == len(approvals) == 3
+    assert [item["mode"] for item in approvals] == ["sync", "review", "accept"]
+    requests = [
+        data
+        for kind, data in events
+        if kind == "tool.request" and data["command_id"] in replay_ids
+    ]
+    completions = [
+        data
+        for kind, data in events
+        if kind == "tool.completed" and data["command_id"] in replay_ids
+    ]
+    assert [item["command_id"] for item in requests] == replay_ids
+    assert [item["command_id"] for item in completions] == replay_ids
+    for approval, request, completion in zip(
+        approvals, requests, completions, strict=True
+    ):
+        assert (
+            request["brain_session_id"] == completion["brain_session_id"] == session_id
+        )
+        assert request["tool_name"] == completion["tool_name"] == "task.delegate"
+        assert request["args"] == approval["args"]
+        assert completion["status"] == "success" and not completion.get("error")
+    return replay_ids
 
 
 def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> dict:
@@ -541,15 +584,22 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         )
     assert run.status == AutonomyRunStatus.COMPLETED
     approved_ids = {item["command_id"] for item in approvals}
-    calls, children, _ = _tool_evidence(probe, after_event_id=0)
+    replay_ids = _approved_replays(
+        probe, checkpoint.project_run.project_run_id, approvals
+    )
+    calls, _, _ = _tool_evidence(probe, after_event_id=0)
     assert all(
         item["call_id"] in approved_ids
         for item in calls
         if item["event"] == "tool.call.blocked"
     )
     assert not any(str(item["tool"]).startswith("security.") for item in calls)
-    _assert_completed_child_lifecycle(children, parent_agent_id=_PARENT)
-    assert children[0]["child_agent_id"] == _IMPLEMENTER
+    assert {
+        item["call_id"]
+        for item in calls
+        if item["tool"] == "task.delegate"
+        and item["event"] in {"tool.call.requested", "tool.request"}
+    } == approved_ids | set(replay_ids)
     events = _events(probe.data_root / "telemetry/telemetry.db", 0)
     usage = {}
     for agent_id in (_PARENT, _IMPLEMENTER, _CODE_REVIEWER):
@@ -570,21 +620,46 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         assert not any(
             event["event_type"] == "llm.call.failed"
             or (
+                event["event_type"] == "tool.completed"
+                and event["data"]["status"] != "success"
+                and not (
+                    event["data"]["status"] == "needs_user"
+                    and event["data"]["command_id"] in approved_ids
+                )
+            )
+            or (
                 event["event_type"] == "tool.call.blocked"
                 and event["data"]["call_id"] not in approved_ids
             )
             for event in role_events
         )
         assert not any(
-            event["data"].get("canonical_name", "").startswith("security.")
+            (
+                event["data"].get("canonical_name")
+                or event["data"].get("tool_name", "")
+            ).startswith("security.")
             for event in role_events
-            if event["event_type"] == "tool.call.requested"
+            if event["event_type"] in {"tool.call.requested", "tool.request"}
         )
         usage[agent_id] = {
             "cost": project_turn_cost(completions).as_dict(),
             "completed_calls": completions,
         }
-    child = load_child_worktree_record(ctl, str(children[-1]["record_alias"]))
+    child_alias = approvals[-1]["args"]["child_artifact"]["record_alias"]
+    child = load_child_worktree_record(ctl, child_alias)
+    snapshots = [
+        json.loads(ctl.read_bytes(item["child_ref_before"])) for item in approvals[1:]
+    ]
+    assert all(item["agent_id"] == _IMPLEMENTER for item in [*snapshots, child])
+    assert len({item["target_digest"] for item in [*snapshots, child]}) == 1
+    assert (
+        snapshots[0]["integration_status"]
+        == snapshots[1]["integration_status"]
+        == "pending_parent_review"
+    )
+    assert snapshots[0]["validation"]["passed"]
+    assert snapshots[1]["review_receipt"]["passed"]
+    assert snapshots[1]["review_receipt"]["reviewer_agent_id"] == _CODE_REVIEWER
     assert child["status"] == "completed"
     assert child["integration_status"] == "accepted" and child["cleaned_up"]
     assert child["validation"]["passed"] and child["review_receipt"]["passed"]
@@ -593,7 +668,7 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         child["review_receipt"]["verifier_refs"] == child["validation"]["verifier_refs"]
     )
     proof = json.loads(Path(run.proof_packet_ref).read_text())
-    accepted_ref = ctl.alias_resolve(str(children[-1]["record_alias"])).ref
+    accepted_ref = ctl.alias_resolve(child_alias).ref
     assert accepted_ref in proof["artifact_refs"], (
         "terminal proof omitted accepted child CAS record"
     )
@@ -627,6 +702,7 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         "child": child,
         "tool_calls": calls,
         "approvals": approvals,
+        "replay_command_ids": replay_ids,
         "focus_status": status,
         "usage_by_role": usage,
     }

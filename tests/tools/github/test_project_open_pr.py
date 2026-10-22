@@ -228,7 +228,7 @@ def _command(*, idempotency_key: str = "open-pr-1") -> dict[str, Any]:
     command: dict[str, Any] = {
         "tool_name": "github.open_pr",
         "args": dict(_ARGS),
-        "meta": {"orchestration": {"task_backed_task_id": "task-1"}},
+        "meta": {"orchestration": {"project_task_id": "task-1"}},
     }
     if idempotency_key:
         command["idempotency_key"] = idempotency_key

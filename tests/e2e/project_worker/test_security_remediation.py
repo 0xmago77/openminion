@@ -211,7 +211,7 @@ def run_security_lifecycle(ctx, tmp_path, *, installed=False):
                 "command_id": mode,
                 "args": {"mode": mode, **args},
                 "inputs": {"permission_mode": "bypass"},
-                "meta": {"orchestration": {"task_backed_task_id": run.task_id}},
+                "meta": {"orchestration": {"project_task_id": run.task_id}},
             },
             session_id=run.session_id,
             trace_id=mode,

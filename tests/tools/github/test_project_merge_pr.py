@@ -280,7 +280,7 @@ def _command(*, command_id: str = "merge-pr-1", **updates: Any) -> dict[str, Any
         "tool_name": "github.merge_pr",
         "args": {**_ARGS, **updates},
         "idempotency_key": command_id,
-        "meta": {"orchestration": {"task_backed_task_id": "task-1"}},
+        "meta": {"orchestration": {"project_task_id": "task-1"}},
     }
 
 

@@ -25,6 +25,9 @@ from openminion.tools.security.review_schemas import SecurityFindingReview
 from tests.e2e.cli.focus.harness import FocusProbe
 from tests.e2e.cli.focus import test_live_security_local_lab as lab
 from tests.e2e.cli.focus import test_live_security_remediation as source
+from tests.e2e.cli.focus.test_live_simple_input_project import (
+    _assert_completed_child_lifecycle,
+)
 from tests.tools.security.test_audit_report import audit_context as audit_context
 from tests.tools.security.test_review_report import _initial, _source, _reviewer
 
@@ -251,6 +254,11 @@ def test_operator_reads_full_canonical_evidence_and_complete_handoff(
             mode="json", exclude_none=True
         )
         assert approved["verification_timeout_seconds"] == 120 and approved["delivery"]
+        assert (
+            "edit only app.py using the existing file.write allowance"
+            in approved["delivery"]
+        )
+        assert "leave verification to the runtime" in approved["delivery"]
         large = review.model_copy(deep=True)
         large.remediation_brief[0].verification_criteria = ["criterion" * 500]
         with pytest.raises(AssertionError, match="does not fit"):
@@ -357,10 +365,10 @@ def test_code_bearing_tool_evidence_keeps_success_distinct_from_child_status(tmp
     probe = SimpleNamespace(data_root=tmp_path, agent_id="parent", session_id="session")
     _, children, _ = source._tool_evidence(probe, after_event_id=0)
     assert [item["status"] for item in children] == ["success", "passed", "accepted"]
-    source._assert_completed_child_lifecycle(children, parent_agent_id="parent")
+    _assert_completed_child_lifecycle(children, parent_agent_id="parent")
     children[0]["status"] = "completed"
     with pytest.raises(AssertionError):
-        source._assert_completed_child_lifecycle(children, parent_agent_id="parent")
+        _assert_completed_child_lifecycle(children, parent_agent_id="parent")
 
 
 def test_public_project_answer_returns_pending_report_and_persists_exact_reply(
@@ -553,3 +561,147 @@ def test_source_review_approves_only_review_report(tool):
 def test_source_review_rejects_sidecar_consent():
     with pytest.raises(AssertionError, match="unexpected approval"):
         source._approve_review("sidecar", "Allow auto-start for PinchTab? [y/N]:")
+
+
+@pytest.mark.parametrize("status", ["success", "failed"])
+def test_tool_evidence_keeps_replay_completion_without_duplicating_native_calls(
+    tmp_path, status
+):
+    database = tmp_path / "telemetry/telemetry.db"
+    database.parent.mkdir()
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, agent_id TEXT, session_id TEXT, event_type TEXT, data TEXT)"
+        )
+        rows = [
+            (
+                "tool.call.requested",
+                {"call_id": "native", "canonical_name": "task.delegate"},
+            ),
+            ("tool.request", {"command_id": "native", "tool_name": "task.delegate"}),
+            (
+                "tool.completed",
+                {
+                    "command_id": "native",
+                    "tool_name": "task.delegate",
+                    "status": "success",
+                },
+            ),
+            ("tool.call.completed", {"call_id": "native", "status": "success"}),
+            ("tool.request", {"command_id": "replay", "tool_name": "task.delegate"}),
+            (
+                "tool.completed",
+                {
+                    "command_id": "replay",
+                    "tool_name": "task.delegate",
+                    "status": status,
+                    "error": {"code": "DEPENDENCY_MISSING"}
+                    if status == "failed"
+                    else None,
+                },
+            ),
+        ]
+        connection.executemany(
+            "INSERT INTO events (agent_id, session_id, event_type, data) VALUES (?, ?, ?, ?)",
+            [
+                (source._PARENT, "session", kind, json.dumps(data))
+                for kind, data in rows
+            ],
+        )
+    probe = SimpleNamespace(
+        data_root=tmp_path, agent_id=source._PARENT, session_id="session"
+    )
+    calls, children, _ = source._tool_evidence(probe, after_event_id=0)
+    assert [(item["event"], item["call_id"]) for item in calls] == [
+        ("tool.call.requested", "native"),
+        ("tool.call.completed", "native"),
+        ("tool.request", "replay"),
+        ("tool.completed", "replay"),
+    ]
+    assert calls[-1]["status"] == status
+    assert calls[-1]["error_code"] == (
+        "DEPENDENCY_MISSING" if status == "failed" else None
+    )
+    assert calls[-1]["mode"] is None
+    assert [item["call_id"] for item in children] == ["native"]
+
+
+@pytest.mark.parametrize(
+    "change", [None, "failure", "args", "actor", "session", "duplicate", "extra"]
+)
+def test_replay_proof_binds_actual_session_records_to_approved_requests(
+    tmp_path, change
+):
+    path = tmp_path / "state/brain/sessions.db"
+    path.parent.mkdir(parents=True)
+    sessions = source.SQLiteSessionStore(path)
+    session_id = sessions.create_session(
+        session_id="focus::conv:project", initial_agent_id=source._PARENT
+    )
+    approvals = []
+    try:
+        for mode in ("sync", "review", "accept"):
+            args = {
+                "mode": mode,
+                "agent_id": "implementer" if mode == "sync" else "reviewer",
+            }
+            approvals.append(
+                {"command_id": f"pending-{mode}", "mode": mode, "args": args}
+            )
+            lineage = {
+                "command_id": f"replay-{mode}",
+                "brain_session_id": session_id,
+                "tool_name": "task.delegate",
+            }
+            actor = (
+                "other-agent"
+                if change == "actor" and mode == "sync"
+                else source._PARENT
+            )
+            sessions.append_event(
+                session_id,
+                "brain.confirm_replay",
+                {"command_id": lineage["command_id"]},
+                actor_id=actor,
+            )
+            request = {
+                **lineage,
+                "args": {**args, "agent_id": "unapproved"}
+                if change == "args" and mode == "sync"
+                else args,
+            }
+            sessions.append_event(session_id, "tool.request", request, actor_id=actor)
+            completed = {
+                **lineage,
+                "status": "failed"
+                if change == "failure" and mode == "sync"
+                else "success",
+            }
+            if change == "session" and mode == "sync":
+                completed["brain_session_id"] = "another-session"
+            sessions.append_event(
+                session_id, "tool.completed", completed, actor_id=actor
+            )
+            if change == "duplicate" and mode == "sync":
+                sessions.append_event(
+                    session_id, "tool.completed", completed, actor_id=actor
+                )
+        if change == "extra":
+            sessions.append_event(
+                session_id,
+                "brain.confirm_replay",
+                {"command_id": "unapproved"},
+                actor_id=source._PARENT,
+            )
+    finally:
+        sessions.close()
+    probe = SimpleNamespace(data_root=tmp_path, session_id="focus")
+    if change:
+        with pytest.raises(AssertionError):
+            source._approved_replays(probe, "project", approvals)
+    else:
+        assert source._approved_replays(probe, "project", approvals) == [
+            "replay-sync",
+            "replay-review",
+            "replay-accept",
+        ]
