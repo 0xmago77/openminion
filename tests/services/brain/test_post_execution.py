@@ -53,6 +53,7 @@ def test_tool_policy_adapter_includes_configured_internal_actor_scopes() -> None
         internal_actor_scopes=frozenset({"tool.execute.elevated"})
     )
     bridge._identity_agent_id = "agent-a"
+    bridge._identity_security_lab_facts = lambda: {"lab_required": False}
     bridge._tools = tools
     runner = SimpleNamespace(tool_api=SimpleNamespace(policy_adapter=None))
 

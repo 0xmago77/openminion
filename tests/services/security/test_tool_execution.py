@@ -166,3 +166,30 @@ def test_non_discovery_exec_command_keeps_high_risk_confirmation_contract() -> N
     assert decision.code == "require_approval"
     assert decision.reason == "approval_required_high_risk"
     assert decision.details["decision"] == DECISION_REQUIRE_APPROVAL
+
+
+@pytest.mark.parametrize("command", ["curl http://127.0.0.1:8000/health", "uname -m"])
+def test_lab_exec_skips_discovery_shortcuts_but_requires_approval(command: str) -> None:
+    adapter = build_execution_boundary_policy_adapter(
+        policy=SecurityPolicyEngine(),
+        actor=default_internal_actor("lab-agent"),
+        context=SecurityPolicyContext(channel="console"),
+        security_lab_required=True,
+    )
+    decision = adapter.evaluate(
+        tool_name=MODEL_EXEC_RUN, tool_spec=_exec_spec(), args={"command": command}
+    )
+    assert decision.allowed is False
+    assert decision.requires_confirm is True
+    assert decision.reason == "approval_required_high_risk"
+
+
+def test_ordinary_curl_still_redirects_to_structured_web_tool() -> None:
+    decision = _adapter().evaluate(
+        tool_name=MODEL_EXEC_RUN,
+        tool_spec=_exec_spec(),
+        args={"command": "curl http://127.0.0.1:8000/health"},
+    )
+    assert decision.allowed is False
+    assert decision.requires_confirm is False
+    assert decision.reason == "read_only_exec_has_structured_tool"

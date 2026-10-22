@@ -239,7 +239,8 @@ class DockerSandboxRunner:
             f"--cpus={self.config.cpu_limit}",
             f"--memory={self.config.memory_bytes}",
             f"--tmpfs=/tmp:rw,noexec,nosuid,nodev,size={tmpfs_size}",
-            f"--tmpfs=/workspace:rw,noexec,nosuid,nodev,size={tmpfs_size}",
+            f"--tmpfs=/workspace:rw,noexec,nosuid,nodev,size={tmpfs_size},"
+            f"uid={self.config.worker_uid},gid={self.config.worker_gid},mode=0700",
             self.config.worker_image,
             *argv[1:],
         )

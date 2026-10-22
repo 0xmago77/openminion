@@ -17,6 +17,7 @@ def test_policy_adapter_enforces_tool_profile_required_scopes() -> None:
         security_policy=SecurityPolicyEngine(),
         tools=SimpleNamespace(policy_for=lambda _tool_name: profile),
         identity_agent_id="agent-a",
+        identity_security_lab_facts={},
     )
     runtime = SimpleNamespace(
         inbound=SimpleNamespace(
@@ -72,6 +73,7 @@ def _policy_decision(*, internal_actor_scopes=()):
         ),
         tools=_power_user_registry(),
         identity_agent_id="agent-a",
+        identity_security_lab_facts={},
     )
     adapter = build_policy_adapter(
         service_port,
@@ -105,3 +107,32 @@ def test_internal_actor_scope_grant_authorizes_registered_power_user_tool() -> N
 
     assert decision.allowed is True
     assert decision.reason == "policy passed"
+
+
+def test_lab_identity_exec_keeps_operator_approval_instead_of_web_redirect() -> None:
+    service_port = SimpleNamespace(
+        security_policy=SecurityPolicyEngine(),
+        tools=SimpleNamespace(
+            policy_for=lambda _name: SimpleNamespace(
+                required_scopes_all=(), risk="high", budget_cost=1
+            )
+        ),
+        identity_agent_id="lab-agent",
+        identity_security_lab_facts={"lab_required": True},
+    )
+    adapter = build_policy_adapter(
+        service_port,
+        SimpleNamespace(
+            inbound=SimpleNamespace(channel="console", target="user", metadata={})
+        ),
+        tool_budget_state=None,
+        turn_boundary_adapter=None,
+    )
+    decision = adapter.evaluate(
+        tool_name="runtime.exec.run",
+        tool_spec=SimpleNamespace(dangerous=True),
+        args={"command": "curl http://127.0.0.1:8000/health"},
+    )
+    assert decision.requires_confirm is True
+    assert decision.allowed is False
+    assert decision.reason == "approval_required_high_risk"

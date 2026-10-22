@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,18 @@ def _runner(payload: str, *, return_code: int = 1):
         return ScannerProcessResult(return_code=return_code, stdout=payload)
 
     return run
+
+
+def test_semgrep_finding_ids_are_stable_and_distinguish_locations(tmp_path):
+    row = json.loads((FIXTURES / "finding.json").read_text())["results"][0]
+    row["extra"]["fingerprint"] = "requires login"
+    rows = [
+        {**row, "start": {"line": line, "col": column}}
+        for line, column in [(3, 1), (4, 1), (3, 20)]
+    ]
+    ids = [semgrep._semgrep_finding(item, tmp_path).finding_id for item in rows]
+    assert len(set(ids)) == 3
+    assert ids == [semgrep._semgrep_finding(item, tmp_path).finding_id for item in rows]
 
 
 @pytest.mark.parametrize(

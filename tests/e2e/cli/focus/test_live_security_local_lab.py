@@ -72,7 +72,7 @@ def _configuration(root, monkeypatch):
         "providers": {agent["provider"]: provider},
         "agents": {_AGENT: agent},
         "identity": {"db_path": "identity/identity.db"},
-        "enabled_channels": [],
+        "enabled_channels": ["console"],
         "enabled_plugins": [],
         "runtime": {},
     }
@@ -201,7 +201,7 @@ def _assert_evidence(probe, lab, command, evidence):
         if event["event_type"] == "brain.execution_status"
         and event["data"].get("adaptive.allowed_tools")
     ]
-    assert allowed and all(tools == _TOOLS for tools in allowed)
+    assert allowed and all(tools == _TOOLS - {"respond", "clarify"} for tools in allowed)
     requested = {
         (event["execution_id"], event["data"]["call_id"]): event["data"][
             "canonical_name"

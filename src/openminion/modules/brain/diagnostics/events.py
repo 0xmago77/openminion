@@ -110,6 +110,12 @@ class CanonicalEventLogger:
             payload = {**payload, "structural_only": True}
             if event_type == "tool.completed":
                 payload.pop("summary", None)
+                if error is not None:
+                    error = {
+                        "code": error.get("code", "TOOL_EXECUTION_FAILED"),
+                        "message": "security tool did not complete",
+                        "details": {},
+                    }
         if event_type.startswith("llm.call.") and self._provider_name:
             payload = dict(payload)
             payload.setdefault("provider", self._provider_name)

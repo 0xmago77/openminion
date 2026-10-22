@@ -29,6 +29,60 @@ from tests.tools.security.test_review_report import _initial, _source, _reviewer
 pytestmark = pytest.mark.e2e
 
 
+@pytest.mark.parametrize(
+    ("failed_tool", "code", "after_publish", "accepted"),
+    [
+        ("security.publish_report", "INVALID_ARGUMENT", False, True),
+        ("security.publish_report", "POLICY_DENIED", False, False),
+        ("security.publish_report", "EXEC_ERROR", False, False),
+        ("security.scan_code", "INVALID_ARGUMENT", False, False),
+        ("security.review_report", "INVALID_ARGUMENT", False, False),
+        ("file.read", "POLICY_DENIED", False, False),
+        ("security.publish_report", "INVALID_ARGUMENT", True, False),
+    ],
+)
+def test_source_publication_recovery_preserves_failure_boundaries(
+    failed_tool, code, after_publish, accepted
+):
+    def request(call_id, tool):
+        return "tool.call.requested", {"call_id": call_id, "canonical_name": tool}
+
+    def complete(call_id):
+        return "tool.call.completed", {"call_id": call_id, "status": "success"}
+
+    failure = [
+        request("failed", failed_tool),
+        (
+            "tool.call.blocked",
+            {"call_id": "failed", "status": "error", "error": {"code": code}},
+        ),
+    ]
+    events = [request("scan", "security.scan_code"), complete("scan")]
+    publication = [
+        request("published", "security.publish_report"),
+        complete("published"),
+    ]
+    events += publication + failure if after_publish else failure + publication
+    expected = ["security.scan_code", "security.publish_report"]
+    if accepted:
+        assert source._assert_readonly_outcomes(events, expected) == [
+            {"call_id": "failed", "tool_name": failed_tool, "error_code": code}
+        ]
+        # A second successful scan or publication still violates the lifecycle.
+        with pytest.raises(AssertionError):
+            source._assert_readonly_outcomes(
+                events
+                + [
+                    request("duplicate", "security.publish_report"),
+                    complete("duplicate"),
+                ],
+                expected,
+            )
+    else:
+        with pytest.raises(AssertionError):
+            source._assert_readonly_outcomes(events, expected)
+
+
 @pytest.fixture
 def live_config(tmp_path, monkeypatch):
     original = tmp_path / "original.json"
@@ -96,7 +150,8 @@ def test_live_config_strips_secrets_and_broad_command_authority(
             "ssh",
             "open",
         }
-    assert config["enabled_channels"] == config["enabled_plugins"] == []
+    assert config["enabled_channels"] == ["console"]
+    assert config["enabled_plugins"] == []
 
 
 @pytest.mark.parametrize("lane", ["source", "lab"])
@@ -205,3 +260,22 @@ def test_lab_approval_binds_complete_command_with_structural_arguments(
             lab._approve_command(probe, command, "inline", screen)
     else:
         lab._approve_command(probe, command, "inline", screen)
+
+
+@pytest.mark.parametrize(
+    "tool", ["security.review_report", "security.publish_report", "exec.run"]
+)
+def test_source_review_approves_only_review_report(tool):
+    screen = format_terminal_approval_prompt(
+        tool, {"report_ref": "artifact://sha256/" + "a" * 64}
+    )
+    if tool == "security.review_report":
+        source._approve_review("inline", screen)
+    else:
+        with pytest.raises(AssertionError, match="unexpected approval"):
+            source._approve_review("inline", screen)
+
+
+def test_source_review_rejects_sidecar_consent():
+    with pytest.raises(AssertionError, match="unexpected approval"):
+        source._approve_review("sidecar", "Allow auto-start for PinchTab? [y/N]:")

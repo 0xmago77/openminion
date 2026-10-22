@@ -13,6 +13,8 @@ from pydantic import ValidationError
 from openminion.base.config.env import EnvironmentConfig
 from openminion.modules.artifact.control import ArtifactCtl
 from openminion.modules.brain.adapters.tool.runtime import ToolAdapter
+from openminion.modules.brain.loop.tools.messages import action_result_to_tool_message
+from openminion.modules.brain.schemas import ActionResult, new_uuid
 from openminion.modules.tool import ToolRegistry, ToolSpec
 from openminion.modules.tool.errors import ToolRuntimeError
 from openminion.modules.tool.runtime import RuntimeContext
@@ -147,6 +149,22 @@ def _scan(
             else None
         ),
     )
+
+
+def test_scan_tool_message_retains_findings_and_evidence() -> None:
+    scan = _scan(check="code", revision="a" * 40, finding=True)
+    scan.evidence_refs = ["artifact://sha256/" + "b" * 64]
+    result = ActionResult(
+        command_id=new_uuid(),
+        status="success",
+        outputs=scan.as_tool_result(),
+    )
+    message = action_result_to_tool_message("scan-1", scan.capability_id, result)
+    outputs = json.loads(message.content)["outputs"]
+    assert outputs["findings"][0]["finding_id"] == "scanner-finding-1"
+    assert outputs["evidence_refs"] == scan.evidence_refs
+    assert outputs["status"] == "completed"
+    assert outputs["truncated"] is False
 
 
 def _store_scan(

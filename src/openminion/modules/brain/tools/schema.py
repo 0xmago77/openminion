@@ -34,6 +34,12 @@ def collect_runtime_tool_schemas(
     registry = getattr(tool_api, "registry", None)
     if registry is None:
         return []
+    metadata = dict(metadata or {})
+    context_builder = getattr(tool_api, "_build_execution_context_builder", None)
+    if context_builder is not None:
+        context_builder().project_security_lab(
+            metadata, str(metadata.get("session_id", "") or "")
+        )
     schemas = _TOOL_SCHEMA_SERVICE.collect_execution_tool_schemas(
         registry=registry,
         normalize_name=lambda raw_name: _normalize_execution_tool_name(

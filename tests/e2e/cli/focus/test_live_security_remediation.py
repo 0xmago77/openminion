@@ -43,7 +43,7 @@ from openminion.tools.security.schemas import SecurityAuditReport
 from tests.e2e.cli.focus.harness import FocusProbe, FocusScenario
 from tests.e2e.cli.focus.harness.artifacts import artifact_root, write_transcript
 from tests.e2e.cli.focus.harness.assertions import read_focus_evidence
-from tests.e2e.cli.focus.harness.probe import focus_session_id
+from tests.e2e.cli.focus.harness.probe import _record_approval_event, focus_session_id
 from tests.e2e.cli.focus.test_live_goal_only import _events, _usage
 from tests.e2e.cli.focus.test_live_security_researcher import (
     EXPECTED_TOOLS,
@@ -121,7 +121,7 @@ def _configuration(
             },
         }
     config["default_agent"] = _PARENT
-    config["enabled_channels"] = []
+    config["enabled_channels"] = ["console"]
     config["enabled_plugins"] = []
     config["identity"] = {"db_path": "identity/identity.db"}
     config.setdefault("storage", {})["path"] = "state/openminion.db"
@@ -166,11 +166,21 @@ def _install_roles(probe: FocusProbe) -> None:
         )
 
 
+def _approve_review(kind: str, screen: str) -> None:
+    preview: list[dict[str, object]] = []
+    _record_approval_event(preview, kind=kind, screen_text=screen, reply="yes")
+    assert preview[0]["action"] == "security.review_report", (
+        "unexpected approval; no action approved"
+    )
+
+
 def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dict:
     (root / f"{name}.prompt.txt").write_text(prompt)
     profile = (
         "security_readonly" if probe.agent_id == _RESEARCHER else "security_review"
     )
+    approvals: list[dict[str, object]] = []
+    review_turn = probe.agent_id == _REVIEWER
     with probe.session(
         rows=52,
         cols=180,
@@ -183,8 +193,25 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
             f"/tools activate {profile} approved=yes",
             marker=f"Activated: {profile}",
         )
-        probe.run_turn(
-            session, FocusScenario(scenario_id=name, prompt=prompt, timeout=360)
+        try:
+            probe.run_turn(
+                session,
+                FocusScenario(
+                    scenario_id=name,
+                    prompt=prompt,
+                    timeout=360,
+                    requires_approval=review_turn,
+                    max_auto_approvals=1,
+                ),
+                approval_events=approvals,
+                check_approval=_approve_review,
+            )
+        finally:
+            (root / f"{name}.approvals.json").write_text(
+                json.dumps(approvals, indent=2)
+            )
+        assert [event["action"] for event in approvals] == (
+            ["security.review_report"] if review_turn else []
         )
         probe.run_slash(
             session, f"/tools deactivate {profile}", marker=f"Deactivated: {profile}"
@@ -192,7 +219,10 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
     observed, _, brain_session = read_focus_evidence(
         probe.environment(), probe.session_id
     )
-    events = [(event.event_type, event.data) for event in observed]
+    events = [
+        (event.event_type, event.data)
+        for event in sorted(observed, key=lambda event: event.timestamp)
+    ]
     allowed = (
         EXPECTED_TOOLS
         if probe.agent_id == _RESEARCHER
@@ -207,22 +237,12 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
     assert exposures and all(tools == allowed for tools in exposures)
     calls = [data for kind, data in events if kind == "tool.call.requested"]
     assert calls and all(data["canonical_name"] in allowed for data in calls)
-    assert not any(kind == "tool.call.blocked" for kind, _ in events)
-    assert all(
-        data["status"] == "success"
-        for kind, data in events
-        if kind == "tool.call.completed"
-    )
     expected_security = (
         ["security.scan_code", "security.publish_report"]
         if probe.agent_id == _RESEARCHER
         else ["security.review_report"]
     )
-    assert [
-        call["canonical_name"]
-        for call in calls
-        if call["canonical_name"].startswith("security.")
-    ] == expected_security
+    recovered = _assert_readonly_outcomes(events, expected_security)
     usage = _usage(
         _events(probe.data_root / "telemetry/telemetry.db", 0),
         probe.session_id,
@@ -248,10 +268,45 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
         "profile": profile,
         "exposed_tools": sorted(allowed),
         "calls": calls,
+        "recovered_validation_attempts": recovered,
+        "approvals": approvals,
         "usage": usage,
         "tool_transcript": f"{name}.tools.json",
         "content_boundary": "Structural transcript omits invocation arguments and results; canonical CAS documents are read in full by the operator.",
     }
+
+
+def _assert_readonly_outcomes(events: list, expected_security: list[str]) -> list[dict]:
+    calls = {
+        data["call_id"]: data["canonical_name"]
+        for kind, data in events
+        if kind == "tool.call.requested"
+    }
+    successful_security: list[str] = []
+    recovered: list[dict] = []
+    finished: set[str] = set()
+    for kind, data in events:
+        if kind not in {"tool.call.completed", "tool.call.blocked"}:
+            continue
+        call_id = data["call_id"]
+        tool = calls[call_id]
+        assert call_id not in finished
+        finished.add(call_id)
+        if kind == "tool.call.blocked":
+            code = data["error"]["code"]
+            assert tool == "security.publish_report" and tool in expected_security
+            assert code == "INVALID_ARGUMENT"
+            assert tool not in successful_security, "error after successful publication"
+            recovered.append(
+                {"call_id": call_id, "tool_name": tool, "error_code": code}
+            )
+        else:
+            assert data["status"] == "success"
+            if tool.startswith("security."):
+                successful_security.append(tool)
+    assert finished == set(calls)
+    assert successful_security == expected_security
+    return recovered
 
 
 def _published(
@@ -519,10 +574,14 @@ def test_live_security_remediation(
                 root,
                 "initial-audit",
                 f"Audit approved clean repository {target} at exact revision {base}. "
-                "Run only security.scan_code with include_evidence_artifact=true and expected_target_revision. "
-                "Read app.py and verify.py. Publish one completed source_readonly report for requested_checks=[code], "
+                "Call security.scan_code exactly once with include_evidence_artifact=true and expected_target_revision. "
+                'Read app.py and verify.py. Publish one completed source_readonly report for scope.requested_checks=["code"], '
                 "one scanner-backed candidate F-1 for the unconditional authorization in app.py line 2. "
-                "Use canonical scan evidence and actual scanner finding IDs. Stop after security.publish_report.",
+                "Use JSON arrays for check_evidence, findings, locations, and scanner_finding_ids; "
+                'never {"item": ...} wrappers. '
+                "Use canonical scan evidence and actual scanner finding IDs. Publish one report with security.publish_report; "
+                "if it rejects arguments, correct them using its feedback. "
+                "after its successful result, return the report ref and stop without further inspection or scanning.",
             )
             report_ref, report_json = _published(
                 ctl, _RESEARCHER, "security.publish_report", previous
@@ -545,6 +604,7 @@ def test_live_security_remediation(
                 "initial-review",
                 "Independently review this complete source evidence and inspect app.py/verify.py readonly. "
                 "Call security.review_report review_kind=initial for the exact report ref, disposition each candidate once, "
+                "using JSON arrays for finding_reviews and verification_criteria, not objects with item keys, "
                 "and give accepted findings a minimal objective and explicit regression criteria, with the complete remediation brief under 1000 characters. Do not repair.\n"
                 + _operator_evidence(
                     reviewer, ctl, [report_ref, *report.evidence_refs]
@@ -602,9 +662,13 @@ def test_live_security_remediation(
                 root,
                 "rescan",
                 f"Rescan approved clean repository {target} at exact revision {patched}. "
-                "Run only security.scan_code with expected_target_revision and include_evidence_artifact=true, "
-                "then security.publish_report with requested_checks=[code], completed source_readonly evidence "
-                "and truthful current findings. Use the returned canonical reference. Stop after publication.",
+                "Call security.scan_code exactly once with expected_target_revision and include_evidence_artifact=true, "
+                'then publish one report with security.publish_report using scope.requested_checks=["code"], completed source_readonly evidence '
+                "and truthful current findings. Use JSON arrays for check_evidence, findings, locations, and scanner_finding_ids; "
+                'never {"item": ...} wrappers. Use [] for no findings. '
+                "If publication rejects arguments, correct them using its feedback. "
+                "Use the returned canonical reference; after successful publication, return the report ref "
+                "and stop without further inspection or scanning.",
             )
             rescan_ref, rescan_json = _published(
                 ctl, _RESEARCHER, "security.publish_report", previous
@@ -624,6 +688,7 @@ def test_live_security_remediation(
                 "Independently evaluate the original accepted finding against the fresh complete rescan. "
                 "Call security.review_report review_kind=follow_up with the initial review ref and rescan report ref, "
                 "one closure per accepted finding and decisions for unmatched current candidates. "
+                "Use JSON arrays for closure_reviews, new_finding_reviews and current_finding_ids, including [] when empty. "
                 "Use evidence to choose resolved/residual/not_reproduced. Do not repair.\n"
                 + _operator_evidence(
                     reviewer,

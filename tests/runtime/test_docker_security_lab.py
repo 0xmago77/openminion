@@ -238,6 +238,10 @@ def test_run_uses_exact_direct_argv_and_always_removes_worker() -> None:
     assert "--read-only" in create
     assert "--cap-drop=ALL" in create
     assert "--security-opt=no-new-privileges" in create
+    assert (
+        "--tmpfs=/workspace:rw,noexec,nosuid,nodev,size=16777216,"
+        "uid=10001,gid=10001,mode=0700"
+    ) in create
     assert not any(
         value.startswith(("--env", "--volume", "--mount", "--device"))
         for value in create

@@ -109,6 +109,17 @@ class SecurityScanResult(BaseModel):
 
     def as_tool_result(self) -> dict[str, Any]:
         payload = self.model_dump(mode="json", exclude_none=True)
+        # Keep evidence and completeness visible when tool messages are compacted.
+        payload = {
+            "findings": payload["findings"],
+            "evidence_refs": payload["evidence_refs"],
+            "status": payload["status"],
+            "total_findings": payload["total_findings"],
+            "returned_findings": payload["returned_findings"],
+            "truncated": payload["truncated"],
+            "partial_reason": payload["partial_reason"],
+            **payload,
+        }
         payload["artifact_refs"] = list(self.evidence_refs)
         payload["verified"] = self.status in {"completed", "partial"}
         evidence = f" evidence={self.evidence_refs[0]}" if self.evidence_refs else ""
@@ -184,7 +195,11 @@ class SecurityAuditFinding(BaseModel):
     locations: list[SecurityAuditFindingLocation] = Field(min_length=1, max_length=20)
     evidence_ref: str | None = Field(default=None, pattern=_CANONICAL_REF_PATTERN)
     scanner_finding_ids: list[str] = Field(default_factory=list, max_length=100)
-    evidence_summary: str = Field(default="", max_length=3000)
+    evidence_summary: str = Field(
+        default="",
+        max_length=3000,
+        description="Required for manual findings. Omit for scanner findings; use evidence_ref and scanner_finding_ids instead.",
+    )
 
     @model_validator(mode="after")
     def _basis_evidence(self) -> "SecurityAuditFinding":

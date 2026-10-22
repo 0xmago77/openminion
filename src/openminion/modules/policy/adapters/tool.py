@@ -34,6 +34,7 @@ class ExecutionBoundaryPolicyAdapter(PolicyAdapter):
     tool_policy_lookup: ToolPolicyLookup | None = None
     budget_state: ToolBudgetState | None = None
     blast_radius_adapter: CompositionBoundaryAdapter | None = None
+    security_lab_required: bool = False
 
     def _tool_profile(
         self, tool_name: str, tool_spec: ToolSpec
@@ -90,7 +91,11 @@ class ExecutionBoundaryPolicyAdapter(PolicyAdapter):
     ) -> PolicyDecision:
         if self.blast_radius_adapter is not None:
             self.blast_radius_adapter.step(tool_spec)
-        discovery_hint = _read_only_exec_denial_hint(tool_name=tool_name, args=args)
+        discovery_hint = (
+            None
+            if self.security_lab_required
+            else _read_only_exec_denial_hint(tool_name=tool_name, args=args)
+        )
         if discovery_hint is not None:
             hint_tool, hint_fix = discovery_hint
             return PolicyDecision(
@@ -105,7 +110,9 @@ class ExecutionBoundaryPolicyAdapter(PolicyAdapter):
                     "suggested_fix": hint_fix,
                 },
             )
-        if _read_only_exec_allowed(tool_name=tool_name, args=args):
+        if not self.security_lab_required and _read_only_exec_allowed(
+            tool_name=tool_name, args=args
+        ):
             return PolicyDecision(
                 allowed=True,
                 reason="read_only_exec_allowed",
@@ -192,6 +199,7 @@ def build_execution_boundary_policy_adapter(
     tool_policy_lookup: ToolPolicyLookup | None = None,
     budget_state: ToolBudgetState | None = None,
     blast_radius_adapter: CompositionBoundaryAdapter | None = None,
+    security_lab_required: bool = False,
 ) -> ExecutionBoundaryPolicyAdapter:
     return ExecutionBoundaryPolicyAdapter(
         policy=policy,
@@ -200,4 +208,5 @@ def build_execution_boundary_policy_adapter(
         tool_policy_lookup=tool_policy_lookup,
         budget_state=budget_state,
         blast_radius_adapter=blast_radius_adapter,
+        security_lab_required=security_lab_required,
     )
