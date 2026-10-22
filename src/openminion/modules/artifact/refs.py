@@ -1,8 +1,11 @@
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openminion.modules.artifact.interfaces import ArtifactReferenceLifecycle
 from openminion.modules.artifact.models import parse_ref_or_sha
+
+if TYPE_CHECKING:
+    from openminion.modules.artifact.config import ArtifactCtlConfig
 
 
 def normalize_artifact_ref_target(value: Any) -> str | None:
@@ -61,10 +64,10 @@ def normalize_artifact_ref_targets(values: Any) -> list[str]:
     return targets
 
 
-def create_default_artifactctl() -> Any:
+def create_default_artifactctl(config: "ArtifactCtlConfig | None" = None) -> Any:
     from openminion.modules.artifact.control import ArtifactCtl
 
-    return ArtifactCtl({})
+    return ArtifactCtl({} if config is None else config)
 
 
 def add_reference_edges(

@@ -224,7 +224,7 @@ def build_memory_v2_runtime_assembly(
     resolve_runtime_memory_config_fn: Callable[
         ..., Any
     ] = memory_runtime_configuration.resolve_runtime_memory_config,
-    artifactctl_factory: Callable[[], Any] = create_default_artifactctl,
+    artifactctl_factory: Callable[[], Any] | None = None,
 ) -> RuntimeMemoryAssembly:
     memory_config = resolve_runtime_memory_config_fn(
         config=config,
@@ -240,7 +240,8 @@ def build_memory_v2_runtime_assembly(
         return RuntimeMemoryAssembly(gateway=adapter)
     db_path = memory_root / SERVICES_MEMORY_DB_FILENAME
     try:
-        artifactctl = artifactctl_factory()
+        factory = artifactctl_factory or _runtime_artifactctl_factory(config_manager)
+        artifactctl = factory()
     except Exception:
         artifactctl = None
     resolved = resolve_memory_backend(
@@ -304,6 +305,15 @@ def build_memory_v2_runtime_assembly(
         scheduler=scheduler,
         delegated_store=backend if backend_config.provider == "sophiagraph" else None,
     )
+
+
+def _runtime_artifactctl_factory(
+    config_manager: ConfigManager | None,
+) -> Callable[[], Any]:
+    artifact_config = None
+    if config_manager is not None and config_manager.is_registered("artifact"):
+        artifact_config = config_manager.get("artifact")
+    return lambda: create_default_artifactctl(artifact_config)
 
 
 def _resolve_project_id(
