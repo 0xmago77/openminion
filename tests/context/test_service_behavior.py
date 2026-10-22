@@ -16,6 +16,7 @@ from openminion.modules.context.schemas import (
     SessionTurn,
     default_budgets_for,
 )
+from openminion.modules.context.constants import JUDGE_ACTION_OUTPUTS_MAX_CHARS
 from openminion.modules.context.pack.finalize import selected_memory_record_ids
 from openminion.modules.context.contracts import PluginRegistry
 from openminion.modules.context.service import ContextCtlService
@@ -1461,6 +1462,16 @@ class ClarifyDigestTests(unittest.TestCase):
             phase_hints={
                 "closure_candidate_reason": "plan_completed",
                 "closure_action_summary": "Weather: 16C in San Diego",
+                "closure_action_outputs": {
+                    "tool_results": [
+                        {
+                            "tool_name": "weather",
+                            "ok": True,
+                            "data": {"data": "San Diego: 16C, clear"},
+                        }
+                    ],
+                    "tool_execution_count": 1,
+                },
                 "closure_sub_intents": ["lookup_weather", "answer_user"],
                 "closure_intent_outcomes": [
                     {"intent_id": "intent_01_lookup_weather", "status": "succeeded"}
@@ -1474,9 +1485,47 @@ class ClarifyDigestTests(unittest.TestCase):
 
         self.assertIn("[JUDGE CONTEXT]", mission.content)
         self.assertIn("action_summary: Weather: 16C in San Diego", mission.content)
+        self.assertIn(
+            'closure_action_outputs: {"tool_results": [{"tool_name": "weather", '
+            '"ok": true, "data": {"data": "San Diego: 16C, clear"}}], '
+            '"tool_execution_count": 1}',
+            mission.content,
+        )
         self.assertIn('sub_intents: ["lookup_weather", "answer_user"]', mission.content)
         self.assertIn("intent_outcomes:", mission.content)
         self.assertIn('success_criteria: {"weather_returned": true}', mission.content)
+
+    def test_judge_prompt_caps_closure_action_outputs(self) -> None:
+        service = _make_service(session=_SliceSession(summary_short="summary"))
+        req = BuildPackRequest(
+            session_id="sess-judge-cap",
+            agent_id="agent-test",
+            purpose="judge",
+            query="summarize the plan",
+            phase_hints={
+                "closure_action_outputs": {
+                    "tool_results": [{"tool_name": "lookup_order", "ok": True}],
+                    "task_plan": {"objective": "x" * 5000},
+                },
+            },
+        )
+
+        pack = service.build_pack(req)
+        mission = next(s for s in pack.segments if s.bucket == "mission_snapshot")
+        line = next(
+            item
+            for item in mission.content.splitlines()
+            if item.startswith("closure_action_outputs: ")
+        )
+
+        self.assertIn('{"tool_results": [{"tool_name": "lookup_order"', line)
+        self.assertTrue(line.endswith("...[truncated]"))
+        self.assertLessEqual(
+            len(line),
+            len("closure_action_outputs: ")
+            + JUDGE_ACTION_OUTPUTS_MAX_CHARS
+            + len("...[truncated]"),
+        )
 
     def test_task_header_renders_typed_temporal_context(self) -> None:
         service = _make_service(session=_SliceSession(summary_short="summary"))
