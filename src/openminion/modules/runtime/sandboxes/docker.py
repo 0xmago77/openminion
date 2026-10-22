@@ -106,12 +106,15 @@ class DockerSandboxRunner:
         target_id = str(target.get("Id") or "").strip()
         target_image_id = str(target.get("Image") or "").strip()
         worker_image_id = str(worker_image.get("Id") or "").strip()
-        worker_digests = {str(item) for item in worker_image.get("RepoDigests") or []}
+        worker_digests = {
+            str(item).rpartition("@")[2]
+            for item in worker_image.get("RepoDigests") or []
+        }
         if not all((daemon_id, target_id, target_image_id, worker_image_id)):
             raise DockerSandboxError(
                 "SANDBOX_UNAVAILABLE", "Docker preflight returned incomplete identities"
             )
-        if self.config.worker_image not in worker_digests:
+        if self.config.worker_image.rpartition("@")[2] not in worker_digests:
             raise DockerSandboxError(
                 "POLICY_DENIED", "Docker worker image digest does not match config"
             )

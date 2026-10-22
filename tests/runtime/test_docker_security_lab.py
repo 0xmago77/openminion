@@ -83,7 +83,11 @@ def _completed(stdout: object = b"", stderr: bytes = b"", returncode: int = 0):
     return subprocess.CompletedProcess([], returncode, encoded, stderr)
 
 
-def _fake_control(runner: DockerSandboxRunner, target: dict[str, object]):
+def _fake_control(
+    runner: DockerSandboxRunner,
+    target: dict[str, object],
+    repo_digest: str = _IMAGE,
+):
     calls: list[tuple[str, ...]] = []
 
     def command(self, *args: str, check: bool = True):
@@ -98,7 +102,7 @@ def _fake_control(runner: DockerSandboxRunner, target: dict[str, object]):
                 [
                     {
                         "Id": "sha256:" + "c" * 64,
-                        "RepoDigests": [_IMAGE],
+                        "RepoDigests": [repo_digest],
                         "Config": {"Volumes": None},
                     }
                 ]
@@ -148,10 +152,21 @@ def test_security_lab_config_is_strict_and_opt_in() -> None:
         _config(cpu_limit=float("inf"))
 
 
-def test_preflight_freezes_exact_local_scope() -> None:
-    runner = DockerSandboxRunner(_config(), docker_binary="/usr/bin/docker")
+@pytest.mark.parametrize(
+    ("configured_image", "repo_digest"),
+    [
+        (_IMAGE, _IMAGE),
+        (f"docker.io/library/python@{_DIGEST}", f"python@{_DIGEST}"),
+    ],
+)
+def test_preflight_freezes_exact_local_scope(
+    configured_image: str, repo_digest: str
+) -> None:
+    runner = DockerSandboxRunner(
+        _config(worker_image=configured_image), docker_binary="/usr/bin/docker"
+    )
     try:
-        _fake_control(runner, _target())
+        calls = _fake_control(runner, _target(), repo_digest)
         scope = runner.preflight()
     finally:
         runner.close()
@@ -159,7 +174,8 @@ def test_preflight_freezes_exact_local_scope() -> None:
     assert scope.daemon_id == "daemon-local"
     assert scope.target_container_id.startswith("target-")
     assert scope.target_image_id.startswith("sha256:")
-    assert scope.worker_image_digest == _IMAGE
+    assert ("image", "inspect", configured_image) in calls
+    assert scope.worker_image_digest == configured_image
     assert len(scope.config_fingerprint) == 64
     assert len(scope.resolved_scope_fingerprint) == 64
 
