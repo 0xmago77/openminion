@@ -46,7 +46,10 @@ scope	max_python_files	max_loc
 # the existing brain, cron, delivery, and routine-context owners.
 # Issue 323 (2026-10-21) threads the runtime identity database path through
 # the existing brain context adapter instead of the global identity default.
-services	208	41701
+# #325 (2026-10-21) rejects an explicit agent outside a plain session's bound
+# agent in the existing ingress routing owner, before any gateway call, and
+# carries the caller's explicit agent through the managed turn request.
+services	208	41729
 services/security	6	187
 services/stats	1	25
 services/tool	3	50

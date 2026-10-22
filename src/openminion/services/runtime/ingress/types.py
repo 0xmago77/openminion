@@ -39,6 +39,7 @@ class RuntimeTurnRequest:
         default_factory=RunProfileOverrides
     )
     trusted_subagent_context: Any | None = None
+    explicit_agent: bool = False
 
 
 @dataclass(frozen=True)
