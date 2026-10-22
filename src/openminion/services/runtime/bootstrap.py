@@ -716,10 +716,9 @@ def build_brain_runner_bundle(service: Any) -> Any:
         session_store=session_api,
         system_prompt=default_profile.system_prompt,
         identity_budget_config=getattr(
-            getattr(config, "context", None),
-            "identity_budget",
-            None,
+            getattr(config, "context", None), "identity_budget", None
         ),
+        identity_db_path=service._resolve_identity_db_path(),
         runtime_token_budget=int(
             getattr(
                 getattr(config, "runtime", object()),

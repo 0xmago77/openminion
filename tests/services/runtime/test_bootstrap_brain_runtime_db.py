@@ -102,6 +102,7 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
     ).brain
     session_db_path = tmp_path / "state" / "brain" / "sessions.db"
     expected_runtime_db_path = tmp_path / "state" / "brain" / "brain.db"
+    identity_db_path = tmp_path / "identity" / "identity.db"
     turn_input_queue = object()
     sandbox_runner = object()
     security_lab_runner = object()
@@ -124,6 +125,7 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
         _sandbox_runner=sandbox_runner,
         _security_lab_runner=security_lab_runner,
         _identity_security_lab_facts=lambda: {},
+        _resolve_identity_db_path=lambda: str(identity_db_path),
         _runtime_memory_assembly=SimpleNamespace(
             memctl=SimpleNamespace(),
             vector_adapter=SimpleNamespace(),
@@ -330,6 +332,7 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
     assert artifact_factory.call_count == (1 if mode == "auto" else 0)
     assert context_factory.call_args.kwargs["artifactctl"] is expected_artifactctl
     assert context_factory.call_args.kwargs["owns_artifactctl"] is (mode == "auto")
+    assert context_factory.call_args.kwargs["identity_db_path"] == str(identity_db_path)
     assert retrieve_factory.call_count == 1
     assert context_factory.call_args.kwargs["retrieve_api"] is retrieve_api
     assert tool_api_factory.call_args.kwargs["artifactctl"] is expected_artifactctl

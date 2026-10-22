@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any
 
 from openminion.modules.context.contracts import PluginRegistry
@@ -12,6 +13,7 @@ def create_context_adapter(
     *,
     identity_system_prompt: str | None = None,
     identity_budget_config: Any | None = None,
+    identity_db_path: str | Path | None = None,
     runtime_token_budget: int | None = None,
     rlmctl: Any = None,
     vectorctl: Any = None,
@@ -44,6 +46,7 @@ def create_context_adapter(
         identity_client = BridgeIdentityClient(
             backing_store=session_store,
             system_prompt=identity_system_prompt,
+            identity_db_path=identity_db_path,
         )
         memory_client = BridgeMemoryClient(backing_store=session_store)
         runtime_artifactctl = (
