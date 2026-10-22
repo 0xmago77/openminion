@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import io
 import json
 from argparse import Namespace
@@ -7,12 +8,15 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from openminion.cli.commands.skill import (
     _run_skill_admission,
     _run_skill_ingest,
     _run_skill_list,
     _run_skill_remove,
     _run_skill_show,
+    register,
 )
 
 
@@ -332,3 +336,135 @@ def test_skill_cli_generic_error_keeps_unknown_code(
     assert payload["ok"] is False
     assert payload["error"]["code"] == "UNKNOWN"
     assert payload["error"]["message"] == "boom"
+
+
+def _hello_example() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "examples"
+        / "skills"
+        / "hello"
+        / "SKILL.md"
+    )
+
+
+def _list_args(config: Path, *, status: str | None, json_output: bool) -> Namespace:
+    return Namespace(
+        status=status,
+        scope=None,
+        agent_id=None,
+        tag=None,
+        tool=None,
+        config=str(config),
+        json=json_output,
+    )
+
+
+def test_skill_cli_lists_pending_markdown_skills_until_admission(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENMINION_DATA_ROOT", str(tmp_path / ".openminion"))
+    config_path = _write_skill_config(tmp_path)
+    other_path = tmp_path / "other" / "SKILL.md"
+    other_path.parent.mkdir()
+    other_path.write_text(
+        _hello_example()
+        .read_text(encoding="utf-8")
+        .replace("`hello.greet`", "`other.probe`"),
+        encoding="utf-8",
+    )
+    ingested: dict[str, str] = {}
+    for path in (_hello_example(), other_path):
+        code, payload = _run(
+            _run_skill_ingest,
+            Namespace(
+                file=str(path),
+                name=None,
+                scope="global",
+                agent_id=None,
+                config=str(config_path),
+            ),
+        )
+        assert code == 0
+        ingested[payload["skill_id"]] = payload["version_hash"]
+    assert sorted(ingested) == ["hello.greet", "other.probe"]
+
+    code, listed = _run(
+        _run_skill_list, _list_args(config_path, status="draft", json_output=True)
+    )
+    assert code == 0
+    assert listed["skills"] == []
+    assert {
+        item["skill_id"]: item["version_hash"] for item in listed["pending_versions"]
+    } == ingested
+    code, listed = _run(
+        _run_skill_list, _list_args(config_path, status="verified", json_output=True)
+    )
+    assert code == 0
+    assert listed["pending_versions"] == []
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        assert (
+            _run_skill_list(_list_args(config_path, status=None, json_output=False))
+            == 0
+        )
+    text = buf.getvalue()
+    assert "No skills found." not in text
+    assert (
+        f"hello.greet | SKILL | pending admission | {ingested['hello.greet']}" in text
+    )
+    assert "see `skill admit --help`" in text
+
+    code, shown = _run(
+        _run_skill_show,
+        Namespace(skill_id="hello.greet", version=None, config=str(config_path)),
+    )
+    assert code == 1
+    assert shown["error"]["code"] == "NOT_FOUND"
+    code, shown = _run(
+        _run_skill_show,
+        Namespace(
+            skill_id="hello.greet",
+            version=ingested["hello.greet"],
+            config=str(config_path),
+        ),
+    )
+    assert code == 0
+    assert shown["skill"]["status"] == "draft"
+
+    code, admitted = _run(
+        _run_skill_admission,
+        Namespace(
+            skill_action="admit",
+            skill_id="hello.greet",
+            version_hash=ingested["hello.greet"],
+            expected_active_version_hash="none",
+            target_status="verified",
+            reason="reviewed the hello example",
+            verification_check="manual review",
+            verification_result="passed",
+            verification_evidence_ref="review://hello",
+            config=str(config_path),
+        ),
+    )
+    assert code == 0
+    assert admitted["active_version_hash"] == ingested["hello.greet"]
+
+    code, listed = _run(
+        _run_skill_list, _list_args(config_path, status=None, json_output=True)
+    )
+    assert code == 0
+    assert [item["skill_id"] for item in listed["skills"]] == ["hello.greet"]
+    assert [item["skill_id"] for item in listed["pending_versions"]] == ["other.probe"]
+
+
+def test_skill_admit_help_documents_first_admission_sentinel() -> None:
+    parser = argparse.ArgumentParser(prog="openminion")
+    register(parser.add_subparsers())
+    buf = io.StringIO()
+    with redirect_stdout(buf), pytest.raises(SystemExit):
+        parser.parse_args(["skill", "admit", "--help"])
+
+    help_text = " ".join(buf.getvalue().split())
+    assert "use 'none' for the first admission" in help_text
