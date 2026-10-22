@@ -712,3 +712,67 @@ def test_replay_proof_binds_actual_session_records_to_approved_requests(
             "replay-review",
             "replay-accept",
         ]
+
+
+@pytest.mark.parametrize(
+    ("tool", "target", "code", "actor", "accepted"),
+    [
+        (
+            "tool.request",
+            "file.read",
+            "TOOL_REQUEST_INVALID_ARGUMENTS",
+            source._PARENT,
+            True,
+        ),
+        ("plan", "p1", "PLAN_VALIDATION_FAILED", source._PARENT, True),
+        (
+            "tool.request",
+            "security.scan_code",
+            "TOOL_REQUEST_INVALID_ARGUMENTS",
+            source._PARENT,
+            False,
+        ),
+        ("tool.request", "file.read", "POLICY_DENIED", source._PARENT, False),
+        ("tool.request", "file.read", "NOT_FOUND", source._PARENT, False),
+        ("plan", "p1", "PLAN_REVISION_REQUIRED", source._PARENT, False),
+        ("plan", "p1", "EXEC_ERROR", source._PARENT, False),
+        ("plan", "p1", "PLAN_VALIDATION_FAILED", source._IMPLEMENTER, False),
+    ],
+)
+def test_repair_argument_corrections_preserve_failure_boundaries(
+    tool, target, code, actor, accepted
+):
+    def event(kind, **data):
+        return {"agent_id": actor, "event_type": kind, "data": data}
+
+    args = (
+        {"action": "declare", "plan_id": target} if tool == "plan" else {"name": target}
+    )
+    events = [
+        event(
+            "tool.call.requested",
+            call_id="bad",
+            canonical_name=tool,
+            sanitized_normalized_arguments=args,
+        ),
+        event("tool.call.blocked", call_id="bad", status="error", error={"code": code}),
+        event(
+            "tool.call.requested",
+            call_id="fixed",
+            canonical_name=tool,
+            sanitized_normalized_arguments=dict(args),
+        ),
+        event("tool.call.completed", call_id="fixed", status="success"),
+    ]
+    corrections = source._corrected_parent_arguments(events)
+    assert [item["call_id"] for item in corrections] == (["bad"] if accepted else [])
+    if accepted:
+        assert corrections[0]["corrected_call_id"] == "fixed"
+        with pytest.raises(AssertionError, match="uncorrected argument error"):
+            source._corrected_parent_arguments(events[:2])
+        with pytest.raises(AssertionError, match="uncorrected argument error"):
+            source._corrected_parent_arguments(events[2:] + events[:2])
+        key = "plan_id" if tool == "plan" else "name"
+        events[2]["data"]["sanitized_normalized_arguments"][key] = "different-target"
+        with pytest.raises(AssertionError, match="uncorrected argument error"):
+            source._corrected_parent_arguments(events)

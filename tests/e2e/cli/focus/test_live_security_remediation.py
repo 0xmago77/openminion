@@ -523,6 +523,55 @@ def _approved_replays(probe, project_run_id, approvals):
     return replay_ids
 
 
+def _corrected_parent_arguments(events: list[dict]) -> list[dict]:
+    """Record corrected, pre-execution input errors; never excuse policy failures."""
+    requests = {}
+    failures = []
+    successes = []
+    for position, event in enumerate(events):
+        if event["agent_id"] != _PARENT:
+            continue
+        data = event["data"]
+        kind = event["event_type"]
+        if kind == "tool.call.requested":
+            tool = data["canonical_name"]
+            args = data["sanitized_normalized_arguments"]
+            if tool == "tool.request" and args.get("name") == "file.read":
+                key = (tool, "file.read", "TOOL_REQUEST_INVALID_ARGUMENTS")
+            elif tool == "plan" and args.get("action") == "declare":
+                key = (tool, args["plan_id"], "PLAN_VALIDATION_FAILED")
+            else:
+                continue
+            requests[data["call_id"]] = (position, key)
+        elif kind in {"tool.call.blocked", "tool.call.completed"}:
+            call_id = data["call_id"]
+            if call_id not in requests:
+                continue
+            requested_at, key = requests[call_id]
+            if kind == "tool.call.blocked" and data["error"]["code"] == key[2]:
+                failures.append((position, call_id, key))
+            elif kind == "tool.call.completed" and data["status"] == "success":
+                successes.append((requested_at, position, call_id, key))
+    corrected = []
+    for failed_at, call_id, key in failures:
+        matches = [
+            corrected_id
+            for requested_at, completed_at, corrected_id, corrected_key in successes
+            if failed_at < requested_at < completed_at and corrected_key == key
+        ]
+        assert matches, f"uncorrected argument error: {call_id}"
+        corrected.append(
+            {
+                "call_id": call_id,
+                "corrected_call_id": matches[0],
+                "tool_name": key[0],
+                "target": key[1],
+                "error_code": key[2],
+            }
+        )
+    return corrected
+
+
 def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> dict:
     store, manager = _project_owners(probe)
     try:
@@ -590,8 +639,11 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         probe, checkpoint.project_run.project_run_id, approvals
     )
     calls, _, _ = _tool_evidence(probe, after_event_id=0)
+    events = _events(probe.data_root / "telemetry/telemetry.db", 0)
+    corrected = _corrected_parent_arguments(events)
+    corrected_ids = {item["call_id"] for item in corrected}
     assert all(
-        item["call_id"] in approved_ids
+        item["call_id"] in approved_ids | corrected_ids
         for item in calls
         if item["event"] == "tool.call.blocked"
     )
@@ -602,7 +654,6 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         if item["tool"] == "task.delegate"
         and item["event"] in {"tool.call.requested", "tool.request"}
     } == approved_ids | set(replay_ids)
-    events = _events(probe.data_root / "telemetry/telemetry.db", 0)
     usage = {}
     for agent_id in (_PARENT, _IMPLEMENTER, _CODE_REVIEWER):
         role_events = [event for event in events if event["agent_id"] == agent_id]
@@ -631,7 +682,7 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
             )
             or (
                 event["event_type"] == "tool.call.blocked"
-                and event["data"]["call_id"] not in approved_ids
+                and event["data"]["call_id"] not in approved_ids | corrected_ids
             )
             for event in role_events
         )
@@ -705,6 +756,7 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         "tool_calls": calls,
         "approvals": approvals,
         "replay_command_ids": replay_ids,
+        "corrected_argument_attempts": corrected,
         "focus_status": status,
         "usage_by_role": usage,
     }

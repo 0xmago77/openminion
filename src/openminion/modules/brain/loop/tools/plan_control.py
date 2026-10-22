@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic import ValidationError
+
 from openminion.modules.brain.schemas.state import ActionResult
 from openminion.modules.context.schemas import TASK_PLAN_TOOL_FAMILIES
 from openminion.modules.llm.schemas import Message, ToolSpec
@@ -391,7 +393,7 @@ def handle_plan_tool_call(
                 arguments=arguments,
                 event_type="task_plan.completed",
             )
-    except Exception as exc:  # noqa: BLE001
+    except ValidationError as exc:
         _append_invalid_task_plan_event(
             loop_ctx,
             trailer_type=f"plan.{action}",
@@ -449,7 +451,22 @@ def _handle_declare(*, loop_ctx: Any, arguments: dict[str, Any]) -> ActionResult
             reason="plan_replaced",
         )
     elif active_plan_id == plan.plan_id:
-        plan = _merge_redeclared_active_plan(active_plan, plan)
+        try:
+            plan = _merge_redeclared_active_plan(active_plan, plan)
+        except ValidationError:
+            raise
+        except ValueError as exc:
+            _append_invalid_task_plan_event(
+                loop_ctx,
+                trailer_type="plan.declare",
+                reason="validation_error",
+                payload=arguments,
+            )
+            return _failed_result(
+                code="PLAN_REVISION_REQUIRED",
+                summary=f"Plan action validation failed: {exc}",
+                details={"action": PLAN_ACTION_DECLARE},
+            )
     _append_task_plan_event(
         loop_ctx,
         event_type="task_plan.declared",

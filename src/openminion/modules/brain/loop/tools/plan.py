@@ -174,20 +174,17 @@ def _append_task_plan_event(
     append_event = getattr(session_api, "append_event", None) if session_api else None
     if callable(append_event):
         trace_id = _trace_id(loop_ctx)
-        try:
-            append_event(
-                _session_id(loop_ctx),
-                event_type,
-                {"source": _PLAN_TOOL_EVENT_SOURCE, **payload},
-                actor_type="agent",
-                actor_id=_agent_id(loop_ctx),
-                trace={"trace_id": trace_id} if trace_id else None,
-                importance=2,
-                redaction="none",
-                status="ok",
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        append_event(
+            _session_id(loop_ctx),
+            event_type,
+            {"source": _PLAN_TOOL_EVENT_SOURCE, **payload},
+            actor_type="agent",
+            actor_id=_agent_id(loop_ctx),
+            trace={"trace_id": trace_id} if trace_id else None,
+            importance=2,
+            redaction="none",
+            status="ok",
+        )
     _emit_task_plan_progress_event(loop_ctx, event_type=event_type, payload=payload)
 
 

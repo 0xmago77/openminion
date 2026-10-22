@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
+
 from openminion.modules.brain.loop.tools.plan_control import (
     PLAN_CONTINUE_AUTONOMOUSLY_OUTPUT_KEY,
     append_plan_closeout_guidance,
@@ -230,6 +232,31 @@ def test_plan_control_declare_rejects_stringified_steps() -> None:
     assert session_api.events[-1]["event_type"] == "task_plan.invalid_trailer"
 
 
+@pytest.mark.parametrize(
+    "failure", [RuntimeError("store unavailable"), ValueError("invalid store state")]
+)
+def test_plan_control_declare_propagates_store_failure(monkeypatch, failure) -> None:
+    session_api = _FakeSessionAPI()
+    progress = []
+
+    def fail_append(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(session_api, "append_event", fail_append)
+    monkeypatch.setattr(
+        "openminion.modules.brain.loop.tools.plan._emit_task_plan_progress_event",
+        lambda *args, **kwargs: progress.append(kwargs),
+    )
+    with pytest.raises(type(failure), match=str(failure)):
+        handle_plan_tool_call(
+            loop_ctx=_Ctx(session_api=session_api),
+            arguments={"action": "declare", **_active_plan()},
+        )
+
+    assert session_api.events == []
+    assert progress == []
+
+
 def test_plan_control_declare_falls_back_to_plan_id_when_objective_missing() -> None:
     session_api = _FakeSessionAPI()
     result = handle_plan_tool_call(
@@ -438,8 +465,9 @@ def test_plan_control_redeclare_rejects_changed_steps() -> None:
     )
 
     assert result.status == "failed"
-    assert result.error.code == "PLAN_VALIDATION_FAILED"
+    assert result.error.code == "PLAN_REVISION_REQUIRED"
     assert "use action=revise" in result.error.message
+    assert session_api.events[-1]["event_type"] == "task_plan.invalid_trailer"
 
 
 def test_plan_control_step_completed_records_active_step() -> None:

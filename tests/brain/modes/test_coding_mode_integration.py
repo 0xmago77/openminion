@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 import json
 import threading
 import time
@@ -48,6 +49,7 @@ from openminion.modules.brain.constants import (
 from openminion.modules.brain.schemas import (
     ActionError,
     ActionResult,
+    AskUserCommand,
     ArtifactRef,
     BudgetCounters,
     Deliverable,
@@ -59,6 +61,10 @@ from openminion.modules.brain.schemas import (
     new_uuid,
 )
 from openminion.modules.brain.schemas.closure import ClosureJudgment
+from openminion.modules.brain.adapters.session import LocalSessionStore
+from openminion.modules.brain.tools.executor.command_executor import (
+    RunnerCommandExecutor,
+)
 from openminion.modules.brain.tools.executor import CommandExecutionOutcome
 from openminion.modules.llm.schemas import LLMRequest, LLMResponse, ToolCall
 from openminion.modules.llm.transcript import validate_tool_transcript
@@ -3329,6 +3335,102 @@ def test_coding_loop_replays_confirmed_pending_tool_without_llm_yes() -> None:
     first_llm_messages = llm_client.calls[0]["messages"]
     assert all(message.content != "yes" for message in first_llm_messages)
     assert any(message.role == "tool" for message in first_llm_messages)
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+def test_coding_replay_persists_distinct_next_confirmation(
+    tmp_path: Path, prepared: bool
+) -> None:
+    first = ToolCommand(title="first", tool_name="exec.run", args={"command": "first"})
+    question = "Approve the second command?"
+    policy_executor = RunnerCommandExecutor(
+        SimpleNamespace(
+            _approve=lambda **kwargs: AskUserCommand(
+                title="approval", question=question
+            )
+        )
+    )
+
+    class _NextConfirmationExecutor(_FakeCommandExecutor):
+        def execute_command(self, *, state, command, logger, **kwargs):
+            if command.args == {"command": "second"}:
+                self.calls.append(command)
+                return policy_executor.execute_command(
+                    state=state, command=command, logger=logger
+                )
+            return super().execute_command(
+                state=state, command=command, logger=logger, **kwargs
+            )
+
+        def prepare_tool_dispatch(self, *, state, command, logger, **kwargs):
+            self.calls.append(command)
+            return policy_executor.prepare_tool_dispatch(
+                state=state, command=command, logger=logger, **kwargs
+            )
+
+        def execute_prepared_tool_dispatch(self, **kwargs):
+            pytest.fail("Unapproved second command must not execute")
+
+        def finalize_tool_result(self, **kwargs):
+            pytest.fail("Unapproved second command has no execution result")
+
+    state = _state()
+    state.module_state["coding"] = _coding_resume_payload()
+    state.pending_confirmation_command = first
+    state.status = "waiting_user"
+    executor = _NextConfirmationExecutor()
+    if not prepared:
+        executor.execute_prepared_tool_dispatch = None
+    llm = _FakeLLMClient(
+        responses=[
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="fake-model",
+                output_text="",
+                tool_calls=[
+                    ToolCall(
+                        id="second-call",
+                        name="exec.run",
+                        arguments={"command": "second"},
+                    )
+                ],
+            )
+        ]
+    )
+    result = CodingMode().execute(
+        _ctx(llm, executor, state=state, user_input="allow_once")
+    )
+
+    assert result.status == "waiting_user"
+    assert executor.calls[0].args == first.args
+    assert executor.calls[0].inputs["confirmation_source"] == "policy_replay"
+    second = executor.calls[1]
+    assert second.command_id != first.command_id
+    assert "confirmation_grant_id" not in second.inputs
+    store = LocalSessionStore(tmp_path / "sessions")
+    store.put_working_state(
+        state.session_id, state_inline=result.working_state.model_dump(mode="json")
+    )
+    saved = WorkingState.model_validate(
+        store.get_latest_working_state(state.session_id)["state_inline"]
+    )
+    assert saved.pending_confirmation_command == second
+    assert saved.post_action_user_message == question
+
+    approved_executor = _FakeCommandExecutor()
+    done = CodingMode().execute(
+        _ctx(
+            _FakeLLMClient(responses=[]),
+            approved_executor,
+            state=saved,
+            user_input="allow_once",
+        )
+    )
+    assert done.status == "done"
+    assert saved.pending_confirmation_command is None
+    assert [command.args for command in approved_executor.calls] == [second.args]
+    assert approved_executor.calls[0].inputs["confirmation_source"] == "policy_replay"
 
 
 def test_coding_loop_does_not_session_grant_pending_blockchain_send() -> None:
