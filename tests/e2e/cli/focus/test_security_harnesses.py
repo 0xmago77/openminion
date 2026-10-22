@@ -308,8 +308,9 @@ def test_source_repair_schedules_persisted_focus_project_wake(
 
 
 @pytest.mark.parametrize("changed", [None, "tool", "agent", "workspace", "id", "mode"])
+@pytest.mark.parametrize("legacy_workspace", [None, "/unrelated-legacy-workspace"])
 def test_project_approval_binds_pending_delegate_and_public_answer(
-    tmp_path, monkeypatch, changed
+    tmp_path, monkeypatch, changed, legacy_workspace
 ):
     pending = {
         "command_id": "cmd-approved",
@@ -318,17 +319,17 @@ def test_project_approval_binds_pending_delegate_and_public_answer(
             "mode": "sync",
             "agent_id": source._IMPLEMENTER,
             "code_bearing": True,
-            "workspace_root": str(tmp_path),
         },
     }
+    if legacy_workspace is not None:
+        pending["args"]["workspace_root"] = legacy_workspace
     if changed == "tool":
         pending["tool_name"] = "exec.run"
     elif changed == "id":
         pending["command_id"] = "cmd-other"
-    elif changed:
+    elif changed in {"agent", "mode"}:
         field, value = {
             "agent": ("agent_id", "other"),
-            "workspace": ("workspace_root", str(tmp_path.parent)),
             "mode": ("mode", "accept"),
         }[changed]
         pending["args"][field] = value
@@ -355,7 +356,10 @@ def test_project_approval_binds_pending_delegate_and_public_answer(
     )
     checkpoint = SimpleNamespace(
         payload={"pending_confirmation_command_id": "cmd-approved"},
-        project_run=SimpleNamespace(project_run_id="project"),
+        project_run=SimpleNamespace(
+            project_run_id="project",
+            workspace_ref=f"local:{tmp_path.parent if changed == 'workspace' else tmp_path}",
+        ),
     )
     run = SimpleNamespace(run_id="run")
     if changed:

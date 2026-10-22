@@ -41,6 +41,7 @@ from openminion.modules.task.constants import (
     DEFAULT_PROJECT_VERIFICATION_TIMEOUT_SECONDS,
 )
 from openminion.modules.task.project.models import ProjectCheckpoint
+from openminion.modules.task.project import project_workspace
 from openminion.modules.tool.diagnostics.events import structural_tool_results
 from openminion.tools.security.review_schemas import SecurityFindingReview
 from openminion.tools.security.schemas import SecurityAuditReport
@@ -426,7 +427,10 @@ def _approve_project_delegate(probe, ctl, run, checkpoint, expected_mode):
     assert args["mode"] == expected_mode
     if expected_mode == "sync":
         assert args["agent_id"] == _IMPLEMENTER and args["code_bearing"] is True
-        assert Path(args["workspace_root"]).resolve() == probe.workdir.resolve()
+        assert (
+            project_workspace(checkpoint.project_run.workspace_ref).resolve()
+            == probe.workdir.resolve()
+        )
     else:
         child = load_child_worktree_record(ctl, args["child_artifact"]["record_alias"])
         assert child["agent_id"] == _IMPLEMENTER
