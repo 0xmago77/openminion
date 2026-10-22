@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from openminion.modules.llm.providers.behavior.constants import (
     CORTENSOR_SERVICE_VENDOR,
     DEFAULT_REQUEST_DIALECT,
+    GEMINI_SERVICE_VENDOR,
     MINIMAX_OPENAI_COMPAT_REQUEST_DIALECT,
 )
 
@@ -80,6 +81,11 @@ def resolve_openai_request_compat(
                 "4. If you are finished, provide the answer as normal assistant text."
             ),
         )
+    if _provider_identity_uses_gemini_openai_compat(provider_identity):
+        return OpenAIRequestCompatProfile(
+            profile_id="gemini_openai_compat",
+            collapse_system_messages=True,
+        )
     return OpenAIRequestCompatProfile()
 
 
@@ -136,4 +142,18 @@ def _provider_identity_uses_cortensor_portal(
         == "openai_chat_completions"
         and str(provider_identity.get("service_vendor") or "").strip()
         == CORTENSOR_SERVICE_VENDOR
+    )
+
+
+def _provider_identity_uses_gemini_openai_compat(
+    provider_identity: Mapping[str, Any] | None,
+) -> bool:
+    if not isinstance(provider_identity, Mapping):
+        return False
+    return (
+        str(provider_identity.get("transport_adapter") or "").strip() == "openai_chat"
+        and str(provider_identity.get("wire_protocol_family") or "").strip()
+        == "openai_chat_completions"
+        and str(provider_identity.get("service_vendor") or "").strip()
+        == GEMINI_SERVICE_VENDOR
     )

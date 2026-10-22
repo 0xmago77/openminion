@@ -286,6 +286,8 @@ def test_frontier_openai_compatible_presets_resolve_identity_and_endpoint(
         }
     if preset_id == "minimax":
         assert request_compat == "minimax_openai_compat"
+    elif preset_id == "gemini":
+        assert request_compat == "gemini_openai_compat"
     elif preset_id != "cortensor-portal":
         assert request_compat == "openai_default"
 
