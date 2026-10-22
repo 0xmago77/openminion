@@ -108,7 +108,8 @@ class TaskDelegateArgs(BaseModel):
             "Instruction for sync/async work or the exact review objective. For "
             "code_bearing work, name files relative to the repository; do not "
             "prescribe the parent workspace path. The runtime supplies the "
-            "isolated checkout."
+            "isolated checkout. Request edits and a change summary from the child; "
+            "the runtime creates the child artifact after the child returns."
         ),
     )
     task_id: str = Field(
@@ -714,9 +715,10 @@ def _delegate_and_verify_code(
         f"The authoritative workspace for this task is {lease.worktree}. "
         "Use repository-relative file paths in this isolated checkout. Parent "
         "source paths are references only; do not use them as the working directory. "
-        "Make the requested edits and return when they are complete. The runtime "
-        "owns verification and artifact creation; do not claim or fabricate a "
-        "child artifact."
+        "You are the implementation child. Make the requested edits directly "
+        "without delegating further, then return a concise change summary. "
+        "After you return, the runtime verifies the checkout and creates the "
+        "child artifact; the parent owns review and acceptance."
     )
     completed = False
     try:

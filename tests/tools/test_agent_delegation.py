@@ -115,6 +115,13 @@ def test_task_delegate_schema_makes_lifecycle_order_explicit() -> None:
     assert instruction_description is not None
     assert "name files relative to the repository" in instruction_description
     assert "runtime supplies the isolated checkout" in instruction_description
+    assert (
+        "Request edits and a change summary from the child" in instruction_description
+    )
+    assert (
+        "runtime creates the child artifact after the child returns"
+        in instruction_description
+    )
     code_description = TaskDelegateArgs.model_fields["code_bearing"].description
     assert code_description is not None
     assert "parent checkout is unchanged" in code_description
@@ -650,6 +657,11 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
                 in kwargs["instruction"]
             )
             assert "Use repository-relative file paths" in kwargs["instruction"]
+            assert "You are the implementation child" in kwargs["instruction"]
+            assert "without delegating further" in kwargs["instruction"]
+            assert "return a concise change summary" in kwargs["instruction"]
+            assert "After you return, the runtime verifies" in kwargs["instruction"]
+            assert "parent owns review and acceptance" in kwargs["instruction"]
             (child / "value.py").write_text("VALUE = 1\n", encoding="utf-8")
             return A2ADelegateResult(
                 ok=True,

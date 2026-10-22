@@ -124,6 +124,8 @@ def _configuration(
                 "allow_host": True,
             },
         }
+    config["agents"][_IMPLEMENTER]["role"] = "coding implementer"
+    config["agents"][_CODE_REVIEWER]["role"] = "read-only code reviewer"
     config["default_agent"] = _PARENT
     config["enabled_channels"] = ["console"]
     config["enabled_plugins"] = []

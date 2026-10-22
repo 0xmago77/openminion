@@ -130,6 +130,7 @@ def live_config(tmp_path, monkeypatch):
                 "agents": {
                     "minimax-m2-7": {
                         "provider": "openai",
+                        "role": "collaboration coordinator",
                         "command_policy": {
                             "allow": ["docker", "ssh", "open"],
                             "allow_host": True,
@@ -168,6 +169,12 @@ def test_live_config_strips_secrets_and_broad_command_authority(
         assert settings["per_turn_token_limit"] == 200
     serialized = path.read_text()
     config = json.loads(serialized)
+    if lane == "source":
+        assert config["agents"][source._IMPLEMENTER]["role"] == "coding implementer"
+        assert (
+            config["agents"][source._CODE_REVIEWER]["role"] == "read-only code reviewer"
+        )
+        assert config["agents"][source._PARENT]["role"] == "collaboration coordinator"
     assert "unit-provider-credential" not in serialized
     assert (
         "must-stay-private" not in serialized and "UNRELATED_SECRET" not in serialized
