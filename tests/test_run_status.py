@@ -1,5 +1,6 @@
 from openminion.services.runtime.run_status import (
     RUN_STATE_COMPLETED,
+    RUN_STATE_FAILED,
     RUN_STATE_QUEUED,
     RUN_STATE_RESPONDING,
     RUN_STATE_RUNNING,
@@ -8,7 +9,7 @@ from openminion.services.runtime.run_status import (
     list_session_runs,
 )
 from openminion.modules.storage.runtime.migrations import migrate_database
-from openminion.modules.storage.runtime.session_store import SessionStore
+from openminion.modules.storage.runtime.session_store import SessionStore, lifecycle
 from openminion.modules.storage.runtime.sqlite import connect_database
 
 
@@ -129,3 +130,53 @@ def test_list_session_run_events_limit_returns_latest_n_events(tmp_path) -> None
     assert len(events) == 2
     assert events[0].current_step == "step-3"
     assert events[1].current_step == "step-4"
+
+
+def test_run_state_follows_insertion_order_when_clock_steps_back(
+    tmp_path, monkeypatch
+) -> None:
+    connection, sessions, session = _build_sessions(tmp_path)
+    # The wall clock steps back ~0.85 s between running and failed.
+    queued_at = "2026-10-21T17:16:59.564721+00:00"
+    failed_at = "2026-10-21T17:16:58.715677+00:00"
+    stamps = iter([queued_at, "2026-10-21T17:16:59.602657+00:00", failed_at])
+    monkeypatch.setattr(lifecycle, "utc_now_iso", lambda: next(stamps))
+    try:
+        appended = [
+            append_run_state_event(
+                sessions,
+                session_id=session.id,
+                run_id="run-1",
+                state=state,
+                current_step=step,
+            )
+            for state, step in (
+                (RUN_STATE_QUEUED, "turn.accepted"),
+                (RUN_STATE_RUNNING, "agent.generate"),
+                (RUN_STATE_FAILED, "turn.failed"),
+            )
+        ]
+        runs = list_session_runs(sessions, session_id=session.id, limit=10)
+        events = list_session_run_events(
+            sessions, session_id=session.id, run_id="run-1"
+        )
+        latest = list_session_run_events(
+            sessions, session_id=session.id, run_id="run-1", limit=1
+        )
+    finally:
+        connection.close()
+
+    assert [event.id for event in events] == [event.id for event in appended]
+    assert [event.state for event in events] == [
+        RUN_STATE_QUEUED,
+        RUN_STATE_RUNNING,
+        RUN_STATE_FAILED,
+    ]
+    assert [event.current_step for event in latest] == ["turn.failed"]
+    assert len(runs) == 1
+    summary = runs[0]
+    assert summary.state == RUN_STATE_FAILED
+    assert summary.current_step == "turn.failed"
+    assert summary.event_count == 3
+    assert summary.started_at == queued_at
+    assert summary.ended_at == failed_at
