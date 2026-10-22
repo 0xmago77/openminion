@@ -15,11 +15,7 @@ from openminion.modules.brain.constants import (
     BRAIN_STATE_ERROR,
 )
 from openminion.modules.brain.interfaces import BRAIN_ADAPTER_INTERFACE_VERSION
-from .permission_mode import (
-    canonical_permission_mode,
-    canonical_permission_overrides,
-    permission_mode_from_inputs,
-)
+from .permission_mode import permission_mode_from_inputs
 from openminion.modules.tool import (
     Policy,
     RuntimeContext,
@@ -43,6 +39,7 @@ from .command_metadata import (
     _inject_runtime_message_ref,
     _merge_orchestration_context_metadata,
     _orchestration_metadata_from_command,
+    _runtime_permissions_from_command,
     _runtime_workspace_from_command,
 )
 from .policy_authorization import (
@@ -415,17 +412,6 @@ class ToolAdapter:
         args = dict(raw_args) if isinstance(raw_args, Mapping) else {}
         inputs = command.get("inputs")
         permission_mode = permission_mode_from_inputs(inputs)
-        command_metadata = command.get("meta")
-        base_permission_mode = canonical_permission_mode(
-            command_metadata.get("base_permission_mode")
-            if isinstance(command_metadata, Mapping)
-            else None
-        )
-        permission_overrides = canonical_permission_overrides(
-            command_metadata.get("permission_overrides")
-            if isinstance(command_metadata, Mapping)
-            else None
-        )
         replay_confirmation_metadata = _confirmation_replay_metadata(inputs)
         start_time = time.monotonic()
         runtime_message_ref = _extract_runtime_message_ref(command=command, args=args)
@@ -640,9 +626,7 @@ class ToolAdapter:
             agent_query=self.agent_query,
             telemetry_session_id=session_id,
             telemetry_turn_id=trace_id,
-            permission_mode=permission_mode,
-            base_permission_mode=base_permission_mode,
-            permission_overrides=permission_overrides,
+            **_runtime_permissions_from_command(command, permission_mode),
             agent_profile=self.agent_profile,
             tool_registry=self.registry,
             task_manager=self.task_manager,
