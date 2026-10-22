@@ -96,7 +96,9 @@ def mcp_audit_fields(data: Mapping[str, Any]) -> dict[str, Any]:
 
 def structural_result_fields(data: Mapping[str, Any]) -> dict[str, Any]:
     fields: dict[str, Any] = {}
-    result_status = data.get("execution_status") or data.get("status")
+    result_status = (
+        data.get("execution_status") or data.get("status") or data.get("result_status")
+    )
     if isinstance(result_status, str):
         if result_status in _RESULT_STATUSES:
             fields["result_status"] = result_status

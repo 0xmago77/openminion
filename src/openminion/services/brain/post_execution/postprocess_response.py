@@ -5,6 +5,10 @@ from typing import Any
 from openminion.base.config.core import resolve_default_agent_id
 from openminion.base.types import AgentResponse, Message
 from openminion.modules.brain.runner import BrainRunner
+from openminion.modules.tool.diagnostics.events import (
+    structural_security_tool_results,
+    structural_tool_results,
+)
 from openminion.services.agent.execution.finalization import (
     extract_finalization_status_from_text,
     unwrap_final_answer_envelope,
@@ -39,13 +43,16 @@ async def _postprocess_turn(
         response_text,
         termination_reason,
         tool_results_payload,
-    ) = await _prepare_response_text_and_tool_results(
-        self,
+    ) = await self._apply_tool_result_postprocess(
         step_out=step_out,
         message=message,
         session_id=session_id,
         turn_id=turn_id,
         active_mode_name=active_mode_name,
+        response_text=str(step_out.message or "").strip(),
+        termination_reason=(
+            "brain_completion" if step_out.status == "stopped" else "model_final"
+        ),
     )
     response_text, finalization_payload = _normalize_final_response_text(
         response_text=response_text,
@@ -79,30 +86,6 @@ async def _postprocess_turn(
         metadata=metadata,
         response_text=response_text,
         is_pae_idle_tick_noop=is_pae_idle_tick_noop,
-    )
-
-
-async def _prepare_response_text_and_tool_results(
-    self,
-    *,
-    step_out: Any,
-    message: Message,
-    session_id: str,
-    turn_id: str,
-    active_mode_name: str | None,
-) -> tuple[str, str, list[dict[str, Any]]]:
-    response_text = str(step_out.message or "").strip()
-    termination_reason = (
-        "brain_completion" if step_out.status == "stopped" else "model_final"
-    )
-    return await self._apply_tool_result_postprocess(
-        step_out=step_out,
-        message=message,
-        session_id=session_id,
-        turn_id=turn_id,
-        active_mode_name=active_mode_name,
-        response_text=response_text,
-        termination_reason=termination_reason,
     )
 
 
@@ -180,6 +163,7 @@ def _build_postprocess_response_metadata(
     _attach_telemetry_flag(self, metadata=metadata)
     _attach_postprocess_action_metadata(
         self,
+        runner=runner,
         metadata=metadata,
         step_out=step_out,
         tool_results_payload=tool_results_payload,
@@ -216,6 +200,7 @@ def _attach_telemetry_flag(self, *, metadata: dict[str, str]) -> None:
 def _attach_postprocess_action_metadata(
     self,
     *,
+    runner: BrainRunner,
     metadata: dict[str, str],
     step_out: Any,
     tool_results_payload: list[dict[str, Any]],
@@ -225,6 +210,14 @@ def _attach_postprocess_action_metadata(
     cumulative_tool_results_payload = _cumulative_tool_results_from_step_output(
         step_out=step_out, tool_results_payload=tool_results_payload
     )
+    if cumulative_tool_results_payload:
+        project = (
+            structural_tool_results
+            if runner.profile.structural_tool_results
+            else structural_security_tool_results
+        )
+        tool_results_payload = project(tool_results_payload)
+        cumulative_tool_results_payload = project(cumulative_tool_results_payload)
     self._attach_tool_result_metadata(
         metadata=metadata,
         termination_reason=termination_reason,

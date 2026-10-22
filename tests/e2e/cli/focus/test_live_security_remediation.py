@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from argparse import Namespace
 from hashlib import sha256
 import json
 import os
@@ -19,7 +20,9 @@ import pytest
 from openminion.base.redaction import redact_sensitive_text
 from openminion.cli.commands.autonomy_project import (
     build_project_launch_request,
+    configured_cron_store,
     launch_project,
+    schedule_project_wake,
 )
 from openminion.cli.commands.daemon import daemon_start, daemon_stop
 from openminion.modules.artifact.config import (
@@ -38,6 +41,7 @@ from openminion.modules.task.constants import (
     DEFAULT_PROJECT_VERIFICATION_TIMEOUT_SECONDS,
 )
 from openminion.modules.task.project.models import ProjectCheckpoint
+from openminion.modules.tool.diagnostics.events import structural_tool_results
 from openminion.tools.security.review_schemas import SecurityFindingReview
 from openminion.tools.security.schemas import SecurityAuditReport
 from tests.e2e.cli.focus.harness import FocusProbe, FocusScenario
@@ -247,6 +251,14 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
         for message in messages
         if message.role == "outbound"
     ]
+    for message in messages:
+        if message.role != "outbound":
+            continue
+        for field in ("tool_results", "tool_calls_cumulative"):
+            results = json.loads(message.metadata[field])
+            assert results and results == structural_tool_results(results), (
+                f"persisted {field} contains nonstructural tool data"
+            )
     recovered = _assert_readonly_outcomes(events, expected_security, terminal_statuses)
     usage = _usage(
         _events(probe.data_root / "telemetry/telemetry.db", 0),
@@ -415,6 +427,20 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
             turn_target="focus",
         )
         run = launch_project(request, store=store, manager=manager)
+        cron_store = configured_cron_store(
+            Namespace(
+                config=str(probe.config_path),
+                home_root=probe.environment()["OPENMINION_HOME"],
+                data_root=str(probe.data_root),
+            ),
+            config_ref=run.execution_selectors.config_ref,
+        )
+        try:
+            run = schedule_project_wake(
+                cron_store=cron_store, store=store, manager=manager, run=run
+            )
+        finally:
+            cron_store.close()
         initial = manager.get_checkpoint(run.task_id, run.checkpoint_id)
         checkpoint = ProjectCheckpoint.model_validate(initial)
         assert (
@@ -502,7 +528,7 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
             timeout=60,
         )
     return {
-        "launch": "operator-approved existing launch_project API",
+        "launch": "operator-approved existing launch_project + schedule_project_wake APIs",
         "run_id": run.run_id,
         "proof_packet_ref": run.proof_packet_ref,
         "accepted_child_ref": accepted_ref,

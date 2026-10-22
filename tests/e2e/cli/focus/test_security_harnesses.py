@@ -258,6 +258,54 @@ def test_operator_reads_full_canonical_evidence_and_complete_handoff(
             source._operator_evidence(probe, ctl, [review_ref])
 
 
+def test_source_repair_schedules_persisted_focus_project_wake(
+    live_config, tmp_path, monkeypatch, python_bin, openminion_root, framework_root
+):
+    target = tmp_path / "target"
+    source._fixture(target)
+    config, _, _ = source._configuration(tmp_path, target, monkeypatch)
+    probe = FocusProbe(
+        python_bin=python_bin,
+        openminion_root=openminion_root,
+        framework_root=framework_root,
+        data_root=tmp_path / "data",
+        config_path=config,
+        agent_id=source._PARENT,
+        workdir=target,
+        session_id="repair-wake",
+    )
+
+    def inspect_before_wait(probe, run_id, _predicate, *, timeout):
+        store, manager = source._project_owners(probe)
+        sessions = source.SQLiteSessionStore(
+            probe.data_root / "state/brain/sessions.db"
+        )
+        try:
+            run = store.require(run_id)
+            task = manager.get_task(run.task_id)
+            job = sessions.get_cron_job(task.metadata["linked_cron_job_id"])
+            assert job["agent_id"] == source._PARENT
+            assert job["payload"] == {
+                "kind": "projectCycle",
+                "run_id": run_id,
+                "task_id": run.task_id,
+                "goal_id": run.goal_id,
+                "session_id": probe.session_id,
+                "user": "focus",
+                "cycle_interval_seconds": 1,
+            }
+            assert run.continuation_policy.resume_on_daemon_restart
+            assert timeout == 660
+        finally:
+            sessions.close()
+            manager.close()
+        raise RuntimeError("stop before provider execution")
+
+    monkeypatch.setattr(source, "_wait_for_run", inspect_before_wait)
+    with pytest.raises(RuntimeError, match="stop before provider execution"):
+        source._repair(probe, None, "approved finding F-1", "python -B verify.py")
+
+
 @pytest.mark.parametrize("changed", [False, True])
 def test_lab_approval_binds_complete_command_with_structural_arguments(
     tmp_path, monkeypatch, changed
