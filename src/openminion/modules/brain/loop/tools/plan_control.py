@@ -91,26 +91,26 @@ def _plan_step_input_schema() -> dict[str, Any]:
         "properties": {
             "step_id": {
                 "type": "string",
-                "description": "Stable id for this step within the plan.",
+                "description": "Stable plan-local step ID.",
             },
             "description": {
                 "type": "string",
-                "description": "Short model-authored description of the step.",
+                "description": "Short model-authored step description.",
             },
             "status": {
                 "type": "string",
                 "enum": list(PLAN_STEP_STATUSES),
-                "description": "Current step status.",
+                "description": "Current status.",
             },
             "estimated_difficulty": {
                 "type": "string",
                 "enum": list(PLAN_STEP_DIFFICULTIES),
-                "description": "Coarse effort estimate for this step.",
+                "description": "Coarse effort estimate.",
             },
             "depends_on": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Step ids that must be completed first.",
+                "description": "Prerequisite step IDs.",
             },
             "tool_families": {
                 "type": "array",
@@ -118,11 +118,11 @@ def _plan_step_input_schema() -> dict[str, Any]:
                     "type": "string",
                     "enum": sorted(TASK_PLAN_TOOL_FAMILIES),
                 },
-                "description": "Bounded tool-family hints, not concrete tool ids.",
+                "description": "Bounded tool-family hints, not tool IDs.",
             },
             "output_summary": {
                 "type": "string",
-                "description": "Bounded summary of completed step output.",
+                "description": "Bounded completed-output summary.",
             },
             "blocker_type": {"type": "string"},
             "blocker_details": {"type": "string"},
@@ -143,8 +143,8 @@ def build_plan_tool_spec() -> ToolSpec:
     return ToolSpec(
         name=PLAN_TOOL_NAME,
         description=(
-            "Record or update the session task plan. Use this loop-control tool "
-            "for multi-step work instead of writing task-plan control trailers."
+            "Record or update multi-step session plans here, "
+            "not with task-plan control trailers."
         ),
         input_schema={
             "type": "object",
@@ -152,21 +152,19 @@ def build_plan_tool_spec() -> ToolSpec:
                 "action": {
                     "type": "string",
                     "enum": sorted(PLAN_TOOL_ACTIONS),
-                    "description": "Plan lifecycle action to record.",
+                    "description": "Plan lifecycle action.",
                 },
                 "plan_id": {"type": "string"},
                 "objective": {
                     "type": "string",
                     "description": (
-                        "Optional human-readable objective. When omitted, the "
-                        "runtime falls back to plan_id."
+                        "Optional human-readable objective; defaults to plan_id."
                     ),
                 },
                 "workflow_id": {
                     "type": "string",
                     "description": (
-                        "Optional reusable workflow id from the skill-owned "
-                        "workflow catalog."
+                        "Optional reusable ID from the skill-owned workflow catalog."
                     ),
                 },
                 "workflow_version_hash": {
@@ -177,10 +175,7 @@ def build_plan_tool_spec() -> ToolSpec:
                 },
                 "root_goal_id": {
                     "type": "string",
-                    "description": (
-                        "Optional reverse link to the root goal that owns "
-                        "this task plan."
-                    ),
+                    "description": ("Optional reverse link to the owning root goal."),
                 },
                 "criterion_ids": {
                     "type": "array",
@@ -199,13 +194,13 @@ def build_plan_tool_spec() -> ToolSpec:
                 "reason": {"type": "string"},
                 "revision_id": {
                     "type": "string",
-                    "description": "Required and nonempty for action=revise in a project turn; use a new revision ID. Optional outside project turns.",
+                    "description": "Required nonempty new revision ID for action=revise in a project turn. Optional outside project turns.",
                 },
                 "predecessor_revision_id": {"type": "string"},
                 "verifier_refs": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Required nonempty array for action=revise in a project turn; reference the existing verifier evidence supporting this revision. Optional outside project turns.",
+                    "description": "Required nonempty existing verifier evidence refs for action=revise in a project turn. Optional outside project turns.",
                 },
                 "revised_steps": {
                     "type": "array",

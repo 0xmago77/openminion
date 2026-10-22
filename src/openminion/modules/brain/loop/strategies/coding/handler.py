@@ -61,6 +61,7 @@ from .llm import DefaultCodingLLMRuntime
 from .loop_state import CodingLoopState
 from .plan import CodingPhase, CodingPlan, coding_plan_from_payload
 from .planning_flow import CodingPlanningMixin
+from .prompts import build_coding_project_replay_context
 from .reserves import CodingReserveMixin
 from .resume import CodingResumeMixin
 from .runtime import (
@@ -564,6 +565,15 @@ class CodingProfileRunner(
             if ctx.user_input:
                 self._loop_state.messages.append(
                     Message(role="user", content=ctx.user_input)
+                )
+            elif fresh_project_plan and canonical_task_plan is not None:
+                self._loop_state.messages.append(
+                    Message(
+                        role="system",
+                        content=build_coding_project_replay_context(
+                            ctx.state.goal, canonical_task_plan
+                        ),
+                    )
                 )
             if canonical_task_plan is None:
                 initialized = self._initialize_plan(

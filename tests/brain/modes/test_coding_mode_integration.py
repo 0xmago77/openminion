@@ -3668,6 +3668,83 @@ def test_coding_loop_replays_confirmed_batch_without_policy_grant_api() -> None:
     ]
 
 
+@pytest.mark.parametrize("mode", ["sync", "review"])
+def test_project_confirmation_replay_preserves_context_in_provider_request(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    from openminion.modules.brain.loop.strategies.coding import handler
+    from openminion.modules.brain.runner.tick.context import (
+        _apply_pending_confirmation_metadata_for_replay,
+    )
+    from openminion.modules.llm.providers.base import ProviderResponse
+    from openminion.services.agent.service import AgentService
+    from openminion.services.brain.client import OpenMinionLLMClient
+
+    state = _state()
+    state.goal = "allow_once"
+    state.pending_confirmation_goal = (
+        "Repair app.py only; review the child before acceptance. No exec.run."
+    )
+    state.pending_confirmation_last_user_input = state.pending_confirmation_goal
+    _apply_pending_confirmation_metadata_for_replay(state)
+    state.module_state["adaptive_loop"] = {
+        "message_transcript": [{"role": "user", "content": "stale plan and task"}]
+    }
+    plan = {
+        "plan_id": "approved-repair-plan",
+        "objective": "Repair authorization",
+        "steps": [
+            {"step_id": "implement", "description": "Implement", "status": "completed"},
+            {"step_id": "review", "description": "Review", "status": "in_progress"},
+            {"step_id": "accept", "description": "Accept", "status": "pending"},
+        ],
+    }
+    monkeypatch.setattr(handler, "_canonical_project_plan", lambda _: (plan, True))
+    payloads = []
+
+    async def record(request):
+        payloads.append(AgentService._provider_request_to_llm_payload(None, request))
+        return ProviderResponse(text="Awaiting the next project step.")
+
+    client = OpenMinionLLMClient(
+        SimpleNamespace(name="recording"), invoke_provider_request=record
+    )
+    command = ToolCommand(
+        title="Delegate", tool_name="task.delegate", args={"mode": mode}
+    )
+    action = ActionResult(
+        command_id=command.command_id,
+        status="success",
+        summary="Verified isolated child; parent unchanged until acceptance.",
+        outputs={"child_artifact": "child-artifact-1", "status": "passed"},
+    )
+    executor = _FakeCommandExecutor(
+        outcomes=[
+            CommandExecutionOutcome(approved_command=command, action_result=action)
+        ]
+    )
+    ctx = _ctx(client, executor, state=state, user_input=None)
+    ctx.decision.reason_code = "confirmation_replay"
+    ctx.decision._seeded_commands = [command]
+
+    CodingMode().execute(ctx)
+
+    messages = payloads[0][0]
+    rendered = json.dumps(messages)
+    assert rendered.count(state.goal) == 1
+    assert rendered.count(plan["plan_id"]) == 1
+    assert "stale plan and task" not in rendered
+    assert json.dumps(plan, sort_keys=True) in messages[0]["content"]
+    tool_index = next(
+        i for i, message in enumerate(messages) if message["role"] == "tool"
+    )
+    assert messages[tool_index - 1]["tool_calls"][0]["id"] == command.command_id
+    result = json.loads(messages[tool_index]["content"])
+    assert result["summary"] == action.summary
+    assert result["outputs"]["child_artifact"] == "child-artifact-1"
+    assert [call.command_id for call in executor.calls] == [command.command_id]
+
+
 def test_coding_loop_replays_seeded_confirmation_decision_without_llm_regeneration() -> (
     None
 ):
