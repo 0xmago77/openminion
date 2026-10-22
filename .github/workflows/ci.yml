@@ -104,6 +104,44 @@ jobs:
               assert " INFO " not in response.stdout, response.stdout
           PY
 
+      - name: Exercise cron schedule time zones
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          import tempfile
+          from datetime import datetime, timedelta, timezone
+
+          with tempfile.TemporaryDirectory() as tmp:
+              data_root = os.path.join(tmp, ".openminion")
+              base = [sys.executable, "-m", "openminion", "--home-root", tmp, "--data-root", data_root]
+              subprocess.run([*base, "config", "init", "--provider", "echo", "--force"], check=True)
+              tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+              weekdays = ["--cron", "0 9 * * 1-5"]
+              created = (True, "")
+              rejected = (False, "Invalid schedule: unknown timezone: Mars/Phobos")
+              cases = [
+                  (weekdays, created),
+                  ([*weekdays, "--tz", "UTC"], created),
+                  ([*weekdays, "--tz", "Europe/Rome"], created),
+                  (["--at", tomorrow], created),
+                  ([*weekdays, "--tz", "Mars/Phobos"], rejected),
+              ]
+              for schedule, expected in cases:
+                  completed = subprocess.run(
+                      [*base, "cron", "create", "--instruction", "say hi", *schedule, "--json"],
+                      check=False,
+                      capture_output=True,
+                      text=True,
+                  )
+                  result = json.loads(completed.stdout)
+                  outcome = (result["ok"], result["error"])
+                  assert outcome == expected, (schedule, outcome)
+          PY
+
   lint:
     runs-on: ubuntu-latest
 
