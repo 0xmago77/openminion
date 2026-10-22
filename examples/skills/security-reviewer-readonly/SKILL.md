@@ -44,6 +44,12 @@ reports. Stop before remediation; acceptance alone does not authorize a repair.
    `rejected`, or `needs_more_evidence`. Accepted findings require a concrete
    remediation objective and verification criteria. Requests for more evidence
    must say what is missing. Do not review source findings already rejected.
+   For `accepted`, provide `remediation_objective` and a nonempty
+   `verification_criteria` JSON array; omit `evidence_requests`.
+   For `needs_more_evidence`, provide a nonempty `evidence_requests` JSON array;
+   omit `remediation_objective` and `verification_criteria`.
+   For `rejected`, omit all three fields. Omit irrelevant fields rather than
+   supplying null, empty strings, or empty arrays.
 4. Publish the decisions with `security.review_report`, `review_kind=initial`,
    the canonical `report_ref`, `finding_reviews`, summary, and limitations.
    List fields use JSON arrays: `finding_reviews=[{...}]` and
