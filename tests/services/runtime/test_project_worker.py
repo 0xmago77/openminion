@@ -49,6 +49,9 @@ from openminion.modules.task.plan import (
 from openminion.modules.task.project import checkpoints as project_checkpoints
 from openminion.modules.task.project.checkpoints import plan_checkpoint_payload
 from openminion.modules.task.project.turn import project_turn_result_from_response
+from openminion.modules.task.project.verification import (
+    evaluate_project_turn_verification,
+)
 from openminion.modules.task.project.effects import (
     ProjectEffectRecord,
     ProjectEffectStatus,
@@ -460,6 +463,27 @@ def test_iteration_extension_allows_next_cycle_after_worker_reopen(tmp_path) -> 
     assert len(requests) == 2
 
 
+@pytest.mark.parametrize(
+    ("status", "pending_id"),
+    [("waiting_user", ""), ("done", ""), ("done", "stale-confirmation")],
+)
+def test_unreferenced_evidence_remains_invalid_outside_confirmation_pause(
+    tmp_path, status: str, pending_id: str
+) -> None:
+    _, _, run = _project(tmp_path)
+    turn = project_turn_result_from_response(
+        response={
+            "metadata": {
+                "brain_status": status,
+                "pending_confirmation_command_id": pending_id,
+                "tool_results": [{"tool_name": "git.status", "ok": True}],
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="evidence_refs are required"):
+        evaluate_project_turn_verification(run, turn, ())
+
+
 def test_pending_confirmation_answers_resume_exact_command_without_verifying_pause(
     tmp_path,
 ) -> None:
@@ -483,8 +507,11 @@ def test_pending_confirmation_answers_resume_exact_command_without_verifying_pau
             {
                 "brain_status": "waiting_user",
                 "pending_confirmation_command_id": "cmd-2",
+                "tool_calls_cumulative": json.dumps(
+                    [{"tool_name": "git.status", "ok": True, "call_id": "status-1"}]
+                ),
             },
-            {"brain_status": "done"},
+            {"brain_status": "done", "artifact_refs": ["artifact:accepted-child"]},
         ]
     )
 
@@ -507,6 +534,9 @@ def test_pending_confirmation_answers_resume_exact_command_without_verifying_pau
         checkpoint = load_latest_project_checkpoint(manager, task_id=run.task_id)
         assert result.run.status == AutonomyRunStatus.WAITING_FOR_INPUT
         assert not verified and not checkpoint.payload["plan_revision_required"]
+        if command_id == "cmd-2":
+            assert checkpoint.payload["verification_closure"]["status"] == "needs_user"
+        assert checkpoint.payload["verification_closure"]["evidence_refs"] == []
         assert checkpoint.payload["pending_confirmation_command_id"] == command_id
         report = build_project_report_from_task(manager, task_id=run.task_id)
         assert report.pending_confirmation_command_id == command_id
@@ -522,6 +552,8 @@ def test_pending_confirmation_answers_resume_exact_command_without_verifying_pau
     result = worker.run_cycle(run.run_id)
     checkpoint = load_latest_project_checkpoint(manager, task_id=run.task_id)
     assert result.run.status == AutonomyRunStatus.COMPLETED and verified == [True]
+    assert checkpoint.payload["verification_closure"]["status"] == "verified"
+    assert result.project_run.artifact_refs == ("artifact:accepted-child",)
     assert [request.prompt for request in requests[1:]] == ["allow_once", "allow_once"]
     assert all("task.delegate" in request.allowed_tools for request in requests)
     assert not checkpoint.payload.get("pending_confirmation_command_id")
