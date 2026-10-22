@@ -104,7 +104,12 @@ class TaskDelegateArgs(BaseModel):
     )
     instruction: str = Field(
         default="",
-        description="Instruction for sync/async work or the exact review objective.",
+        description=(
+            "Instruction for sync/async work or the exact review objective. For "
+            "code_bearing work, name files relative to the repository; do not "
+            "prescribe the parent workspace path. The runtime supplies the "
+            "isolated checkout."
+        ),
     )
     task_id: str = Field(
         default="",
@@ -156,7 +161,9 @@ class TaskDelegateArgs(BaseModel):
         default=False,
         description=(
             "Set true for synchronous repository edits that must run in an isolated "
-            "child worktree and return a durable child_artifact for review."
+            "child worktree and return a durable child_artifact for review. "
+            "Child edits remain isolated and the parent checkout is unchanged "
+            "until review succeeds and accept is explicitly called."
         ),
     )
 
@@ -704,9 +711,12 @@ def _delegate_and_verify_code(
 ) -> tuple[Any, tuple[TestEvidence, ...]]:
     instruction = (
         f"{args.instruction}\n\n"
-        "Work only in the provided isolated checkout. Make the requested edits and "
-        "return when they are complete. The runtime owns verification and artifact "
-        "creation; do not claim or fabricate a child artifact."
+        f"The authoritative workspace for this task is {lease.worktree}. "
+        "Use repository-relative file paths in this isolated checkout. Parent "
+        "source paths are references only; do not use them as the working directory. "
+        "Make the requested edits and return when they are complete. The runtime "
+        "owns verification and artifact creation; do not claim or fabricate a "
+        "child artifact."
     )
     completed = False
     try:

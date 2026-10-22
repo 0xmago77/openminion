@@ -820,6 +820,125 @@ def test_build_turn_response_metadata_recovers_terminal_plan_signal() -> None:
     }
 
 
+@pytest.mark.parametrize("complete", [False, True])
+def test_replaced_plan_projection_roundtrips_current_sqlite_facts(tmp_path, complete):
+    from openminion.modules.brain.loop.tools.plan_control import handle_plan_tool_call
+    from openminion.modules.session import SQLiteSessionStore
+    from openminion.modules.task.project.checkpoints import (
+        save_project_run_checkpoint,
+        updated_checkpoint_task_plan,
+    )
+    from openminion.modules.task.project.turn import project_turn_result_from_response
+    from openminion.services.brain.post_execution.postprocess_metadata import (
+        _attach_session_task_plan_metadata,
+    )
+    from tests.brain.tool_loops.test_plan_control import _Ctx
+    from tests.task.test_project_run import _create_project_task
+
+    sessions = SQLiteSessionStore(tmp_path / "sessions.db")
+    sessions.create_session(session_id="s-plan", initial_agent_id="agent")
+    manager, project_run = _create_project_task(tmp_path)
+    ctx = _Ctx(session_api=sessions)
+    steps = [{"step_id": "repair", "description": "Repair the fixture"}]
+    try:
+        for plan_id in ("old-plan", "new-plan"):
+            declared = handle_plan_tool_call(
+                loop_ctx=ctx,
+                arguments={
+                    "action": "declare",
+                    "plan_id": plan_id,
+                    "objective": "Repair",
+                    "steps": steps,
+                },
+            )
+            assert declared.status == "success"
+            if plan_id == "old-plan":
+                checkpoint = save_project_run_checkpoint(
+                    manager,
+                    project_run,
+                    checkpoint_id="old-plan",
+                    payload={"task_plan": declared.outputs["task_plan"]},
+                )
+            revised = handle_plan_tool_call(
+                loop_ctx=ctx,
+                arguments={
+                    "action": "revise",
+                    "plan_id": plan_id,
+                    "revision_id": f"{plan_id}-revision",
+                    "reason": "Verifier feedback",
+                    "verifier_refs": ["verify:failed"],
+                    "revised_steps": steps,
+                },
+            )
+            assert revised.status == "success"
+        assert (
+            handle_plan_tool_call(
+                loop_ctx=ctx,
+                arguments={
+                    "action": "step_completed",
+                    "plan_id": "new-plan",
+                    "step_id": "repair",
+                    "output_summary": "fixed",
+                },
+            ).status
+            == "success"
+        )
+        if complete:
+            assert (
+                handle_plan_tool_call(
+                    loop_ctx=ctx,
+                    arguments={
+                        "action": "complete",
+                        "plan_id": "new-plan",
+                        "reason": "verified",
+                    },
+                ).status
+                == "success"
+            )
+        metadata = {"task_plan": json.dumps(declared.outputs["task_plan"])}
+        _attach_session_task_plan_metadata(
+            metadata=metadata,
+            runner=SimpleNamespace(session_api=sessions),
+            session_id="s-plan",
+            request_id="trace",
+        )
+        assert "task_plan.abandoned" not in metadata
+        assert [
+            item["plan_id"] for item in json.loads(metadata["task_plan.revisions"])
+        ] == ["new-plan"]
+        turn = project_turn_result_from_response(response={"metadata": metadata})
+        plan, revision, count = updated_checkpoint_task_plan(checkpoint, turn)
+        assert plan.plan_id == "new-plan" and plan.steps[0].status == "completed"
+        assert plan.status == ("completed" if complete else "active")
+        assert revision.plan_id == "new-plan" and count == 1
+        assert (
+            sessions.list_events("s-plan", event_type="task_plan.abandoned")[0][
+                "payload"
+            ]["plan_id"]
+            == "old-plan"
+        )
+        invalid = {
+            **metadata,
+            "task_plan.abandoned": json.dumps(
+                {"plan_id": "old-plan", "reason": "wrong current plan"}
+            ),
+        }
+        _attach_session_task_plan_metadata(
+            metadata=invalid,
+            runner=SimpleNamespace(session_api=sessions),
+            session_id="s-plan",
+            request_id="trace",
+        )
+        with pytest.raises(ValueError, match="must match the checkpoint task plan"):
+            updated_checkpoint_task_plan(
+                checkpoint,
+                project_turn_result_from_response(response={"metadata": invalid}),
+            )
+    finally:
+        manager.close()
+        sessions.close()
+
+
 def test_build_turn_response_metadata_captures_provider_error_facts() -> None:
     bridge = DummyBridge()
     bridge._config = SimpleNamespace(

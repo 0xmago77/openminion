@@ -111,6 +111,14 @@ def test_task_delegate_schema_makes_lifecycle_order_explicit() -> None:
     agent_description = TaskDelegateArgs.model_fields["agent_id"].description or ""
     assert "Call agent.list first" in agent_description
     assert "never invent" in agent_description
+    instruction_description = TaskDelegateArgs.model_fields["instruction"].description
+    assert instruction_description is not None
+    assert "name files relative to the repository" in instruction_description
+    assert "runtime supplies the isolated checkout" in instruction_description
+    code_description = TaskDelegateArgs.model_fields["code_bearing"].description
+    assert code_description is not None
+    assert "parent checkout is unchanged" in code_description
+    assert "until review succeeds and accept is explicitly called" in code_description
 
 
 def test_readonly_blocks_task_delegate() -> None:
@@ -611,6 +619,7 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
 
     delegate_timeouts: list[int] = []
     verifier_timeouts: list[int] = []
+    caller_instruction = f"Set VALUE to 1 in {repository / 'value.py'}."
 
     def run_verifier(commands, *, workspace, timeout_seconds):  # noqa: ANN001
         verifier_timeouts.append(timeout_seconds)
@@ -634,6 +643,13 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
             }
             delegate_timeouts.append(kwargs["timeout_seconds"])
             child = Path(kwargs["workspace_root"])
+            assert child != repository and kwargs["cwd"] == str(child)
+            assert kwargs["instruction"].startswith(caller_instruction + "\n\n")
+            assert (
+                f"authoritative workspace for this task is {child}."
+                in kwargs["instruction"]
+            )
+            assert "Use repository-relative file paths" in kwargs["instruction"]
             (child / "value.py").write_text("VALUE = 1\n", encoding="utf-8")
             return A2ADelegateResult(
                 ok=True,
@@ -707,7 +723,7 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
             args={
                 "mode": "sync",
                 "agent_id": "implementer",
-                "instruction": "Set VALUE to 1.",
+                "instruction": caller_instruction,
                 "code_bearing": True,
                 "timeout_seconds": 31,
             },
