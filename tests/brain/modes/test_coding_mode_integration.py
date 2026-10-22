@@ -3716,7 +3716,10 @@ def test_project_confirmation_replay_preserves_context_in_provider_request(
         command_id=command.command_id,
         status="success",
         summary="Verified isolated child; parent unchanged until acceptance.",
-        outputs={"child_artifact": "child-artifact-1", "status": "passed"},
+        outputs={
+            "child_artifact": {"record_alias": "child-artifact-1"},
+            "status": "passed",
+        },
     )
     executor = _FakeCommandExecutor(
         outcomes=[
@@ -3741,7 +3744,7 @@ def test_project_confirmation_replay_preserves_context_in_provider_request(
     assert messages[tool_index - 1]["tool_calls"][0]["id"] == command.command_id
     result = json.loads(messages[tool_index]["content"])
     assert result["summary"] == action.summary
-    assert result["outputs"]["child_artifact"] == "child-artifact-1"
+    assert result["outputs"]["child_artifact"] == {"record_alias": "child-artifact-1"}
     assert [call.command_id for call in executor.calls] == [command.command_id]
 
 

@@ -79,18 +79,14 @@ class AgentGetArgs(BaseModel):
 
 
 class TaskDelegateArgs(BaseModel):
-    """Arguments for ``task.delegate``.
-
-    The target is exactly ``agent_id`` (accept-or-fail; no capability
-    inference). ``instruction`` is the goal handed to the sub-agent.
-    """
+    """Delegate the instruction to exactly agent_id, without capability inference."""
 
     mode: str = Field(
         default="sync",
         description=(
             'Omitting mode starts sync work; for artifact review set mode="review". '
             "child_artifact and review_criteria do not select mode. "
-            'After passing review, set mode="accept" to integrate or mode="reject" to discard. '
+            'After passing review, mode="accept" integrates; mode="reject" discards. '
             "Use sync or async to start child work with agent_id and instruction. "
             "list shows recent work; status/result/cancel require task_id; resume is unsupported. "
             "review requires agent_id, instruction, child_artifact, and review_criteria; "
@@ -100,9 +96,8 @@ class TaskDelegateArgs(BaseModel):
     agent_id: str = Field(
         default="",
         description=(
-            "Exact target sub-agent identifier for sync/async delegation or review. Call "
-            "agent.list first unless an exact visible agent_id was already supplied; "
-            "never invent a role name or alias."
+            "Exact sync/async/review agent_id. Call agent.list first unless an exact "
+            "visible agent_id is supplied; never invent a role name or alias."
         ),
     )
     instruction: str = Field(
@@ -142,16 +137,21 @@ class TaskDelegateArgs(BaseModel):
     child_artifact: dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "Durable child worktree artifact record returned by delegated "
-            "code-bearing work. Its record_alias is required for "
-            "review/accept/reject."
+            "JSON object returned as child_artifact, not an alias string. "
+            "record_alias is required for review/accept/reject."
         ),
+        json_schema_extra={
+            "properties": {
+                "record_alias": {"type": "string"},
+                "target_digest": {"type": "string"},
+                "integration_status": {"type": "string"},
+            }
+        },
     )
     workspace_root: str = Field(
         default="",
         description=(
-            "Legacy parent repository input; artifact disposition uses the "
-            "owner-bound repository instead."
+            "Legacy input; artifact disposition uses its owner-bound repository."
         ),
     )
     review_criteria: list[str] = Field(

@@ -135,6 +135,47 @@ def test_readonly_blocks_task_delegate() -> None:
     assert not is_tool_blocked_by_readonly("agent.get")
 
 
+def test_task_delegate_provider_schema_preserves_child_artifact_object() -> None:
+    from openminion.modules.llm.providers.base import ProviderToolSpec
+    from openminion.modules.llm.providers.tool_calling.contracts import (
+        build_openai_tools_payload,
+    )
+
+    schema = build_openai_tools_payload(
+        [
+            ProviderToolSpec(
+                name="task.delegate",
+                description="Delegate",
+                parameters=TaskDelegateArgs.model_json_schema(),
+            )
+        ]
+    )[0]["function"]["parameters"]["properties"]["child_artifact"]
+    artifact = {
+        "record_alias": "a2a-child:review-candidate",
+        "target_digest": "target-digest",
+        "integration_status": "pending_parent_review",
+    }
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is True
+    assert schema["properties"] == {key: {"type": "string"} for key in artifact}
+    assert "required" not in schema
+    request = {
+        "mode": "review",
+        "agent_id": "reviewer",
+        "instruction": "Review the patch",
+        "review_criteria": ["Only the authorized file changed"],
+        "child_artifact": artifact,
+    }
+    assert TaskDelegateArgs.model_validate(request).child_artifact == artifact
+    assert TaskDelegateArgs.model_validate(
+        {**request, "child_artifact": {"record_alias": artifact["record_alias"]}}
+    ).child_artifact == {"record_alias": artifact["record_alias"]}
+    with pytest.raises(ValidationError, match="valid dictionary"):
+        TaskDelegateArgs.model_validate(
+            {**request, "child_artifact": artifact["record_alias"]}
+        )
+
+
 def test_agent_list_defaults() -> None:
     args = AgentListArgs()
     assert args.status == ""
