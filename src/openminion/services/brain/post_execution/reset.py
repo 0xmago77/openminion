@@ -555,9 +555,8 @@ def _apply_open_questions_and_budget_reset(
 ) -> None:
     del user_input, preserve_existing_plan
     updated["open_questions"] = []
-    ordinary_llm_calls_max = llm_calls_max_from_runner(runner)
     updated["llm_calls_used"] = 0
-    updated["llm_calls_max"] = ordinary_llm_calls_max
+    updated["llm_calls_max"] = llm_calls_max_from_runner(runner)
     updated["budgets_remaining"] = {
         "ticks": runner.profile.budgets.max_ticks_per_user_turn,
         "tool_calls": runner.profile.budgets.max_tool_calls,
@@ -573,12 +572,11 @@ def _apply_task_backed_reset(
     state_inline: dict[str, Any],
     preservation: _TurnResetPreservation,
 ) -> None:
-    preserve_task_backed = bool(
+    if (
         preservation.preserve_existing_plan
         or preservation.preserve_followup_goal
         or preservation.preserve_pending_confirmation
-    )
-    if preserve_task_backed:
+    ):
         updated["task_backed_task_id"] = state_inline.get("task_backed_task_id")
         updated["task_backed_checkpoint_id"] = state_inline.get(
             "task_backed_checkpoint_id"
