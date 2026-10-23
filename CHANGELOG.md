@@ -15,6 +15,13 @@ This file tracks package-facing release notes for `openminion`.
   messages sharing one timestamp moves back before that group, so its
   members are replayed into history and summarized again once rather than
   left hidden (#353).
+- Report run status past a session's first 2,000 run events. Run listings
+  cover the runs seen among the newest run events and report each run's
+  state, step, start and end time, error and event count over all of its
+  events; a run's event list returns its newest events at any age; and the
+  thread lifecycle reads all of the thread's events, so it agrees with the
+  invocation lookup and the event high water. Each reader runs a fixed
+  number of queries whose rows do not grow with the history (#352).
 
 ## Current package line - 2026-10-22
 
