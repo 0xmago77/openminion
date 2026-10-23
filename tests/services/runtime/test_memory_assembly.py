@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from openminion.base.config import OpenMinionConfig
 from openminion.modules.brain.adapters.memory.runtime import MemctlAdapter
 from openminion.modules.memory.smoke import EphemeralMemorySmokeProvider
@@ -12,6 +14,7 @@ from openminion.services.runtime.memory import (
     RuntimeMemoryAssembly,
     active_runtime_memory_assembly,
     build_memory_v2_runtime_assembly,
+    build_runtime_memory_assembly,
 )
 
 
@@ -21,6 +24,43 @@ class _Service:
 
     def close(self) -> None:
         self.events.append("service.close")
+
+
+class _ArtifactStore:
+    def __init__(self, events: list[str] | None = None) -> None:
+        self.events = [] if events is None else events
+
+    def close(self) -> None:
+        self.events.append("artifactctl.close")
+
+
+class _FailingArtifactStore(_ArtifactStore):
+    def close(self) -> None:
+        super().close()
+        raise OSError("artifact index locked")
+
+
+def _unavailable_artifact_store() -> None:
+    raise OSError("artifact root unavailable")
+
+
+def _memory_v2_assembly(tmp_path, **overrides) -> RuntimeMemoryAssembly:
+    config = OpenMinionConfig()
+    config.runtime.memory_enabled = True
+    config.runtime.memory_provider = "memory_v2"
+    arguments = {
+        "config": config,
+        "agent_id": "alpha",
+        "memory_root": tmp_path,
+        "logger": logging.getLogger("test.memory.artifact"),
+        "config_manager": None,
+        "home_root": None,
+        "data_root": None,
+        "session_context": None,
+        "retrieve_ctl": None,
+        "storage_path": None,
+    }
+    return build_memory_v2_runtime_assembly(**{**arguments, **overrides})
 
 
 class _Scheduler:
@@ -120,6 +160,81 @@ def test_default_artifact_store_uses_runtime_artifact_config(
     assembly.close()
 
     assert configs == [fresh_config_manager.get("artifact")]
+
+
+@pytest.mark.parametrize("source", ["default", "factory"])
+def test_assembly_closes_artifact_store_it_obtains_once(
+    tmp_path, monkeypatch, source
+) -> None:
+    store = _ArtifactStore()
+    overrides: dict[str, object] = {}
+    if source == "default":
+        monkeypatch.setattr(
+            "openminion.services.runtime.memory.create_default_artifactctl",
+            lambda config=None: store,
+        )
+    else:
+        overrides["artifactctl_factory"] = lambda: store
+
+    assembly = _memory_v2_assembly(tmp_path, **overrides)
+
+    assert assembly.artifactctl is store
+    first = assembly.close()
+    second = assembly.close()
+
+    assert first is second
+    assert first.closed is True
+    assert store.events == ["artifactctl.close"]
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [lambda: None, _unavailable_artifact_store],
+    ids=["returns_none", "raises"],
+)
+def test_assembly_owns_no_artifact_store_the_factory_did_not_provide(
+    tmp_path, factory
+) -> None:
+    assembly = _memory_v2_assembly(tmp_path, artifactctl_factory=factory)
+
+    assert assembly.artifactctl is None
+    assert assembly.close().closed is True
+
+
+def test_gateway_only_assemblies_obtain_no_artifact_store(
+    tmp_path, monkeypatch
+) -> None:
+    created: list[object] = []
+    monkeypatch.setattr(
+        "openminion.services.runtime.memory.create_default_artifactctl",
+        lambda config=None: created.append(config),
+    )
+    disabled = OpenMinionConfig()
+    disabled.runtime.memory_enabled = False
+    smoke = OpenMinionConfig()
+    smoke.runtime.memory_provider = "memory_v2_smoke"
+    assemblies = [
+        build_runtime_memory_assembly(
+            config=config,
+            agent_id="alpha",
+            memory_root=tmp_path,
+            logger=logging.getLogger("test.memory.artifact"),
+        )
+        for config in (disabled, smoke)
+    ]
+    assemblies.append(
+        _memory_v2_assembly(
+            tmp_path,
+            resolve_runtime_memory_config_fn=lambda **kwargs: {
+                "backend": {"provider": "none"}
+            },
+        )
+    )
+
+    for assembly in assemblies:
+        assert assembly.artifactctl is None
+        assert assembly.close().closed is True
+    assert created == []
 
 
 def test_disabled_assembly_keeps_gateway_without_runtime_owners() -> None:
@@ -226,6 +341,7 @@ def test_assembly_leaves_service_open_while_scheduler_is_live() -> None:
         service=service,  # type: ignore[arg-type]
         agent_id="alpha",
         scheduler=scheduler,
+        artifactctl=_ArtifactStore(events),
     )
 
     blocked = assembly.close()
@@ -236,4 +352,28 @@ def test_assembly_leaves_service_open_while_scheduler_is_live() -> None:
 
     scheduler.live = False
     assert assembly.close().closed is True
-    assert events == ["scheduler.stop", "scheduler.stop", "service.close"]
+    assert assembly.close().closed is True
+    assert events == [
+        "scheduler.stop",
+        "scheduler.stop",
+        "service.close",
+        "artifactctl.close",
+    ]
+
+
+def test_artifact_store_close_error_keeps_recorded_memory_close() -> None:
+    events: list[str] = []
+    assembly = active_runtime_memory_assembly(
+        gateway=object(),
+        service=_Service(events),  # type: ignore[arg-type]
+        agent_id="alpha",
+        artifactctl=_FailingArtifactStore(events),
+    )
+
+    with pytest.raises(OSError, match="artifact index locked"):
+        assembly.close()
+    repeated = assembly.close()
+
+    assert repeated.closed is True
+    assert repeated.reason_code == "closed"
+    assert events == ["service.close", "artifactctl.close"]
