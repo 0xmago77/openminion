@@ -7,24 +7,24 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
-- Merge the system messages of requests to Gemini's OpenAI-compatible
-  endpoint into one, as for MiniMax, because the endpoint appears to read only
-  the last system message; schema-only control calls such as the closure
-  judge now keep their rendered context there (#347).
-- Raise the existing typed provider error when a recognized provider failure
-  interrupts the adaptive tool loop after a tool result, instead of returning
-  the error text as a completed answer; the tool is not re-run (#326).
-- Reject an explicit SDK, `POST /turns`, or submitted-turn agent that does not
-  own an existing non-room session (`TurnRequestError`, HTTP 400, or an
-  `invalid_request` turn error) before any provider request, instead of
-  silently running the session owner (#325).
-- List runtime session events by insertion order, so run status and thread
-  lifecycle keep a failed run `failed` when the wall clock steps back during a
-  turn; stored event timestamps are unchanged (#345).
-- Close the artifact store that the runtime memory assembly creates, or gets
-  from an injected `artifactctl_factory`, when the runtime closes: once, after
-  the memory service. Memory stores still leave artifact stores passed to them
-  open (#349).
+## Current package line - 2026-10-22
+
+- Keep SDK follow-up turns on the active session, reject conflicting explicit
+  agent selection, and scope identity and artifact stores to configured runtime
+  roots.
+- Preserve typed provider failures after tool execution and retain every Gemini
+  system instruction when translating OpenAI-compatible requests.
+- Require model-authored closure verdicts with rendered tool evidence so
+  completion decisions remain inspectable and provider-owned.
+- Ingest Markdown-first skills under their declared identity, expose pending
+  versions, and resolve scheduled-task time zones on Windows.
+- Add independent security-finding review and repair workflows with deterministic
+  live harnesses and local closeout coverage.
+- Order runtime session events by insertion sequence, validate malformed plan
+  declarations, retire completed project checkpoints, and keep deleted cron
+  history out of active task reconciliation.
+- Close runtime-owned memory artifact stores exactly once while preserving
+  borrowed-store ownership and scheduler shutdown behavior.
 
 ## Current package line - 2026-10-20
 
