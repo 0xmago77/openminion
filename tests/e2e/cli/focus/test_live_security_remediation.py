@@ -35,7 +35,7 @@ from openminion.modules.brain.execution.worktree_children import (
     load_child_worktree_record,
 )
 from openminion.modules.session.storage.sqlite_store import SQLiteSessionStore
-from openminion.modules.task import AutonomyRunStatus
+from openminion.modules.task import AutonomyRunStatus, TaskLifecycleState
 from openminion.modules.telemetry.trace.turn_cost import project_turn_cost
 from openminion.modules.task.constants import (
     DEFAULT_PROJECT_VERIFICATION_TIMEOUT_SECONDS,
@@ -401,9 +401,11 @@ def _handoff(
             "operator_approved": True,
             "delivery": f"Delegate exactly one code-bearing child to {_IMPLEMENTER}; parent must not edit app.py. "
             "Instruct that child to edit only app.py using the existing file.write allowance; leave verification to the runtime. "
-            f"Use task.delegate mode=review with distinct {_CODE_REVIEWER}, then mode=accept only for a passing artifact. "
+            f"Use task.delegate mode=review with distinct {_CODE_REVIEWER}; instruct the reviewer to assess the supplied diff and verifier evidence without tools. "
+            "After a passing review, accept the same full record_alias and target_digest returned by the child; never abbreviate them. "
             "No security tools, network, installation, push or PR. Do not commit; operator commits accepted patch. "
-            "Use the configured verifier and git.status; retain the actual child artifact ref and complete the public task plan.",
+            "Use the configured verifier and git.status. Call plan directly, not through tool.request. "
+            "Mark each work step completed, then complete the public task plan once.",
         }
     )
     redacted, count = redact_sensitive_text(text)
@@ -854,6 +856,19 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         )
         accepted = json.loads(ctl.read_bytes(accepted_ref))
         assert accepted == child
+        checkpoint_tasks = [
+            record
+            for record in manager.lifecycle_repository.list(limit=1000)
+            if record.metadata.get("project_task_id") == run.task_id
+        ]
+        assert checkpoint_tasks, "repair never recorded a project-owned checkpoint"
+        assert all(
+            record.state in {TaskLifecycleState.DONE, TaskLifecycleState.CANCELLED}
+            for record in checkpoint_tasks
+        ), "completed project left resumable generic checkpoints"
+        assert not manager.list_open_tasks_for_session(
+            f"{probe.session_id}::conv:{saved.project_run.project_run_id}"
+        ), "completed project conversation retained open tasks"
     finally:
         manager.close()
     with probe.session() as session:
@@ -868,6 +883,10 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         "run_id": run.run_id,
         "proof_packet_ref": run.proof_packet_ref,
         "accepted_child_ref": accepted_ref,
+        "checkpoint_tasks": [
+            {"task_id": record.task_id, "state": record.state.value}
+            for record in checkpoint_tasks
+        ],
         "child": child,
         "tool_calls": calls,
         "approvals": approvals,

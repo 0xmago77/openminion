@@ -475,3 +475,21 @@ def test_apply_mission_reset_preview_handles_inactive_preview_without_attr_error
     )
 
     assert updated == {}
+
+
+@pytest.mark.parametrize("reply", ["yes", "session", "no", "continue"])
+def test_confirmation_reset_preserves_checkpoint_identity(reply: str) -> None:
+    state = _state_with_pending()
+    state["plan"] = None
+    state["task_backed_task_id"] = "coding-task"
+    state["task_backed_checkpoint_id"] = "coding-checkpoint"
+    state["task_backed_resume_state"] = {"cursor": 2}
+
+    written = _run_reset(runner=_DummyRunner(state), user_input=reply)
+
+    for key in (
+        "task_backed_task_id",
+        "task_backed_checkpoint_id",
+        "task_backed_resume_state",
+    ):
+        assert written[key] == state[key]
