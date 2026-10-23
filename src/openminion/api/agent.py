@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, field
 import json
 from threading import Event
@@ -18,6 +18,7 @@ from openminion.modules.controlplane.constants import (
     CALLER_HANDLES_DELIVERY_METADATA_KEY,
 )
 from openminion.modules.tool.registry import ToolRegistry
+from openminion.modules.policy.runtime.action_policy import derive_tool_risk_registry
 
 if TYPE_CHECKING:  # pragma: no cover
     from openminion.api.handoff import (
@@ -183,9 +184,9 @@ class Agent(Generic[InputT, OutputT]):
         return payload
 
     def _register_tools_for_run(
-        self, registry: ToolRegistry
+        self, registry: ToolRegistry, risk_scope: ExitStack
     ) -> tuple[list[str], list[str]]:
-        """Register run-scoped tools and exposure profiles.
+        """Register run-scoped tools, risks, and exposure profiles.
 
         Returns ``(tool_names, profile_ids)`` that this call newly added, so
         cleanup never touches tools or profiles that existed beforehand. On
@@ -214,6 +215,15 @@ class Agent(Generic[InputT, OutputT]):
                     spec.prompt_visible_runtime_name = True
                     registry.add(spec)
                     registered.append(spec.name)
+            action_policy = getattr(self._runtime, "action_policy", None)
+            if action_policy is not None:
+                risk_scope.enter_context(
+                    action_policy.temporary_risks(
+                        derive_tool_risk_registry(
+                            {name: registry.get(name) for name in registered}
+                        )
+                    )
+                )
         except (ToolRuntimeError, TypeError, ValueError, AttributeError):
             self._unregister_tools(registry, registered, added_profiles)
             raise
@@ -305,10 +315,10 @@ class Agent(Generic[InputT, OutputT]):
             if registry is not None
             else nullcontext()
         )
-        with registration_scope:
+        with registration_scope, ExitStack() as risk_scope:
             try:
                 registered_tools, registered_profiles = (
-                    self._register_tools_for_run(registry)
+                    self._register_tools_for_run(registry, risk_scope)
                     if registry is not None
                     else ([], [])
                 )

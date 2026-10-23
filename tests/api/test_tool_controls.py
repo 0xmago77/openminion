@@ -11,13 +11,14 @@ from openminion import Agent, APIRuntime, Handoff, tool
 from openminion.modules.tool.framework import build_registrar
 from openminion.base.config import OpenMinionConfig, save_config
 from openminion.base.config.core import ActionPolicyRuleConfig, ActionPolicyMatchConfig
+from openminion.modules.policy.runtime.action_policy import derive_tool_risk_registry
 from tests._csc_fixtures import _csc_install_default_agent
 
 
 @pytest.fixture
 def sdk_tools(tmp_path, monkeypatch):
     requests = []
-    state = {"tool_sent": False, "unsolicited": False}
+    state = {"tool_sent": False, "unsolicited": False, "tool_name": "lookup_order"}
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
@@ -28,19 +29,35 @@ def sdk_tools(tmp_path, monkeypatch):
                 (
                     name
                     for name in names
-                    if name in {"lookup_order", "transfer_to_child"}
+                    if name
+                    in {
+                        state["tool_name"],
+                        "transfer_to_child",
+                        state.get("child_tool_name"),
+                    }
                 ),
                 None,
             )
             if state["unsolicited"] and not names:
                 name = "lookup_order"
             message = {"role": "assistant", "content": '{"answer":"LOCAL_MARKER"}'}
+            if state.get("echo_tool_result"):
+                results = [
+                    m["content"] for m in request["messages"] if m["role"] == "tool"
+                ]
+                if results:
+                    message["content"] = json.dumps({"answer": results[-1]})
             finish = "stop"
-            if name and not state["tool_sent"]:
-                state["tool_sent"] = True
+            sent_key = (
+                "child_tool_sent"
+                if name == state.get("child_tool_name")
+                else "tool_sent"
+            )
+            if name and not state.get(sent_key, False):
+                state[sent_key] = True
                 arguments = (
                     {"order_id": "A-104"}
-                    if name == "lookup_order"
+                    if name != "transfer_to_child"
                     else {"message": "Return LOCAL_MARKER."}
                 )
                 message = {
@@ -271,3 +288,127 @@ def test_explicit_handoff_remains_available_with_empty_tools(sdk_tools):
         for request in requests
         for t in request.get("tools", [])
     )
+
+
+@pytest.mark.parametrize("callback", [None, "allow", "deny"])
+@pytest.mark.parametrize("rule", [None, "ask", "block"])
+@pytest.mark.parametrize(
+    "kind", ["format_report", "lookup_order", "dangerous", "handoff"]
+)
+def test_declared_tools_enforce_policy_and_approval(sdk_tools, callback, rule, kind):
+    runtime, requests, state = sdk_tools
+    calls, approvals = [], []
+    name = "transfer_to_child" if kind == "handoff" else kind
+    state.update(tool_name=name, echo_tool_result=True)
+    runtime.config.action_policy.rules = (
+        [
+            ActionPolicyRuleConfig(
+                match=ActionPolicyMatchConfig(tool_name=name), mode=rule
+            )
+        ]
+        if rule
+        else []
+    )
+
+    @tool(
+        name=name,
+        min_scope="READ_ONLY",
+        idempotent=True,
+        dangerous=kind == "dangerous",
+    )
+    def handler(order_id: str) -> str:
+        calls.append(order_id)
+        return "HANDLER_RESULT"
+
+    child = Agent(runtime=runtime, name="child", tools=[])
+    agent = Agent(
+        runtime=runtime,
+        tools=[] if kind == "handoff" else [handler],
+        handoffs=[Handoff(target=child)] if kind == "handoff" else [],
+    )
+
+    def approve(tool_name, args, approval_id):
+        approvals.append((tool_name, args, approval_id))
+        return callback == "allow"
+
+    result = agent.run(
+        "Check A-104",
+        approval_callback=approve if callback else None,
+    )
+    needs_approval = rule == "ask" or kind in {"dangerous", "handoff"}
+    should_run = rule != "block" and (not needs_approval or callback == "allow")
+    assert len(approvals) == int(bool(callback) and needs_approval and rule != "block")
+    if approvals:
+        assert approvals[0][0] == name
+        assert approvals[0][1] == (
+            {"message": "Return LOCAL_MARKER."}
+            if kind == "handoff"
+            else {"order_id": "A-104"}
+        )
+        assert approvals[0][2]
+    child_requests = [
+        request
+        for request in requests
+        if not request.get("tools")
+        and any(
+            m.get("role") == "user" and "Return LOCAL_MARKER." in str(m.get("content"))
+            for m in request["messages"]
+        )
+    ]
+    if kind == "handoff":
+        assert bool(child_requests) is should_run
+        if should_run:
+            assert "LOCAL_MARKER" in result.text
+    else:
+        assert calls == (["A-104"] if should_run else [])
+        if should_run:
+            assert "HANDLER_RESULT" in result.text
+    if needs_approval and callback is None and rule != "block":
+        assert (
+            f"Risk: {'write' if kind == 'handoff' else 'destructive' if kind == 'dangerous' else 'read'}"
+            in result.text
+        )
+        if kind == "handoff":
+            assert "Side effects: local" in result.text
+            assert "Reversibility: unknown" in result.text
+    if rule == "block":
+        assert "configured exact-tool rule" in result.text
+
+
+def test_handoff_approval_does_not_authorize_child_tools(sdk_tools):
+    runtime, _requests, state = sdk_tools
+    calls, approvals = [], []
+    state.update(
+        tool_name="transfer_to_child",
+        child_tool_name="lookup_order",
+        echo_tool_result=True,
+    )
+    runtime.config.action_policy.rules = []
+
+    @tool(dangerous=True)
+    def lookup_order(order_id: str) -> str:
+        calls.append(order_id)
+        return "CHILD_HANDLER_RESULT"
+
+    build_registrar(lookup_order.tool_family_spec()).register(runtime.tools)
+    spec = runtime.tools.get("lookup_order")
+    spec.prompt_visible_runtime_name = True
+    for key, risk in derive_tool_risk_registry({"lookup_order": spec}).items():
+        runtime.action_policy.register_risk(key, risk)
+    child = Agent(
+        runtime=runtime,
+        name="child",
+        tools=["lookup_order"],
+    )
+
+    def approve(name, _args, _approval_id):
+        approvals.append(name)
+        return True
+
+    result = Agent(runtime=runtime, tools=[], handoffs=[Handoff(target=child)]).run(
+        "delegate",
+        approval_callback=approve,
+    )
+    assert approvals == ["transfer_to_child"]
+    assert calls == []
+    assert "Risk: destructive" in result.text
