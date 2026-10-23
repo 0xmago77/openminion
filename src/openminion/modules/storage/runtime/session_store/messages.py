@@ -77,10 +77,22 @@ class RuntimeSessionStoreMessages:
                 session_id=session_id,
                 session_turn_fence_token=session_turn_fence_token,
             )
+            # Write the session row before reading the session's last
+            # append_seq. The lock this write takes (the session row on
+            # Postgres, the database write lock on SQLite) is held until
+            # commit, so appends to one session allocate one at a time.
+            self._backend.execute_count(
+                "UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?",
+                (now, now, session_id),
+            )
             self._backend.execute_count(
                 """
-                INSERT INTO messages(id, session_id, conversation_id, thread_id, attach_id, role, body, metadata_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO messages(id, session_id, conversation_id, thread_id, attach_id, role, body, metadata_json, created_at, append_seq)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (
+                    SELECT COALESCE(MAX(append_seq), 0) + 1
+                    FROM messages
+                    WHERE session_id = ?
+                ))
                 """,
                 (
                     message_id,
@@ -92,11 +104,8 @@ class RuntimeSessionStoreMessages:
                     body,
                     metadata_json(payload_metadata),
                     now,
+                    session_id,
                 ),
-            )
-            self._backend.execute_count(
-                "UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?",
-                (now, now, session_id),
             )
         return self._backend.message_by_id(message_id)
 
@@ -167,7 +176,7 @@ class RuntimeSessionStoreMessages:
             FROM messages
             WHERE session_id = ?
               AND TRIM(COALESCE(conversation_id, '')) <> ''
-            ORDER BY created_at DESC, id DESC
+            ORDER BY created_at DESC, append_seq DESC
             LIMIT 1
             """,
             (normalized_session_id,),
