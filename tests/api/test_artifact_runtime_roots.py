@@ -1,4 +1,4 @@
-"""SDK artifact reads and writes stay inside each runtime's explicit roots."""
+"""SDK artifact stores stay inside each runtime's explicit roots and close with it."""
 
 import hashlib
 from pathlib import Path
@@ -8,6 +8,7 @@ import pytest
 from openminion import Agent, APIRuntime
 from openminion.base.config import OpenMinionConfig, save_config
 from openminion.modules.artifact.control import ArtifactCtl
+from openminion.services.runtime import memory as runtime_memory
 from tests._csc_fixtures import _csc_install_default_agent
 
 _ALIAS = "shared-note"
@@ -105,3 +106,50 @@ def test_sdk_artifact_reads_and_writes_stay_in_runtime_roots(
     assert unrelated_sha not in listed["a"] | listed["b"]
     assert set(opened) == {_artifact_index(root_a), _artifact_index(root_b)}
     assert _snapshot(unrelated_home) == home_before
+
+
+def test_runtime_close_closes_each_runtime_artifact_store_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[ArtifactCtl] = []
+    closed: list[int] = []
+    memory_stores: list[ArtifactCtl] = []
+    original_init, original_close = ArtifactCtl.__init__, ArtifactCtl.close
+    create_memory_store = runtime_memory.create_default_artifactctl
+
+    def record_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        created.append(self)
+
+    def record_close(self):
+        closed.append(id(self))
+        original_close(self)
+
+    def record_memory_store(config=None):
+        store = create_memory_store(config)
+        memory_stores.append(store)
+        return store
+
+    monkeypatch.setattr(ArtifactCtl, "__init__", record_init)
+    monkeypatch.setattr(ArtifactCtl, "close", record_close)
+    monkeypatch.setattr(
+        runtime_memory, "create_default_artifactctl", record_memory_store
+    )
+
+    runtime = _echo_runtime(tmp_path / "root")
+    try:
+        with Agent(runtime=runtime) as agent:
+            assert agent.run("hello").run_state == "completed"
+        runtime.close()
+        runtime.close()
+        close_counts = [closed.count(id(store)) for store in created]
+    finally:
+        runtime.close()
+        for store in created:
+            if id(store) not in closed:
+                original_close(store)
+
+    assert len(memory_stores) == 1
+    assert created[0] is memory_stores[0]
+    assert close_counts == [1, 1, 1]

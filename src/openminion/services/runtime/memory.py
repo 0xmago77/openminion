@@ -40,6 +40,7 @@ def active_runtime_memory_assembly(
     vector_adapter: Any | None = None,
     scheduler: RuntimeMemoryScheduler | None = None,
     delegated_store: Any | None = None,
+    artifactctl: Any | None = None,
 ) -> RuntimeMemoryAssembly:
     return RuntimeMemoryAssembly(
         gateway=gateway,
@@ -48,6 +49,7 @@ def active_runtime_memory_assembly(
         vector_adapter=vector_adapter,
         scheduler=scheduler,
         delegated_store=delegated_store,
+        artifactctl=artifactctl,
     )
 
 
@@ -303,6 +305,7 @@ def build_memory_v2_runtime_assembly(
         vector_adapter=vector_adapter,
         scheduler=scheduler,
         delegated_store=backend if backend_config.provider == "sophiagraph" else None,
+        artifactctl=artifactctl,
     )
 
 
