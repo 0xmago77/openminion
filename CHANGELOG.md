@@ -15,6 +15,10 @@ This file tracks package-facing release notes for `openminion`.
   messages sharing one timestamp moves back before that group, so its
   members are replayed into history and summarized again once rather than
   left hidden (#353).
+- Close the memory audit sink that the runtime memory assembly creates when the
+  runtime closes: once, with the memory service, and not while the memory
+  scheduler is still running. `AuditedMemoryStore` still leaves a sink passed
+  without `owns_sink=True` open (#361).
 
 ## Current package line - 2026-10-22
 

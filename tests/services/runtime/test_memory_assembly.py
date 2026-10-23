@@ -7,6 +7,7 @@ import pytest
 from openminion.base.config import OpenMinionConfig
 from openminion.modules.brain.adapters.memory.runtime import MemctlAdapter
 from openminion.modules.memory.smoke import EphemeralMemorySmokeProvider
+from openminion.modules.memory.storage import SQLiteMemoryAuditSink
 from openminion.services.agent.memory.gateway_adapter import (
     DisabledMemoryGatewayAdapter,
 )
@@ -377,3 +378,74 @@ def test_artifact_store_close_error_keeps_recorded_memory_close() -> None:
     assert repeated.closed is True
     assert repeated.reason_code == "closed"
     assert events == ["service.close", "artifactctl.close"]
+
+
+@pytest.fixture
+def audit_sinks(monkeypatch):
+    created: list[SQLiteMemoryAuditSink] = []
+
+    class CountingAuditSink(SQLiteMemoryAuditSink):
+        def __init__(self, db_path) -> None:
+            super().__init__(db_path)
+            self.close_calls = 0
+            created.append(self)
+
+        def close(self) -> None:
+            self.close_calls += 1
+            super().close()
+
+    monkeypatch.setattr(
+        "openminion.services.runtime.memory.SQLiteMemoryAuditSink",
+        CountingAuditSink,
+    )
+    yield created
+    for sink in created:
+        SQLiteMemoryAuditSink.close(sink)
+
+
+def _write_audited_record(assembly: RuntimeMemoryAssembly) -> None:
+    assembly.service.write_record(
+        scope="agent:alpha",
+        record_type="fact",
+        title="Audited",
+        content="Audited content",
+    )
+
+
+def test_assembly_closes_the_audit_sink_it_creates_once(tmp_path, audit_sinks) -> None:
+    assembly = _memory_v2_assembly(tmp_path, artifactctl_factory=lambda: None)
+    _write_audited_record(assembly)
+    [sink] = audit_sinks
+    assert sink.db_path == tmp_path / "memory.audit.db"
+    assert sink._conn is not None
+
+    first = assembly.close()
+    second = assembly.close()
+
+    assert first is second
+    assert first.closed is True
+    assert sink.close_calls == 1
+    assert sink._conn is None
+
+
+def test_audit_sink_stays_open_while_scheduler_is_live(tmp_path, audit_sinks) -> None:
+    scheduler = _Scheduler([], live_after_stop=True)
+    assembly = _memory_v2_assembly(
+        tmp_path, scheduler=scheduler, artifactctl_factory=lambda: None
+    )
+    _write_audited_record(assembly)
+    [sink] = audit_sinks
+
+    blocked = assembly.close()
+
+    assert blocked.reason_code == "scheduler_still_running"
+    assert sink.close_calls == 0
+    assert sink._conn is not None
+    _write_audited_record(assembly)
+    assert len(sink.list_events()) == 2
+
+    scheduler.live = False
+    assert assembly.close().closed is True
+    assert assembly.close().closed is True
+    assert sink.close_calls == 1
+    assert sink._conn is None
