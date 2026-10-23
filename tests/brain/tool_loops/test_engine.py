@@ -2513,7 +2513,10 @@ def test_engine_does_not_auto_decompose_from_tool_call_count() -> None:
     ]
 
 
-def test_engine_handles_plan_control_tool_without_tool_budget_debit() -> None:
+@pytest.mark.parametrize("invalid_field", [None, "steps", "criterion_ids"])
+def test_engine_handles_plan_control_tool_without_tool_budget_debit(
+    invalid_field: str | None,
+) -> None:
     runtime = _FakeRuntime(
         responses=[
             LLMResponse(
@@ -2557,6 +2560,24 @@ def test_engine_handles_plan_control_tool_without_tool_budget_debit() -> None:
             ),
         ]
     )
+    if invalid_field:
+        arguments = dict(runtime.responses[0].tool_calls[0].arguments)
+        arguments[invalid_field] = 1
+        runtime.responses.insert(
+            0,
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="fake-model",
+                output_text="",
+                tool_calls=[
+                    ToolCall(
+                        id="invalid-plan", name=PLAN_TOOL_NAME, arguments=arguments
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+        )
     session_api = _FakeSessionAPI()
     loop_ctx = _LoopContext(
         state=_state(tool_calls=2),
@@ -2580,7 +2601,17 @@ def test_engine_handles_plan_control_tool_without_tool_budget_debit() -> None:
         event["event_type"]
         for event in session_api.events
         if event["event_type"].startswith("task_plan.")
-    ] == ["task_plan.declared"]
+    ] == (["task_plan.invalid_trailer"] if invalid_field else []) + [
+        "task_plan.declared"
+    ]
+    if invalid_field:
+        feedback = next(
+            message
+            for message in runtime.calls[1]["messages"]
+            if message.role == "tool"
+        )
+        assert feedback.tool_call_id == "invalid-plan"
+        assert json.loads(feedback.content)["error"]["code"] == "PLAN_VALIDATION_FAILED"
     assert outcome.telemetry_payload()["task_plan"]["criterion_ids"] == [
         "criterion-entry"
     ]
