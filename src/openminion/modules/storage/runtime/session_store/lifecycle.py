@@ -465,7 +465,8 @@ class RuntimeSessionStoreLifecycle:
     ) -> list[EventRecord]:
         """List one run's newest `limit` `run.` events, newest id first.
 
-        The run is the payload's top-level `run_id` as stored (`payload_text`).
+        The run is the payload's top-level `run_id`, read as the Python readers
+        read it (`payload_text`); `run_id` is compared as given.
         """
         safe_limit = max(0, min(int(limit), EVENT_PAGE_MAX))
         if safe_limit == 0:
@@ -493,21 +494,25 @@ class RuntimeSessionStoreLifecycle:
     ) -> list[dict[str, Any]]:
         """Aggregate every `run.` event of each run seen in the newest `scan_limit`.
 
-        A run is the payload's top-level `run_id` as stored, and it is reported
-        when one of its events is among the session's newest `scan_limit` `run.`
-        events by id. One row per run, over all of its `run.` events:
-        `event_count`, `started_at` (stored `created_at` of its first event by
-        id), and the ids of its latest event (`last_id`), of its latest event
-        with a non-empty `step` (`step_id`) or `error` (`error_id`), and of its
-        latest event whose state is in `terminal_states` (`terminal_id`). The
-        state is the payload `state` when it is one of `run_states`, otherwise
-        the event type after `run.`. Text is compared trimmed and lowercased
-        where it names a state; a missing key or JSON null counts as empty.
+        A run is the payload's top-level `run_id`, and it is reported when one
+        of its events is among the session's newest `scan_limit` `run.` events
+        by id. One row per run, over all of its `run.` events: `event_count`,
+        `started_at` (stored `created_at` of its first event by id), and the ids
+        of its latest event (`last_id`), of its latest event with a non-empty
+        `step` (`step_id`) or `error` (`error_id`), and of its latest event whose
+        state is in `terminal_states` (`terminal_id`). The state is the payload
+        `state` when it is one of `run_states`, otherwise the event type after a
+        case-sensitive `run.` prefix. Payload values are read as
+        `_to_run_event`, `_normalize_run_state` and `_extract_event_error` read
+        them (`payload_text`), and names of states are compared lowercased.
         """
         text = self._backend.payload_text
         run_id = text("run_id")
-        state = f"LOWER(TRIM(COALESCE({text('state')}, '')))"
-        suffix = "LOWER(TRIM(SUBSTR(event_type, 5)))"
+        state = f"LOWER({text('state', falsy_empty=True)})"
+        suffix = (
+            "CASE WHEN SUBSTR(event_type, 1, 4) = 'run.' THEN "
+            f"LOWER({self._backend.strip_text('SUBSTR(event_type, 5)')}) ELSE '' END"
+        )
         states = ", ".join("?" for _ in run_states)
         terminal = ", ".join("?" for _ in terminal_states)
         rows = self._backend.query_dicts(
@@ -517,9 +522,8 @@ class RuntimeSessionStoreLifecycle:
             FROM (
                 SELECT {run_id} AS run_id, COUNT(*) AS event_count,
                        MIN(id) AS first_id, MAX(id) AS last_id,
-                       MAX(CASE WHEN TRIM(COALESCE({text("step")}, '')) <> ''
-                           THEN id END) AS step_id,
-                       MAX(CASE WHEN TRIM(COALESCE({text("error")}, '')) <> ''
+                       MAX(CASE WHEN {text("step")} <> '' THEN id END) AS step_id,
+                       MAX(CASE WHEN {text("error", null="")} <> ''
                            THEN id END) AS error_id,
                        MAX(CASE WHEN {state} IN ({terminal})
                                   OR ({state} NOT IN ({states})
@@ -529,7 +533,7 @@ class RuntimeSessionStoreLifecycle:
                 WHERE session_id = ? AND event_type LIKE ? AND {run_id} IN (
                     SELECT {run_id} FROM events
                     WHERE session_id = ? AND event_type LIKE ?
-                    AND TRIM(COALESCE({run_id}, '')) <> ''
+                    AND {run_id} <> ''
                     AND id >= (
                         SELECT COALESCE(MIN(id), 0) FROM (
                             SELECT id FROM events
@@ -570,21 +574,22 @@ class RuntimeSessionStoreLifecycle:
         `conversation_id`, its payload `conversation_id` equals it, or is empty
         when the conversation is the session itself; with a `thread_id`, its
         payload `thread_id` equals it or is empty. Returns the ids of the
-        thread's latest event (`latest_id`), latest `run.` event with a `run_id`
-        (`run_event_id`), latest `start_event_type` event with an
-        `invocation_id` (`start_id`) and latest `attach_event_type` event with
-        an `attach_id` whose `attach_role` is empty or `writer_role`
-        (`attach_id`), and the `flag_event_types` that occur (`present`).
-        Text is compared trimmed; a missing key or JSON null counts as empty.
+        thread's latest event (`latest_id`), latest event with a case-sensitive
+        `run.` type and a `run_id` (`run_event_id`), latest `start_event_type`
+        event with an `invocation_id` (`start_id`) and latest
+        `attach_event_type` event with an `attach_id` whose `attach_role` is
+        empty or `writer_role` (`attach_id`), and the `flag_event_types` that
+        occur (`present`). Payload values are read as `_event_matches_thread`,
+        `_to_run_event`, `_invocation_start_fields` and
+        `_resolve_writer_attach_id` read them (`payload_text`).
         """
         text = self._backend.payload_text
 
         def filled(key: str) -> str:
-            return f"TRIM(COALESCE({text(key)}, '')) <> ''"
+            return f"{text(key)} <> ''"
 
-        role = f"LOWER(TRIM(COALESCE({text('attach_role')}, '')))"
+        role = f"LOWER({text('attach_role')})"
         select_params: list[object] = [
-            "run.%",
             start_event_type,
             attach_event_type,
             writer_role,
@@ -596,17 +601,18 @@ class RuntimeSessionStoreLifecycle:
         )
         clauses, params = ["session_id = ?"], [session_id]
         if conversation_id:
-            conversation = f"TRIM(COALESCE({text('conversation_id')}, ''))"
+            conversation = text("conversation_id", falsy_empty=True)
             same_session = conversation_id == session_id
             clauses.append(f"{conversation} {'IN (?, ?)' if same_session else '= ?'}")
             params.extend(["", conversation_id] if same_session else [conversation_id])
         if thread_id:
-            clauses.append(f"TRIM(COALESCE({text('thread_id')}, '')) IN (?, ?)")
+            clauses.append(f"{text('thread_id', falsy_empty=True)} IN (?, ?)")
             params.extend(["", thread_id])
         row = self._backend.query_one(
             f"""
             SELECT MAX(id) AS latest_id,
-                   MAX(CASE WHEN event_type LIKE ? AND {filled("run_id")}
+                   MAX(CASE WHEN SUBSTR(event_type, 1, 4) = 'run.'
+                            AND {filled("run_id")}
                        THEN id END) AS run_event_id,
                    MAX(CASE WHEN event_type = ? AND {filled("invocation_id")}
                        THEN id END) AS start_id,

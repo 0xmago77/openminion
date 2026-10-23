@@ -11,6 +11,44 @@ from .models import MessageRecord
 from .rows import MESSAGE_COLUMNS, row_to_message
 
 _PAYLOAD_KEY = re.compile(r"[a-z_]+")
+# The characters Python's `str.strip()` removes: those whose `isspace()` is true.
+_STRIP_CODE_POINTS = (
+    *range(9, 14),
+    *range(28, 33),
+    133,
+    160,
+    5760,
+    *range(8192, 8203),
+    8232,
+    8233,
+    8239,
+    8287,
+    12288,
+)
+# `metadata_json` writes NaN, Infinity and -Infinity, which are not JSON (Postgres
+# and SQLite before 3.42 reject them), and escapes NUL as \u0000, which Postgres
+# cannot return as text. The payload readers parse a copy rewritten in SQL: an
+# escaped backslash becomes \u005c first, so none is read as the start of a
+# \u0000; NUL becomes U+0001; the three tokens become 1e999 or -1e999 where a
+# value can start as `metadata_json` writes them, which also rewrites them in a
+# string after ": ", ", " or "[". SQLAlchemy would read ":NaN" as a parameter.
+# Every other value reads as stored.
+_PAYLOAD_REWRITES = (
+    ("\\\\", "\\u005c"),
+    ("\\u0000", "\\u0001"),
+    *(
+        (f"{lead}{token}", f"{lead}{number}")
+        for token, number in (
+            ("-Infinity", "-1e999"),
+            ("Infinity", "1e999"),
+            ("NaN", "1e999"),
+        )
+        for lead in (": ", ", ", "[")
+    ),
+)
+_PAYLOAD_DOCUMENT = "payload_json"
+for _old, _new in _PAYLOAD_REWRITES:
+    _PAYLOAD_DOCUMENT = f"REPLACE({_PAYLOAD_DOCUMENT}, '{_old}', '{_new}')"
 
 
 class RuntimeSessionStoreBackend:
@@ -29,20 +67,73 @@ class RuntimeSessionStoreBackend:
         self._raw_tx_depth = 0
         self._backend_type = str(backend_type or "").strip().lower() or "sqlite"
 
-    def payload_text(self, key: str) -> str:
-        """Return SQL that reads the top-level `key` of `events.payload_json`.
+    def strip_text(self, expression: str) -> str:
+        """Return SQL that strips `expression` as Python's `str.strip()` does.
+
+        SQL `TRIM` without a character set removes spaces only; this removes
+        every character `str.isspace()` accepts, from both ends.
+        """
+        if self._backend_type == "postgres":
+            chars = " || ".join(f"CHR({code})" for code in _STRIP_CODE_POINTS)
+            return f"BTRIM({expression}, {chars})"
+        chars = ", ".join(str(code) for code in _STRIP_CODE_POINTS)
+        return f"TRIM({expression}, char({chars}))"
+
+    def payload_text(
+        self, key: str, *, null: str = "None", falsy_empty: bool = False
+    ) -> str:
+        """Return SQL for `str(payload.get(key, "")).strip()` of `events.payload_json`.
+
+        It reads the top-level `key` as the run status readers do in Python: a
+        missing key is "", a string is stripped as `str.strip()` strips it, JSON
+        null is `null` ("None", or "" for a reader that maps None to ""), a
+        boolean is "True" or "False", and a number, object or array is its JSON
+        text. With `falsy_empty` a value Python treats as false (null, false, 0,
+        "", {} or []) is "", as in `str(payload.get(key) or "").strip()`. A float
+        is never empty, but its text can differ from Python's: SQLite writes
+        1e16 as 1.0e+16, and NaN or Infinity read as 1e999 (`_PAYLOAD_REWRITES`).
+        A NUL in a string reads as U+0001.
 
         `backend_type` is the one `build_runtime_storage` gives
-        `migrate_record_store`. SQLite reads the stored JSON with `json_extract`;
-        Postgres casts the text to `json` and reads it with `->>`. A string comes
-        back unquoted, and a missing key or JSON null as NULL. `key` is a fixed
-        payload key from this package; values are bound as parameters.
+        `migrate_record_store`. SQLite reads the rewritten JSON with `json_type`
+        and `json_extract`; Postgres casts it to `json` and reads it with
+        `json_typeof`, `->` and `->>`. `key` is a fixed payload key from this
+        package; values are bound as parameters.
         """
         if not _PAYLOAD_KEY.fullmatch(key):
             raise ValueError(f"Invalid payload key: {key!r}")
+        if null not in ("None", ""):
+            raise ValueError(f"Invalid null text: {null!r}")
+        null_text = "" if falsy_empty else null
+        false_text = "" if falsy_empty else "False"
         if self._backend_type == "postgres":
-            return f"(CAST(payload_json AS json) ->> '{key}')"
-        return f"json_extract(payload_json, '$.{key}')"
+            document = f"CAST({_PAYLOAD_DOCUMENT} AS json)"
+            value = f"({document} ->> '{key}')"
+            other = value
+            if falsy_empty:
+                falsy = "'0', '0.0', '-0.0', '{}', '[]'"
+                other = f"CASE WHEN {value} IN ({falsy}) THEN '' ELSE {value} END"
+            return (
+                f"COALESCE(CASE json_typeof({document} -> '{key}')"
+                f" WHEN 'string' THEN {self.strip_text(value)}"
+                f" WHEN 'null' THEN '{null_text}'"
+                f" WHEN 'boolean' THEN CASE {value} WHEN 'true' THEN 'True'"
+                f" ELSE '{false_text}' END"
+                f" ELSE {other} END, '')"
+            )
+        path = f"'$.{key}'"
+        value = f"json_extract({_PAYLOAD_DOCUMENT}, {path})"
+        other = f"CAST({value} AS TEXT)"
+        if falsy_empty:
+            other = f"CASE WHEN {value} IN (0, '{{}}', '[]') THEN '' ELSE {other} END"
+        return (
+            f"COALESCE(CASE json_type({_PAYLOAD_DOCUMENT}, {path})"
+            f" WHEN 'text' THEN {self.strip_text(value)}"
+            f" WHEN 'null' THEN '{null_text}'"
+            f" WHEN 'true' THEN 'True'"
+            f" WHEN 'false' THEN '{false_text}'"
+            f" ELSE {other} END, '')"
+        )
 
     @contextmanager
     def transaction(self) -> Iterator[None]:

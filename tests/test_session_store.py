@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import threading
@@ -675,22 +676,70 @@ class SessionStoreTests(unittest.TestCase):
             self.store.list_events_by_id(session_id=session.id, event_ids=[]), []
         )
 
-    def test_payload_text_reads_one_fixed_key_per_backend(self) -> None:
-        sqlite_backend = self.store._backend
+    def test_payload_text_reads_values_as_python_str_strip(self) -> None:
+        backend = self.store._backend
+        padding = "".join(chr(code) for code in range(0x3001) if chr(code).isspace())
+        backslash, zero_width = chr(92), chr(0x200B)
+        values = [
+            f"{padding}x{padding}",
+            f"{zero_width}x",
+            f"a{backslash}u0000b",
+            f"{backslash}{backslash}",
+            "NaN",
+            None,
+            True,
+            False,
+            0,
+            7,
+            "7",
+            "",
+            padding,
+            {},
+            [],
+        ]
+
+        def read(payload: dict, **options) -> str:
+            sql = backend.payload_text("value", **options)
+            row = self.connection.execute(
+                f"SELECT {sql} FROM (SELECT ? AS payload_json)",
+                (json.dumps(payload, sort_keys=True),),
+            ).fetchone()
+            return row[0]
+
+        for value in values:
+            payload = {"value": value}
+            self.assertEqual(read(payload), str(value).strip(), value)
+            self.assertEqual(
+                read(payload, null=""),
+                "" if value is None else str(value).strip(),
+                value,
+            )
+            self.assertEqual(
+                read(payload, falsy_empty=True), str(value or "").strip(), value
+            )
+        self.assertEqual(read({}), "")
+        # Not JSON (NaN, Infinity) or not text in Postgres (NUL), and the text
+        # rewritten with them: never empty.
+        for value in (
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            f"x{chr(0)}",
+            "a: NaN text",
+        ):
+            self.assertNotEqual(read({"value": value, "other": value}), "", value)
+
+    def test_payload_text_accepts_fixed_keys_only(self) -> None:
         postgres_backend = SessionStore(
             self.connection, backend_type="postgres"
         )._backend
 
-        self.assertEqual(
-            sqlite_backend.payload_text("run_id"),
-            "json_extract(payload_json, '$.run_id')",
-        )
-        self.assertEqual(
-            postgres_backend.payload_text("run_id"),
-            "(CAST(payload_json AS json) ->> 'run_id')",
-        )
-        with self.assertRaises(ValueError):
-            sqlite_backend.payload_text("run_id') OR ('1")
+        self.assertIn("json_typeof(", postgres_backend.payload_text("run_id"))
+        for backend in (self.store._backend, postgres_backend):
+            with self.assertRaises(ValueError):
+                backend.payload_text("run_id') OR ('1")
+            with self.assertRaises(ValueError):
+                backend.payload_text("run_id", null="none")
 
     def test_list_sessions_and_count_sessions(self) -> None:
         first = self.store.resolve_session(

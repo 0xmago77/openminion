@@ -27,7 +27,9 @@ from openminion.services.runtime.run_status import (
     THREAD_DECISION_RESUME,
 )
 from tests._run_status_scenarios import (
+    append_thread_payload_variants,
     append_threads,
+    check_thread_payload_variants,
     check_thread_projection,
     stepping_clock,
 )
@@ -604,3 +606,8 @@ class ConversationLifecycleTests(unittest.TestCase):
             append_threads(self.sessions, self.session.id)
 
         check_thread_projection(self.sessions, self.session.id)
+
+    def test_thread_projection_normalizes_payload_values(self) -> None:
+        append_thread_payload_variants(self.sessions, self.session.id)
+
+        check_thread_payload_variants(self.sessions, self.session.id)

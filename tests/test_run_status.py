@@ -23,7 +23,13 @@ from openminion.modules.storage.runtime.session_store.backend import (
 )
 from openminion.modules.storage.runtime.session_store.rows import metadata_json
 from openminion.modules.storage.runtime.sqlite import connect_database
-from tests._run_status_scenarios import append_runs, check_run_readers, stepping_clock
+from tests._run_status_scenarios import (
+    append_payload_variants,
+    append_runs,
+    check_review_cases,
+    check_run_readers,
+    stepping_clock,
+)
 
 
 def test_service_run_status_surface_is_canonical_task_owner() -> None:
@@ -515,6 +521,23 @@ def test_run_readers_match_the_event_reduction_at_every_window(tmp_path) -> None
         with stepping_clock():
             append_runs(sessions, session.id)
         check_run_readers(sessions, session.id)
+    finally:
+        connection.close()
+
+
+def test_run_readers_normalize_payload_values_as_the_python_readers(tmp_path) -> None:
+    connection, sessions, session = _build_sessions(tmp_path)
+    try:
+        append_payload_variants(sessions, session.id)
+        check_run_readers(sessions, session.id)
+        check_review_cases(
+            sessions,
+            lambda target: (
+                sessions.resolve_session(
+                    agent_id="main", channel="console", target=target
+                ).id
+            ),
+        )
     finally:
         connection.close()
 
