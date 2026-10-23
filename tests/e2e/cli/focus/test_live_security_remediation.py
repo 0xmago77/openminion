@@ -560,10 +560,7 @@ def _corrected_repair_arguments(events: list[dict]) -> list[dict]:
         elif kind == "tool.call.requested":
             tool = data["canonical_name"]
             args = data["sanitized_normalized_arguments"]
-            if tool == "tool.request" and args.get("name") in {
-                "file.read",
-                "file.list_dir",
-            }:
+            if tool == "tool.request" and args.get("name"):
                 key = (tool, args["name"], "request")
             elif (
                 actor == _PARENT

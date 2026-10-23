@@ -750,10 +750,19 @@ def test_replay_proof_binds_actual_session_records_to_approved_requests(
             "security.scan_code",
             "TOOL_REQUEST_INVALID_ARGUMENTS",
             source._PARENT,
-            False,
+            True,
         ),
         ("tool.request", "file.read", "POLICY_DENIED", source._PARENT, False),
         ("tool.request", "file.read", "NOT_FOUND", source._PARENT, False),
+        (
+            "file.write",
+            "app.py",
+            "TOOL_REQUEST_INVALID_ARGUMENTS",
+            source._IMPLEMENTER,
+            False,
+        ),
+        ("file.write", "app.py", "POLICY_DENIED", source._IMPLEMENTER, False),
+        ("file.write", "app.py", "EXEC_ERROR", source._IMPLEMENTER, False),
         ("plan", "p1", "PLAN_REVISION_REQUIRED", source._PARENT, True),
         ("plan", "p1", "PLAN_STEPS_UNRESOLVED", source._PARENT, True),
         ("plan", "p1", "PLAN_SESSION_UNAVAILABLE", source._PARENT, False),
@@ -864,6 +873,7 @@ def test_repair_plan_correction_requires_canonical_replacement(abandoned_id):
             source._corrected_repair_arguments(events)
 
 
+@pytest.mark.parametrize("target", ["file.list_dir", "file.write", "code.patch"])
 @pytest.mark.parametrize(
     "change",
     [
@@ -878,9 +888,14 @@ def test_repair_plan_correction_requires_canonical_replacement(abandoned_id):
         "not_activated",
         "wrong_activated_tool",
         "policy",
+        "execution",
+        "provider",
+        "path",
+        "actual_policy",
+        "actual_execution",
     ],
 )
-def test_child_activation_correction_requires_exact_lifecycle(change):
+def test_child_activation_correction_requires_exact_lifecycle(change, target):
     events = [
         {
             "event_type": "tool.call.requested",
@@ -888,7 +903,7 @@ def test_child_activation_correction_requires_exact_lifecycle(change):
                 "call_id": "bad",
                 "canonical_name": "tool.request",
                 "sanitized_normalized_arguments": {
-                    "name": "file.list_dir",
+                    "name": target,
                     "freshness": {"time_sensitive": False},
                 },
             },
@@ -906,7 +921,7 @@ def test_child_activation_correction_requires_exact_lifecycle(change):
             "data": {
                 "call_id": "fixed",
                 "canonical_name": "tool.request",
-                "sanitized_normalized_arguments": {"name": "file.list_dir"},
+                "sanitized_normalized_arguments": {"name": target},
             },
         },
         {
@@ -914,16 +929,14 @@ def test_child_activation_correction_requires_exact_lifecycle(change):
             "data": {
                 "call_id": "fixed",
                 "status": "success",
-                "output": {
-                    "outputs": {"activated": True, "tool_name": "file.list_dir"}
-                },
+                "output": {"outputs": {"activated": True, "tool_name": target}},
             },
         },
         {
             "event_type": "tool.call.requested",
             "data": {
                 "call_id": "read",
-                "canonical_name": "file.list_dir",
+                "canonical_name": target,
                 "sanitized_normalized_arguments": {"path": "."},
             },
         },
@@ -955,11 +968,24 @@ def test_child_activation_correction_requires_exact_lifecycle(change):
         events[3]["data"]["output"]["outputs"]["activated"] = False
     elif change == "wrong_activated_tool":
         events[3]["data"]["output"]["outputs"]["tool_name"] = "file.read"
-    elif change == "policy":
-        events[1]["data"]["error"]["code"] = "POLICY_DENIED"
-    if change == "policy":
+    elif change in {"actual_policy", "actual_execution"}:
+        events[5]["event_type"] = "tool.call.blocked"
+        events[5]["data"].update(
+            status="error",
+            error={
+                "code": "POLICY_DENIED" if change == "actual_policy" else "EXEC_ERROR"
+            },
+        )
+    elif change in {"policy", "execution", "provider", "path"}:
+        events[1]["data"]["error"]["code"] = {
+            "policy": "POLICY_DENIED",
+            "execution": "EXEC_ERROR",
+            "provider": "UPSTREAM_ERROR",
+            "path": "NOT_FOUND",
+        }[change]
+    if change in {"policy", "execution", "provider", "path"}:
         assert source._corrected_repair_arguments(events) == []
-    elif change:
+    elif change and change not in {"actual_policy", "actual_execution"}:
         with pytest.raises(AssertionError, match="uncorrected argument error"):
             source._corrected_repair_arguments(events)
     else:
@@ -968,3 +994,4 @@ def test_child_activation_correction_requires_exact_lifecycle(change):
         assert corrections[0]["call_id"] == "bad"
         assert corrections[0]["corrected_call_id"] == "fixed"
         assert corrections[0]["event_id"] == events[1]["id"]
+        assert events[5]["id"] not in {item["event_id"] for item in corrections}
