@@ -102,6 +102,47 @@ def test_owned_artifactctl_closes_with_borrowed_memory_backend() -> None:
     assert close_calls == ["artifact"]
 
 
+class _CountingSQLiteAuditSink(SQLiteMemoryAuditSink):
+    def __init__(self, db_path: Path) -> None:
+        super().__init__(db_path)
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        super().close()
+
+
+def test_audited_store_closes_an_owned_sqlite_sink_once(tmp_path) -> None:
+    sink = _CountingSQLiteAuditSink(tmp_path / "memory.audit.db")
+    store = AuditedMemoryStore(InMemoryMemoryStore(), sink=sink, owns_sink=True)
+    store.put(_record("r1"))
+    assert sink._conn is not None
+
+    store.close()
+    store.close()
+
+    assert sink.close_calls == 1
+    assert sink._conn is None
+
+
+def test_audited_store_leaves_a_borrowed_sqlite_sink_open(tmp_path) -> None:
+    sink = _CountingSQLiteAuditSink(tmp_path / "memory.audit.db")
+    store = AuditedMemoryStore(InMemoryMemoryStore(), sink=sink)
+    store.put(_record("r1"))
+    connection = sink._conn
+    assert connection is not None
+
+    store.close()
+    store.close()
+
+    assert sink.close_calls == 0
+    assert sink._conn is connection
+    assert [event["event_type"] for event in sink.list_events()] == [
+        "memory.record.put"
+    ]
+    sink.close()
+
+
 def _build_config() -> OpenMinionConfig:
     config = OpenMinionConfig()
     _csc_install_default_agent(config)  # type: ignore[attr-defined]
