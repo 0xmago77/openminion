@@ -30,9 +30,13 @@ from openminion.modules.task.run import (
     resolve_thread_lifecycle,
 )
 from tests._run_status_scenarios import (
+    append_payload_variants,
     append_runs,
+    append_thread_payload_variants,
     append_threads,
+    check_review_cases,
     check_run_readers,
+    check_thread_payload_variants,
     check_thread_projection,
     stepping_clock,
 )
@@ -514,6 +518,35 @@ def test_postgres_run_status_readers_match_the_event_reduction(
 
             check_run_readers(sessions, runs.id)
             check_thread_projection(sessions, threads.id)
+        finally:
+            storage.close()
+
+
+@pytest.mark.postgres
+def test_postgres_run_status_normalizes_payload_values(tmp_path: Path) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om352_payloads") as url:
+        storage = build_runtime_storage(
+            tmp_path / "state" / "openminion.db",
+            env={},
+            record_backend="record.postgres",
+            record_backend_options={"url": url},
+        )
+        try:
+            sessions = storage.sessions
+
+            def new_session(target: str) -> str:
+                return sessions.resolve_session(
+                    agent_id="main", channel="console", target=target
+                ).id
+
+            runs, threads = new_session("runs"), new_session("threads")
+            append_payload_variants(sessions, runs)
+            append_thread_payload_variants(sessions, threads)
+
+            check_run_readers(sessions, runs)
+            check_thread_payload_variants(sessions, threads)
+            check_review_cases(sessions, new_session)
         finally:
             storage.close()
 
