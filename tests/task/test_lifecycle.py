@@ -719,6 +719,47 @@ def test_reconcile_selects_oldest_unresolved_run_before_limit(tmp_path: Path) ->
     assert manager.reconcile_scheduled_outcomes(oldest.cron_job_id) == 0
 
 
+def test_reconcile_preserves_deleted_job_history_without_blocking_live_task(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path)
+    repository = getattr(manager, "_cron_repository")
+    records = []
+    run_ids = []
+    for index, name in enumerate(("deleted", "live")):
+        record = manager.schedule_task(
+            name=name,
+            schedule={"kind": "at", "at": to_iso_utc(utc_now() + timedelta(hours=1))},
+            payload={"kind": "agentTurn", "message": name},
+            agent_id="agent-a",
+        )
+        records.append(record)
+        run_id = repository.trigger_cron_run(record.cron_job_id)
+        run_ids.append(run_id)
+        repository.finish_cron_run(
+            run_id,
+            state="finished",
+            summary=f"{name} result",
+            now_iso=f"2026-01-0{index + 1}T00:00:00+00:00",
+        )
+
+    repository.delete_cron_job(records[0].cron_job_id)
+
+    assert manager.reconcile_scheduled_outcomes(limit=1) == 1
+    reconciled = manager.get_task(records[1].task_id)
+    assert reconciled is not None
+    assert reconciled.state == TaskLifecycleState.DONE
+    assert reconciled.metadata["last_run"]["run_id"] == run_ids[1]
+    assert [run["run_id"] for run in repository.list_unresolved_task_runs(limit=1)] == [
+        run_ids[1]
+    ]
+    history = {run["run_id"]: run for run in manager.list_scheduled_runs()}
+    assert history[run_ids[0]]["job_id"] is None
+    assert history[run_ids[0]]["summary"] == "deleted result"
+    assert history[run_ids[0]]["state"] == "finished"
+    assert manager.reconcile_scheduled_outcomes() == 0
+
+
 def test_reconcile_pages_past_one_thousand_completed_jobs(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
     repository = getattr(manager, "_cron_repository")
