@@ -381,10 +381,12 @@ class CodingProfileRunner(
                 selected_names.append(name)
             if len(selected_names) == len(CODING_INITIAL_TOOL_IDS):
                 break
-        if not selected_names:
-            selected_names = [
-                name for name in CODING_INITIAL_TOOL_IDS if name in requestable_by_name
-            ]
+        selected_names = selected_names or [
+            name for name in CODING_INITIAL_TOOL_IDS if name in requestable_by_name
+        ]
+        for name in loop.tool_calls_made:
+            if name in requestable_by_name and name not in selected_names:
+                selected_names.append(name)
         active_tool_specs = [requestable_by_name[name] for name in selected_names]
         inactive_names = sorted(set(requestable_by_name) - set(selected_names))
         loop.scratchpad.update(

@@ -3668,9 +3668,16 @@ def test_coding_loop_replays_confirmed_batch_without_policy_grant_api() -> None:
     ]
 
 
-@pytest.mark.parametrize("mode", ["sync", "review"])
+@pytest.mark.parametrize(
+    ("tool_name", "args"),
+    [
+        ("task.delegate", {"mode": "sync"}),
+        ("task.delegate", {"mode": "review"}),
+        ("file.find", {"pattern": "*.py"}),
+    ],
+)
 def test_project_confirmation_replay_preserves_context_in_provider_request(
-    monkeypatch: pytest.MonkeyPatch, mode: str
+    monkeypatch: pytest.MonkeyPatch, tool_name: str, args: dict[str, Any]
 ) -> None:
     from openminion.modules.brain.loop.strategies.coding import handler
     from openminion.modules.brain.runner.tick.context import (
@@ -3679,7 +3686,19 @@ def test_project_confirmation_replay_preserves_context_in_provider_request(
     from openminion.modules.llm.providers.base import ProviderResponse
     from openminion.services.agent.service import AgentService
     from openminion.services.brain.client import OpenMinionLLMClient
+    from openminion.tools.agent.plugin import TaskDelegateArgs
+    from openminion.tools.file.plugin import FileFindArgs
 
+    schema_model = TaskDelegateArgs if tool_name == "task.delegate" else FileFindArgs
+    schema = schema_model.model_json_schema()
+    monkeypatch.setattr(
+        coding_runtime,
+        "collect_runtime_tool_schemas",
+        lambda _: [
+            {**item, "parameters": schema} if item["name"] == tool_name else item
+            for item in _coding_runtime_schemas()
+        ],
+    )
     state = _state()
     state.goal = "allow_once"
     state.pending_confirmation_goal = (
@@ -3709,9 +3728,7 @@ def test_project_confirmation_replay_preserves_context_in_provider_request(
     client = OpenMinionLLMClient(
         SimpleNamespace(name="recording"), invoke_provider_request=record
     )
-    command = ToolCommand(
-        title="Delegate", tool_name="task.delegate", args={"mode": mode}
-    )
+    command = ToolCommand(title="Confirmed tool", tool_name=tool_name, args=args)
     action = ActionResult(
         command_id=command.command_id,
         status="success",
@@ -3732,7 +3749,11 @@ def test_project_confirmation_replay_preserves_context_in_provider_request(
 
     CodingMode().execute(ctx)
 
-    messages = payloads[0][0]
+    messages, tools, _metadata = payloads[0]
+    visible_schema = next(
+        tool["input_schema"] for tool in tools if tool["name"] == tool_name
+    )
+    assert visible_schema == schema
     rendered = json.dumps(messages)
     assert rendered.count(state.goal) == 1
     assert rendered.count(plan["plan_id"]) == 1
