@@ -18,7 +18,6 @@ from openminion.modules.controlplane.constants import (
     CALLER_HANDLES_DELIVERY_METADATA_KEY,
 )
 from openminion.modules.tool.registry import ToolRegistry
-from openminion.modules.policy.runtime.action_policy import derive_tool_risk_registry
 
 if TYPE_CHECKING:  # pragma: no cover
     from openminion.api.handoff import (
@@ -218,10 +217,8 @@ class Agent(Generic[InputT, OutputT]):
             action_policy = getattr(self._runtime, "action_policy", None)
             if action_policy is not None:
                 risk_scope.enter_context(
-                    action_policy.temporary_risks(
-                        derive_tool_risk_registry(
-                            {name: registry.get(name) for name in registered}
-                        )
+                    action_policy.temporary_tool_risks(
+                        {name: registry.get(name) for name in registered}
                     )
                 )
         except (ToolRuntimeError, TypeError, ValueError, AttributeError):

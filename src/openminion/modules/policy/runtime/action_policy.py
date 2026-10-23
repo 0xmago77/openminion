@@ -121,10 +121,11 @@ def derive_tool_risk_registry(tools: Mapping[str, Any]) -> dict[str, RiskSpec]:
 
 
 @contextmanager
-def temporary_risk_registry(
-    registry: dict[str, RiskSpec], risks: Mapping[str, RiskSpec]
+def temporary_tool_risks(
+    registry: dict[str, RiskSpec], tools: Mapping[str, Any]
 ) -> Iterator[None]:
     """Bind run-scoped declarations and restore the previous risk entries."""
+    risks = derive_tool_risk_registry(tools)
     previous = {key: registry.get(key) for key in risks}
     registry.update(risks)
     try:
@@ -204,5 +205,5 @@ __all__ = (
     "merge_policy_risk",
     "resolve_profile_action_policy",
     "select_policy_rule",
-    "temporary_risk_registry",
+    "temporary_tool_risks",
 )

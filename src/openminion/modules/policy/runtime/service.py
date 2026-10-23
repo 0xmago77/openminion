@@ -69,7 +69,7 @@ from .confirmation import (
     resolve_exact_authorization_decision,
 )
 from .action_policy import blocked_rule_decision, merge_policy_risk, select_policy_rule
-from .action_policy import temporary_risk_registry
+from .action_policy import temporary_tool_risks
 from ..grants import (
     confirmation_grant_terms,
     GrantMatch,
@@ -185,8 +185,8 @@ class PolicyCtl:
             return
         self._risk_registry[key] = RiskSpec.from_dict(spec)
 
-    def temporary_risks(self, risks: Dict[str, RiskSpec]) -> ContextManager[None]:
-        return temporary_risk_registry(self._risk_registry, risks)
+    def temporary_tool_risks(self, tools: Dict[str, Any]) -> ContextManager[None]:
+        return temporary_tool_risks(self._risk_registry, tools)
 
     def check(
         self,
