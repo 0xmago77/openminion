@@ -23,6 +23,10 @@ This file tracks package-facing release notes for `openminion`.
   runtime closes: once, with the memory service, and not while the memory
   scheduler is still running. `AuditedMemoryStore` still leaves a sink passed
   without `owns_sink=True` open (#361).
+- Keep runtime session events that share a timestamp in insertion order in
+  `openminion export transcript --include-events`, instead of comparing their
+  ids as strings (event 10 exported before event 2). Where a message and an
+  event share a timestamp, the transcript shows the message first (#365).
 
 ## Current package line - 2026-10-22
 
