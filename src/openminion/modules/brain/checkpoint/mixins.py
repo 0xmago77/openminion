@@ -102,12 +102,19 @@ class _CheckpointMixinBase:
         manager = self._checkpoint_manager_for(ctx)
         if manager is None:
             return None
+        metadata = dict(self._checkpoint_task_metadata(ctx) or {})
+        project_task_id = _normalized_text(ctx.state.resume_task_id_hint)
+        if project_task_id:
+            runner = runner_from_context(ctx)
+            project_task = runner.task_manager.get_task(project_task_id)
+            if project_task is not None and project_task.metadata.get("project_run_id"):
+                metadata["project_task_id"] = project_task_id
         task_id = manager.create_task(
             session_id=ctx.state.session_id,
             owner=self._checkpoint_owner(),
             goal=self._checkpoint_goal(ctx),
             agent_id=ctx.state.agent_id,
-            metadata=self._checkpoint_task_metadata(ctx),
+            metadata=metadata or None,
         )
         self._checkpoint_task_id = task_id
         ctx.state.task_backed_task_id = task_id

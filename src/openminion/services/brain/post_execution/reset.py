@@ -574,7 +574,9 @@ def _apply_task_backed_reset(
     preservation: _TurnResetPreservation,
 ) -> None:
     preserve_task_backed = bool(
-        preservation.preserve_existing_plan or preservation.preserve_followup_goal
+        preservation.preserve_existing_plan
+        or preservation.preserve_followup_goal
+        or preservation.preserve_pending_confirmation
     )
     if preserve_task_backed:
         updated["task_backed_task_id"] = state_inline.get("task_backed_task_id")
