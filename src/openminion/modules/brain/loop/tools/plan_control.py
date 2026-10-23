@@ -414,9 +414,9 @@ def _handle_declare(*, loop_ctx: Any, arguments: dict[str, Any]) -> ActionResult
             "workflow_id": arguments.get("workflow_id"),
             "workflow_version_hash": arguments.get("workflow_version_hash"),
             "root_goal_id": arguments.get("root_goal_id"),
-            "criterion_ids": list(arguments.get("criterion_ids") or []),
+            "criterion_ids": arguments.get("criterion_ids") or [],
             "status": "active",
-            "steps": list(arguments.get("steps") or []),
+            "steps": arguments.get("steps") or [],
             "continue_plan_autonomously": bool(
                 arguments.get("continue_plan_autonomously") or False
             ),
