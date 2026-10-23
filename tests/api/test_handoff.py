@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event, Lock
+from threading import Event, Lock, RLock, get_ident
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 
+from openminion import tool
 from openminion.api.agent import Agent
 from openminion.api.handoff import (
     DelegatedMemoryReadRequest,
@@ -21,6 +23,7 @@ from openminion.modules.controlplane.constants import (
 )
 from openminion.modules.policy.models import PolicyConfig
 from openminion.modules.policy.runtime.service import PolicyCtl
+from openminion.modules.tool.framework import build_registrar
 from openminion.modules.tool.registry import ToolRegistry
 from openminion.modules.tool.schema_service import ToolSchemaService
 from sophiagraph.models import MemoryNamespace
@@ -531,3 +534,159 @@ def test_handoff_profile_lifetime_and_distinct_names(fail):
     assert registry.exposure_service.profiles == profiles
     assert "transfer-a" not in registry.list()
     assert "transfer_a" not in registry.list()
+
+
+class _BoundedRegistrationLock:
+    def __init__(self, on_contention):
+        self._lock = RLock()
+        self._on_contention = on_contention
+
+    def acquire(self, blocking=True):
+        if self._lock.acquire(blocking=False):
+            return True
+        self._on_contention()
+        if not blocking:
+            return False
+        assert self._lock.acquire(timeout=2), (
+            "child registration waited for the parent registry lock"
+        )
+        return True
+
+    def release(self):
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args):
+        self.release()
+
+
+@pytest.mark.parametrize("threaded", [True, False], ids=["worker", "same-thread"])
+@pytest.mark.parametrize("unwind", [None, RuntimeError, asyncio.CancelledError])
+def test_shared_runtime_handoff_registration_is_bounded(tmp_path, threaded, unwind):
+    registry = ToolRegistry()
+    policy = PolicyCtl.with_sqlite(tmp_path / "policy.db")
+    parent_open = Event()
+    parent_thread = get_ident()
+    contentions = []
+    child_runs = []
+
+    @tool(dangerous=True)
+    def parent_tool() -> str:
+        return "parent"
+
+    @tool(dangerous=True)
+    def child_tool() -> str:
+        return "child"
+
+    @tool
+    def borrowed_tool() -> str:
+        return "borrowed"
+
+    build_registrar(borrowed_tool.tool_family_spec()).register(registry)
+    borrowed = registry.get("borrowed_tool")
+    profiles_before = registry.exposure_service.profiles
+    risks_before = dict(policy._risk_registry)
+
+    def on_contention():
+        assert parent_open.is_set(), "parent turn closed before lock contention"
+        assert get_ident() != parent_thread, "handoff did not reach a worker thread"
+        assert registry.get("borrowed_tool") is borrowed
+        assert registry.policy_for("parent_tool").risk == "high"
+        assert "child_tool" not in registry.list()
+        contentions.append(True)
+
+    registry._temporary_registration_lock = _BoundedRegistrationLock(on_contention)
+
+    class Runtime(_FakeRuntime):
+        def run_turn(self, *, payload, **_kwargs):
+            if payload["session_id"] == child.session_id:
+                expected = {"borrowed_tool", "child_tool"}
+                if parent_open.is_set():
+                    expected |= {"parent_tool", "transfer_to_child"}
+                    assert registry.policy_for("parent_tool").risk == "high"
+                assert set(registry.list()) == expected
+                assert registry.policy_for("child_tool").risk == "high"
+                assert registry.get("child_tool").handler({}, None) == "child"
+                child_runs.append(payload["message"])
+                return {"body": "child reply"}
+
+            parent_open.set()
+            try:
+                assert registry.policy_for("parent_tool").risk == "high"
+                handler = registry.get("transfer_to_child").handler
+                if threaded:
+
+                    async def delegate():
+                        try:
+                            return await asyncio.wait_for(
+                                asyncio.to_thread(handler, {"message": "child"}, None),
+                                timeout=5,
+                            )
+                        except TimeoutError:
+                            pytest.fail("handoff worker never completed registration")
+
+                    with pytest.raises(
+                        RuntimeError, match="cross-thread.*separate runtime"
+                    ):
+                        asyncio.run(delegate())
+                    assert contentions, (
+                        "child never contended on the parent's registry lock"
+                    )
+                    assert not child_runs, "rejected child entered its runtime turn"
+                    assert all(
+                        grant.revoked_at is not None for grant in policy.list_grants()
+                    ), "rejected child leaked a delegated memory grant"
+                else:
+                    result = handler({"message": "child"}, None)
+                    assert result["content"] == "child reply"
+                assert set(registry.list()) == {
+                    "borrowed_tool",
+                    "parent_tool",
+                    "transfer_to_child",
+                }
+                assert registry.policy_for("parent_tool").risk == "high"
+                if unwind is not None:
+                    raise unwind("parent unwound")
+                return {"body": "parent reply"}
+            finally:
+                parent_open.clear()
+
+    runtime = Runtime(tools=registry, action_policy=policy)
+    request = DelegatedMemoryReadRequest(
+        namespaces=(MemoryNamespace(agent_id="parent"),), record_types=("fact",)
+    )
+    template = subagent(
+        Agent(runtime=runtime, name="parent"), name="child", memory=request
+    )
+    child = Agent(
+        runtime=runtime,
+        name="child",
+        tools=[child_tool],
+        subagent_context=template.subagent_context,
+        delegated_memory_request=request,
+    )
+    parent = Agent(
+        runtime=runtime, tools=[parent_tool], handoffs=[Handoff(target=child)]
+    )
+    try:
+        if unwind is None:
+            assert parent.run("parent").text == "parent reply"
+        else:
+            with pytest.raises(unwind, match="parent unwound"):
+                parent.run("parent")
+        assert set(registry.list()) == {"borrowed_tool"}
+        assert registry.get("borrowed_tool") is borrowed
+        assert registry.exposure_service.profiles == profiles_before
+        assert policy._risk_registry == risks_before
+        assert registry.policy_for("parent_tool").risk == "medium"
+        assert registry.policy_for("child_tool").risk == "medium"
+        assert child.run("after parent").text == "child reply"
+        assert set(registry.list()) == {"borrowed_tool"}
+        assert registry.exposure_service.profiles == profiles_before
+        assert policy._risk_registry == risks_before
+        assert all(grant.revoked_at is not None for grant in policy.list_grants())
+    finally:
+        policy.close()
