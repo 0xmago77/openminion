@@ -933,3 +933,24 @@ def test_eval_mode_resumes_from_cached_evidence_and_skips_regather() -> None:
         assert finished.status == "done"
         assert len(resumed_services.plan_calls) == 0
         assert "Overall verdict: PASS" in str(finished.message or "")
+
+
+def test_coding_checkpoint_records_owning_project(tmp_path: Path) -> None:
+    manager = TaskManager.for_lifecycle_db(db_path=tmp_path / "tasks.db")
+    parent = manager.create_task(
+        session_id="project-session",
+        mode_name="project",
+        goal="repair",
+        agent_id="agent-1",
+        metadata={"project_run_id": "project-1"},
+    )
+    ctx, _ = _ctx(
+        manager,
+        state=_state(session_id="project-session::conv:project-1", goal="repair"),
+        decision=SimpleNamespace(objective="repair"),
+        user_input="repair",
+    )
+    ctx.state.resume_task_id_hint = parent.task_id
+    task_id = CodingProfileRunner()._init_checkpoint(ctx)
+    assert manager.get_task(task_id).metadata["project_task_id"] == parent.task_id
+    manager.close()

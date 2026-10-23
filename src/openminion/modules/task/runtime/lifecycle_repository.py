@@ -10,6 +10,7 @@ from openminion.base.time import utc_now_iso as _utc_now_iso
 
 from .lifecycle_models import (
     _ALLOWED_STATE_TRANSITIONS,
+    _TERMINAL_TASK_STATES,
     _dump_metadata,
     _load_metadata,
     _normalize_task_state,
@@ -296,6 +297,20 @@ class TaskLifecycleRepository(
                     record.task_id,
                 ),
             )
+            if normalized_to_state in _TERMINAL_TASK_STATES and record.metadata.get(
+                "project_run_id"
+            ):
+                self._conn.execute(
+                    """
+                    UPDATE scheduled_tasks
+                    SET state = 'cancelled', cancelled_at = ?, updated_at = ?
+                    WHERE state IN ('active', 'paused')
+                      AND json_extract(metadata, '$.kind') = 'mode'
+                      AND json_extract(metadata, '$.project_task_id') = ?
+                      AND cron_job_id = task_id
+                    """,
+                    (now, now, record.task_id),
+                )
             self._conn.commit()
         return _require_task_record(self.get(record.task_id), task_id=record.task_id)
 

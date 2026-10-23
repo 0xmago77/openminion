@@ -1193,3 +1193,68 @@ def test_project_report_renders_unmeasured_metrics_as_unknown() -> None:
     assert report.baseline_comparisons == ()
     assert "active_work_ms: unknown" in rendered
     assert "operator_intervention_count: unknown" in rendered
+
+
+@pytest.mark.parametrize("terminal", ["done", "failed", "cancelled"])
+def test_project_terminal_retires_only_owned_mode_checkpoints(
+    tmp_path, terminal
+) -> None:
+    from openminion.modules.brain.execution.dispatch import (
+        maybe_resume_task_backed_direct,
+    )
+    from openminion.modules.brain.schemas import WorkingState
+    from types import SimpleNamespace
+
+    manager, project = _create_project_task(tmp_path)
+    checkpoint = manager.get_latest_checkpoint(project.task_id)
+    owned = []
+    unrelated = []
+    for state in (
+        TaskLifecycleState.ACTIVE,
+        TaskLifecycleState.PAUSED,
+        TaskLifecycleState.DONE,
+    ):
+        for parent in (project.task_id, "other-project", None):
+            record = manager.create_task(
+                session_id="project-conversation",
+                mode_name="act_profile_coding",
+                goal="repair",
+                agent_id="agent-1",
+                metadata={"project_task_id": parent} if parent else None,
+            )
+            manager.save_checkpoint(record.task_id, "saved", {"cursor": 2})
+            if state != TaskLifecycleState.ACTIVE:
+                manager.transition_task(task_id=record.task_id, to_state=state)
+            (owned if parent == project.task_id else unrelated).append(
+                (record.task_id, state)
+            )
+    manager.transition_task(task_id=project.task_id, to_state="paused")
+    assert all(manager.get_task(task_id).state == state for task_id, state in owned)
+    manager.transition_task(task_id=project.task_id, to_state=terminal)
+    manager.close()
+    manager = TaskManager.for_lifecycle_db(db_path=tmp_path / "tasks.db")
+    assert manager.get_latest_checkpoint(project.task_id) == checkpoint
+    for task_id, state in owned:
+        expected = (
+            state if state == TaskLifecycleState.DONE else TaskLifecycleState.CANCELLED
+        )
+        assert manager.get_task(task_id).state == expected
+        assert manager.get_latest_checkpoint(task_id) == ("saved", {"cursor": 2})
+        assert (
+            maybe_resume_task_backed_direct(
+                SimpleNamespace(task_manager=manager),
+                state=WorkingState(
+                    session_id="project-conversation",
+                    agent_id="agent-1",
+                    budgets_remaining=dict(
+                        ticks=1, tool_calls=1, a2a_calls=0, tokens=100, time_ms=1000
+                    ),
+                ),
+                user_input="resume",
+                logger=None,
+                preferred_task_id=task_id,
+            )
+            is None
+        )
+    assert all(manager.get_task(task_id).state == state for task_id, state in unrelated)
+    manager.close()
