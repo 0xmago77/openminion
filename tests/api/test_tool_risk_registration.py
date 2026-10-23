@@ -3,11 +3,43 @@
 import pytest
 
 from openminion import Agent, Handoff, tool
+from openminion.base.config import OpenMinionConfig
 from openminion.modules.policy.models import RiskSpec
+from openminion.modules.policy.runtime.action_policy import build_action_policy_service
 from openminion.modules.policy.runtime.service import PolicyCtl
 from openminion.modules.tool.errors import ToolRuntimeError
+from openminion.modules.tool.framework import build_registrar
 from tests.api.test_handoff import _FakeRuntime
 from openminion.modules.tool.registry import ToolRegistry
+
+
+@pytest.mark.parametrize(
+    ("name", "invocation_tool", "method"),
+    [
+        ("format_report", "format_report", "default"),
+        ("format.report", "format", "report"),
+    ],
+)
+def test_startup_tools_use_declared_risk_for_canonical_invocations(
+    tmp_path, name, invocation_tool, method
+):
+    @tool(name=name, min_scope="READ_ONLY", idempotent=True)
+    def report(order_id: str) -> str:
+        return order_id
+
+    registry = ToolRegistry()
+    build_registrar(report.tool_family_spec()).register(registry)
+    policy = build_action_policy_service(
+        config=OpenMinionConfig(), tool_registry=registry, data_root=tmp_path
+    )
+    try:
+        decision = policy.check(
+            {"tool": invocation_tool, "method": method, "args": {"order_id": "A-104"}},
+            {},
+        )
+        assert (decision.decision, decision.risk.risk_class) == ("ALLOW", "read")
+    finally:
+        policy.close()
 
 
 @pytest.mark.parametrize("failure", [False, True])
