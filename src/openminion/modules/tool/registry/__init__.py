@@ -95,7 +95,7 @@ class ToolRegistry:
         # Inherited context permits reads, not ownership of another thread's lock.
         inherited = _TEMPORARY_REGISTRATION_OWNER.get() == id(self)
         if not lock.acquire(blocking=not inherited):
-            raise RuntimeError(
+            raise RuntimeError(  # allow-bare-raise: preserve the SDK error contract
                 "Temporary tool registration in a cross-thread shared-runtime "
                 "handoff would deadlock; use a separate runtime for the child agent"
             )
