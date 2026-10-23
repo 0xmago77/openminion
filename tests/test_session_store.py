@@ -1,10 +1,13 @@
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from openminion.modules.storage.runtime import SessionStore as RuntimeSessionStore
+from openminion.modules.storage.runtime.context import build_runtime_storage
 from openminion.modules.storage.runtime.migrations import migrate_database
 from openminion.modules.storage.runtime.pinned_context import (
     PinnedContextEntry,
@@ -25,6 +28,11 @@ from openminion.modules.storage.runtime.session_store.models import (
 )
 
 EVENT_CLOCK = "openminion.modules.storage.runtime.session_store.lifecycle.utc_now_iso"
+MESSAGE_CLOCK = "openminion.modules.storage.runtime.session_store.messages.utc_now_iso"
+MESSAGE_UUID = "openminion.modules.storage.runtime.session_store.messages.uuid4"
+TIED_AT = "2026-10-22T01:00:00+00:00"
+# Each message id sorts before the id of the message appended before it.
+DESCENDING_IDS = tuple(char * 32 for char in "fc80")
 
 
 class SessionStoreTests(unittest.TestCase):
@@ -832,6 +840,304 @@ class SessionStoreTests(unittest.TestCase):
 
         self.assertIsNone(self.store.latest_conversation_id(session_id=session.id))
         self.assertIsNone(self.store.latest_conversation_id(session_id=""))
+
+    def _append_tied_messages(self, session_id: str) -> list[MessageRecord]:
+        specs = (
+            ("inbound", "conv-a", "thread-a"),
+            ("outbound", "conv-a", "thread-a"),
+            ("inbound", "conv-b", "thread-b"),
+            ("outbound", "conv-b", "thread-b"),
+        )
+        with (
+            patch(MESSAGE_CLOCK, return_value=TIED_AT),
+            patch(
+                MESSAGE_UUID,
+                side_effect=[SimpleNamespace(hex=value) for value in DESCENDING_IDS],
+            ),
+        ):
+            return [
+                self.store.append_message(
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    thread_id=thread_id,
+                    role=role,
+                    body=f"{conversation_id}/{role}",
+                )
+                for role, conversation_id, thread_id in specs
+            ]
+
+    def test_tied_messages_keep_append_order_and_newest_append_reads_last(
+        self,
+    ) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="chat"
+        )
+        appended = self._append_tied_messages(session.id)
+        ids = [item.id for item in appended]
+
+        listed = self.store.list_messages(session_id=session.id)
+        self.assertEqual([item.id for item in listed], ids)
+        self.assertEqual([item.rowid for item in listed], [1, 2, 3, 4])
+        self.assertEqual([item.rowid for item in appended], [1, 2, 3, 4])
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_messages(session_id=session.id, limit=2)
+            ],
+            ids[:2],
+        )
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_recent_messages(
+                    session_id=session.id, limit=1
+                )
+            ],
+            ids[3:],
+        )
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_recent_messages(
+                    session_id=session.id, limit=3
+                )
+            ],
+            ids[1:],
+        )
+        self.assertEqual(
+            self.store.latest_conversation_id(session_id=session.id), "conv-b"
+        )
+        self.assertEqual(ids, list(DESCENDING_IDS))
+        self.assertEqual({item.created_at for item in listed}, {TIED_AT})
+
+    def test_tied_messages_keep_append_order_within_conversation_and_thread(
+        self,
+    ) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="chat"
+        )
+        a_in, a_out, b_in, b_out = self._append_tied_messages(session.id)
+
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_messages(
+                    session_id=session.id, conversation_id="conv-a"
+                )
+            ],
+            [a_in.id, a_out.id],
+        )
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_recent_messages(
+                    session_id=session.id, conversation_id="conv-a", limit=1
+                )
+            ],
+            [a_out.id],
+        )
+        thread_b = self.store.list_recent_messages(
+            session_id=session.id,
+            conversation_id="conv-b",
+            thread_id="thread-b",
+            limit=1,
+        )
+        self.assertEqual([item.id for item in thread_b], [b_out.id])
+        self.assertEqual(thread_b[0].rowid, 4)
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_messages_after_rowid(
+                    session_id=session.id,
+                    after_rowid=a_out.rowid,
+                    thread_id="thread-b",
+                )
+            ],
+            [b_in.id, b_out.id],
+        )
+
+    def test_tied_message_cursors_page_in_append_order(self) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="chat"
+        )
+        appended = self._append_tied_messages(session.id)
+        ids = [item.id for item in appended]
+
+        pages: list[list[str]] = []
+        cursor = 0
+        while True:
+            page = self.store.list_messages_after_rowid(
+                session_id=session.id, after_rowid=cursor, limit=2
+            )
+            if not page:
+                break
+            pages.append([item.id for item in page])
+            cursor = page[-1].rowid
+        self.assertEqual(pages, [ids[:2], ids[2:]])
+
+        # A cursor recorded at append time still points at the same message
+        # after later appends in the same clock tick.
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_messages_after_rowid(
+                    session_id=session.id, after_rowid=appended[0].rowid
+                )
+            ],
+            ids[1:],
+        )
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_recent_messages(
+                    session_id=session.id,
+                    limit=2,
+                    after_rowid=appended[1].rowid,
+                    exclude_message_ids=(ids[3],),
+                )
+            ],
+            [ids[2]],
+        )
+
+    def _append_seq_by_id(self, session_id: str) -> dict[str, int]:
+        rows = self.connection.execute(
+            "SELECT id, append_seq FROM messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+        return {str(row["id"]): int(row["append_seq"]) for row in rows}
+
+    def test_append_seq_is_allocated_per_session_and_survives_restart(self) -> None:
+        first = self.store.resolve_session(
+            agent_id="main", channel="console", target="first"
+        )
+        second = self.store.resolve_session(
+            agent_id="main", channel="console", target="second"
+        )
+        with patch(MESSAGE_CLOCK, return_value=TIED_AT):
+            first_ids = [
+                self.store.append_message(
+                    session_id=first.id, role="inbound", body="f1"
+                ).id,
+                self.store.append_message(
+                    session_id=first.id, role="outbound", body="f2"
+                ).id,
+            ]
+            second_id = self.store.append_message(
+                session_id=second.id, role="inbound", body="s1"
+            ).id
+
+            self.connection.close()
+            self.connection = connect_database(self.database_path)
+            self.store = SessionStore(self.connection)
+            first_ids.append(
+                self.store.append_message(
+                    session_id=first.id, role="inbound", body="f3"
+                ).id
+            )
+
+        self.assertEqual(
+            self._append_seq_by_id(first.id),
+            {first_ids[0]: 1, first_ids[1]: 2, first_ids[2]: 3},
+        )
+        self.assertEqual(self._append_seq_by_id(second.id), {second_id: 1})
+        self.assertEqual(
+            [item.id for item in self.store.list_messages(session_id=first.id)],
+            first_ids,
+        )
+
+    def test_failed_append_rolls_back_session_write_and_append_seq(self) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="chat"
+        )
+        with patch(MESSAGE_CLOCK, return_value=TIED_AT):
+            first = self.store.append_message(
+                session_id=session.id, role="inbound", body="first"
+            )
+        before = self.store.get_session(session.id)
+        assert before is not None
+
+        with (
+            patch(MESSAGE_CLOCK, return_value="2026-10-22T01:00:01+00:00"),
+            patch(MESSAGE_UUID, return_value=SimpleNamespace(hex=first.id)),
+        ):
+            with self.assertRaises(sqlite3.IntegrityError):
+                self.store.append_message(
+                    session_id=session.id, role="outbound", body="duplicate id"
+                )
+
+        after = self.store.get_session(session.id)
+        assert after is not None
+        self.assertEqual(
+            (after.updated_at, after.last_activity_at),
+            (before.updated_at, before.last_activity_at),
+        )
+        self.assertEqual(self.store.count_messages(session_id=session.id), 1)
+        with patch(MESSAGE_CLOCK, return_value=TIED_AT):
+            second = self.store.append_message(
+                session_id=session.id, role="outbound", body="second"
+            )
+        self.assertEqual(
+            self._append_seq_by_id(session.id), {first.id: 1, second.id: 2}
+        )
+        self.assertEqual(
+            [item.id for item in self.store.list_messages(session_id=session.id)],
+            [first.id, second.id],
+        )
+
+    def test_concurrent_appends_to_one_session_allocate_distinct_append_order(
+        self,
+    ) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="chat"
+        )
+        peers = [build_runtime_storage(self.database_path) for _ in range(4)]
+        appended: dict[int, list[MessageRecord]] = {index: [] for index in range(4)}
+        errors: list[BaseException] = []
+        start = threading.Barrier(len(peers))
+
+        def _append(index: int) -> None:
+            try:
+                start.wait()
+                for step in range(10):
+                    appended[index].append(
+                        peers[index].sessions.append_message(
+                            session_id=session.id,
+                            role="inbound",
+                            body=f"peer-{index}-{step}",
+                        )
+                    )
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        try:
+            with patch(MESSAGE_CLOCK, return_value=TIED_AT):
+                workers = [
+                    threading.Thread(target=_append, args=(index,))
+                    for index in range(len(peers))
+                ]
+                for worker in workers:
+                    worker.start()
+                for worker in workers:
+                    worker.join()
+        finally:
+            for peer in peers:
+                peer.close()
+
+        self.assertEqual(errors, [])
+        records = [item for items in appended.values() for item in items]
+        self.assertEqual(sorted(item.rowid for item in records), list(range(1, 41)))
+        self.assertEqual(
+            sorted(self._append_seq_by_id(session.id).values()), list(range(1, 41))
+        )
+        listed = self.store.list_messages(session_id=session.id)
+        self.assertEqual(
+            [item.id for item in listed],
+            [item.id for item in sorted(records, key=lambda item: item.rowid)],
+        )
+        for items in appended.values():
+            self.assertEqual(
+                [item.rowid for item in items], sorted(item.rowid for item in items)
+            )
 
     def test_session_context_create_and_update(self) -> None:
         session = self.store.resolve_session(

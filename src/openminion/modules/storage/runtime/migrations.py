@@ -27,6 +27,29 @@ class MigrationError(RuntimeError):
     """Raised when a schema migration fails or is invalid."""
 
 
+# Existing messages get the order available when the migration runs: the SQLite
+# rowid order, or on Postgres, which stores no insertion order, the pre-upgrade
+# read order `(created_at, id)`.
+_MESSAGE_APPEND_SEQ_BACKFILL = """
+            UPDATE messages
+            SET append_seq = rowid
+            """
+_POSTGRES_MESSAGE_APPEND_SEQ_BACKFILL = """
+            UPDATE messages
+            SET append_seq = ordered.append_seq
+            FROM (
+                SELECT
+                    id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY session_id
+                        ORDER BY created_at ASC, id ASC
+                    ) AS append_seq
+                FROM messages
+            ) AS ordered
+            WHERE messages.id = ordered.id
+            """
+
+
 DEFAULT_MIGRATIONS: Tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -379,6 +402,109 @@ DEFAULT_MIGRATIONS: Tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        version=12,
+        name="add_message_append_seq",
+        statements=(
+            """
+            ALTER TABLE messages
+            ADD COLUMN append_seq INTEGER NOT NULL DEFAULT 0
+            """,
+            _MESSAGE_APPEND_SEQ_BACKFILL,
+            """
+            CREATE UNIQUE INDEX idx_messages_session_append_seq
+            ON messages(session_id, append_seq)
+            """,
+            """
+            DROP INDEX idx_messages_session_created
+            """,
+            """
+            CREATE INDEX idx_messages_session_created
+            ON messages(session_id, created_at, append_seq)
+            """,
+            # A compaction boundary is a message position. Positions inside a
+            # group of messages sharing one created_at were decided by the
+            # random message id, so which of them were compacted is unknown.
+            # When the anchor message shares its created_at with another
+            # message, or is missing, move the boundary back to the last message
+            # stored before that created_at and treat the whole group as not
+            # compacted.
+            """
+            UPDATE session_contexts
+            SET
+                compacted_message_count = CASE
+                    WHEN compacted_message_count - compacted_until_rowid + (
+                        SELECT COUNT(*)
+                        FROM messages AS earlier
+                        WHERE earlier.session_id = session_contexts.session_id
+                          AND earlier.created_at
+                              < session_contexts.compacted_until_created_at
+                    ) < 0 THEN 0
+                    ELSE compacted_message_count - compacted_until_rowid + (
+                        SELECT COUNT(*)
+                        FROM messages AS earlier
+                        WHERE earlier.session_id = session_contexts.session_id
+                          AND earlier.created_at
+                              < session_contexts.compacted_until_created_at
+                    )
+                END,
+                compacted_until_message_id = COALESCE(
+                    (
+                        SELECT earlier.id
+                        FROM messages AS earlier
+                        WHERE earlier.session_id = session_contexts.session_id
+                          AND earlier.created_at
+                              < session_contexts.compacted_until_created_at
+                        ORDER BY earlier.created_at DESC, earlier.append_seq DESC
+                        LIMIT 1
+                    ),
+                    ''
+                ),
+                compacted_until_created_at = COALESCE(
+                    (
+                        SELECT earlier.created_at
+                        FROM messages AS earlier
+                        WHERE earlier.session_id = session_contexts.session_id
+                          AND earlier.created_at
+                              < session_contexts.compacted_until_created_at
+                        ORDER BY earlier.created_at DESC, earlier.append_seq DESC
+                        LIMIT 1
+                    ),
+                    ''
+                ),
+                compacted_until_rowid = (
+                    SELECT COUNT(*)
+                    FROM messages AS earlier
+                    WHERE earlier.session_id = session_contexts.session_id
+                      AND earlier.created_at
+                          < session_contexts.compacted_until_created_at
+                )
+            WHERE compacted_until_rowid > (
+                SELECT COUNT(*)
+                FROM messages AS earlier
+                WHERE earlier.session_id = session_contexts.session_id
+                  AND earlier.created_at < session_contexts.compacted_until_created_at
+            )
+              AND (
+                  EXISTS (
+                      SELECT 1
+                      FROM messages AS tied
+                      WHERE tied.session_id = session_contexts.session_id
+                        AND tied.created_at = session_contexts.compacted_until_created_at
+                        AND tied.id <> session_contexts.compacted_until_message_id
+                  )
+                  OR NOT EXISTS (
+                      SELECT 1
+                      FROM messages AS anchor
+                      WHERE anchor.session_id = session_contexts.session_id
+                        AND anchor.id = session_contexts.compacted_until_message_id
+                        AND anchor.created_at
+                            = session_contexts.compacted_until_created_at
+                  )
+              )
+            """,
+        ),
+    ),
 )
 
 
@@ -538,9 +664,15 @@ def _adapt_migration_statements(
         return tuple(statements)
     adapted: list[str] = []
     for statement in statements:
-        normalized = statement.replace(
-            "id INTEGER PRIMARY KEY AUTOINCREMENT",
-            "id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY",
-        ).replace("embedding BLOB NOT NULL", "embedding BYTEA NOT NULL")
+        normalized = (
+            statement.replace(
+                "id INTEGER PRIMARY KEY AUTOINCREMENT",
+                "id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY",
+            )
+            .replace("embedding BLOB NOT NULL", "embedding BYTEA NOT NULL")
+            .replace(
+                _MESSAGE_APPEND_SEQ_BACKFILL, _POSTGRES_MESSAGE_APPEND_SEQ_BACKFILL
+            )
+        )
         adapted.append(normalized)
     return tuple(adapted)
