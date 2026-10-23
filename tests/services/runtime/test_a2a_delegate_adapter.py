@@ -392,7 +392,8 @@ def test_command_shape_carries_model_named_target_and_instruction() -> None:
         agent_id="researcher",
         instruction="find X",
         timeout_seconds=30,
-        permission_mode="bypass",
+        permission_mode="ask",
+        permission_overrides={"file.write": "bypass"},
         workspace_root="/repo",
         cwd="/repo/subdir",
     )
@@ -404,7 +405,8 @@ def test_command_shape_carries_model_named_target_and_instruction() -> None:
     assert call.command["params"]["goal"] == "find X"
     assert call.command["params"]["instruction"] == "find X"
     assert call.command["params"]["timeout_seconds"] == 30
-    assert call.command["params"]["permission_mode"] == "bypass"
+    assert call.command["params"]["permission_mode"] == "ask"
+    assert call.command["params"]["permission_overrides"] == {"file.write": "bypass"}
     assert call.command["params"]["workspace_root"] == "/repo"
     assert call.command["params"]["cwd"] == "/repo/subdir"
     assert call.command["timeout_ms"] == 30_000

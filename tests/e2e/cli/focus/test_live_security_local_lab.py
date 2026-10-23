@@ -28,7 +28,7 @@ from openminion.modules.runtime.sandboxes.security_lab import (
 from openminion.tools.security.schemas import SecurityLabReport
 from tests.e2e.cli.focus.conftest import _isolated_live_config
 from tests.e2e.cli.focus.harness import FocusProbe, FocusScenario
-from tests.e2e.cli.focus.harness.assertions import visible_text
+from tests.e2e.cli.focus.harness.assertions import read_focus_evidence, visible_text
 from tests.e2e.cli.focus.harness.artifacts import artifact_root, write_transcript
 from tests.e2e.cli.focus.harness.probe import _record_approval_event, focus_session_id
 from tests.e2e.cli.focus.test_live_goal_only import _events, _usage
@@ -72,7 +72,7 @@ def _configuration(root, monkeypatch):
         "providers": {agent["provider"]: provider},
         "agents": {_AGENT: agent},
         "identity": {"db_path": "identity/identity.db"},
-        "enabled_channels": [],
+        "enabled_channels": ["console"],
         "enabled_plugins": [],
         "runtime": {},
     }
@@ -194,6 +194,16 @@ def _assert_evidence(probe, lab, command, evidence):
             exec_evidence_ref=report.evidence_refs[0],
             invocation=invocation,
         )
+    _, messages, _ = read_focus_evidence(probe.environment(), probe.session_id)
+    outbound = [message for message in messages if message.role == "outbound"]
+    assert [message.metadata.get("brain_status") for message in outbound] == ["done"]
+    for key in ("tool_results", "tool_calls_cumulative"):
+        results = json.loads(outbound[0].metadata[key])
+        assert results and all(item.get("structural_only") is True for item in results)
+        assert all(not ({"args", "content", "error"} & item.keys()) for item in results)
+        assert TARGET_BODY.decode() not in json.dumps(results)
+    evidence["persisted_terminal_status"] = "done"
+    evidence["persisted_tool_results_structural"] = True
     events = _events(probe.data_root / "telemetry/telemetry.db", 0)
     allowed = [
         set(event["data"]["adaptive.allowed_tools"])
@@ -201,7 +211,9 @@ def _assert_evidence(probe, lab, command, evidence):
         if event["event_type"] == "brain.execution_status"
         and event["data"].get("adaptive.allowed_tools")
     ]
-    assert allowed and all(tools == _TOOLS for tools in allowed)
+    assert allowed and all(
+        tools == _TOOLS - {"respond", "clarify"} for tools in allowed
+    )
     requested = {
         (event["execution_id"], event["data"]["call_id"]): event["data"][
             "canonical_name"

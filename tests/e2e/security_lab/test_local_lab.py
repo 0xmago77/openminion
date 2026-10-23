@@ -105,7 +105,7 @@ def lab_context(real_lab, tmp_path):
             session_id=session_id,
         )
 
-    ctl = ArtifactCtl(make_config(tmp_path / "cas"))
+    ctl = ArtifactCtl(make_config(tmp_path / "data"))
     ctx = RuntimeContext(
         policy=Policy(
             raw={"workspace_root": str(tmp_path), "context_metadata": metadata()}

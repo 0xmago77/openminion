@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, patch
 from openminion.base.config import OpenMinionConfig
 from openminion.base.types import Message
 from openminion.modules.identity.models import AgentProfile
+from openminion.modules.brain.schemas import AgentBudgets, LLMProfiles
+from openminion.modules.brain.schemas import AgentProfile as BrainAgentProfile
 from openminion.modules.identity.runtime.service import IdentityCtl
 from openminion.modules.identity.storage.store import SQLiteIdentityStore
 from openminion.services.runtime.plugins import PluginRegistry
@@ -98,9 +100,15 @@ class _DummyRunner:
         self.step_out = step_out
         self.session_api = _DummySessionApi()
         self.last_run: dict[str, object] | None = None
-        self.profile = SimpleNamespace(
+        self.profile = BrainAgentProfile(
             agent_id="test-agent",
-            budgets=SimpleNamespace(
+            llm_profiles=LLMProfiles(
+                decide_model="fake-model",
+                plan_model="fake-model",
+                reflect_model="fake-model",
+                summarize_model="fake-model",
+            ),
+            budgets=AgentBudgets(
                 max_ticks_per_user_turn=40,
                 max_tool_calls=16,
                 max_a2a_calls=5,
@@ -209,7 +217,9 @@ def _make_step_out(
             }
 
     plan = SimpleNamespace(steps=[_Step("cmd-1")])
-    working_state = SimpleNamespace(plan=plan, llm_calls_used=1)
+    working_state = SimpleNamespace(
+        plan=plan, llm_calls_used=1, pending_confirmation_command=None
+    )
     return SimpleNamespace(
         message=message,
         status=status,
@@ -657,7 +667,9 @@ def test_brain_tool_policy_denied_emits_security_event():
             }
 
     plan = SimpleNamespace(steps=[_Step("cmd-2")])
-    working_state = SimpleNamespace(plan=plan, llm_calls_used=1)
+    working_state = SimpleNamespace(
+        plan=plan, llm_calls_used=1, pending_confirmation_command=None
+    )
     step_out = SimpleNamespace(
         message="",
         status="running",

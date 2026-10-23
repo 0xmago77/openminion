@@ -10,10 +10,8 @@ from uuid import uuid4
 
 from openminion.base.logging import format_structured_event, get_logger
 from openminion.modules.brain.loop.strategies.coding.contracts import (
-    select_coding_allowed_tools,
+    select_project_allowed_tools,
 )
-from openminion.modules.brain.loop.tools.plan_control import PLAN_TOOL_NAME
-from openminion.modules.brain.loop.tools.shortlisting import TOOL_REQUEST_TOOL_NAME
 from openminion.modules.config import resolve_module_data_root, resolve_module_home_root
 from openminion.modules.task import (
     AutonomyRun,
@@ -625,18 +623,7 @@ class ProjectWorker:
         project_run = checkpoint.project_run
         cycle_id = f"{project_run.project_run_id}:cycle:{cycle_number}"
         milestone = project_run.current_milestone or run.goal_text
-        allowed_tools: tuple[str, ...] = ()
-        if run.execution_selectors.verification_domain != "research":
-            launch_grant = project_policy.repository_project_launch_approved(checkpoint)
-            release_grant = project_policy.repository_release_tools_approved(checkpoint)
-            requestable_tools = select_coding_allowed_tools(
-                project_launch_approved=launch_grant,
-                release_approved=release_grant,
-            )
-            allowed_tools = tuple(sorted(requestable_tools | {TOOL_REQUEST_TOOL_NAME}))
         revision_required = checkpoint.payload.get("plan_revision_required") is True
-        if revision_required:
-            allowed_tools = (PLAN_TOOL_NAME,)
         request = ProjectTurnRequest(
             run_id=run.run_id,
             project_run_id=project_run.project_run_id,
@@ -655,13 +642,28 @@ class ProjectWorker:
                 operator_guidance=operator_guidance,
             ),
             act_profile=run.execution_selectors.verification_domain,
-            allowed_tools=allowed_tools,
+            allowed_tools=select_project_allowed_tools(
+                verification_domain=run.execution_selectors.verification_domain,
+                plan_revision_required=revision_required,
+                project_launch_approved=project_policy.repository_project_launch_approved(
+                    checkpoint
+                ),
+                release_approved=project_policy.repository_release_tools_approved(
+                    checkpoint
+                ),
+            ),
             project_tool_calls_remaining=project_tool_calls_remaining,
             plan_revision_required=revision_required,
         )
         self._log_cycle("project.cycle.started", run, project_run, cycle_id=cycle_id)
         turn_result = self._turn(request)
-        verification = () if revision_required else self._verify()
+        confirmation_pending = (
+            turn_result.condition == AutonomyLoopConditionKind.WAITING
+            and bool(turn_result.pending_confirmation_command_id)
+        )
+        verification = (
+            () if revision_required or confirmation_pending else self._verify()
+        )
         closure = evaluate_project_turn_verification(run, turn_result, verification)
         raw_replan_count = checkpoint.payload.get("replan_count", 0)
         previous_replans = raw_replan_count if isinstance(raw_replan_count, int) else 0
@@ -671,12 +673,9 @@ class ProjectWorker:
             for ref in (*turn_result.evidence_refs, *turn_result.effect_refs)
         )
         task_plan_incomplete, next_milestone = (
-            project_progress.repository_task_plan_progress(
-                checkpoint,
-                turn_result,
-            )
+            project_progress.repository_task_plan_progress(checkpoint, turn_result)
         )
-        if checkpoint.payload.get("plan_revision_required") is True and not (
+        if revision_required and not (
             turn_result.task_plan_revisions or turn_result.task_plan_revision
         ):
             task_plan_incomplete = True

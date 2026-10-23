@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from argparse import Namespace
 from hashlib import sha256
 import json
 import os
@@ -19,7 +20,9 @@ import pytest
 from openminion.base.redaction import redact_sensitive_text
 from openminion.cli.commands.autonomy_project import (
     build_project_launch_request,
+    configured_cron_store,
     launch_project,
+    schedule_project_wake,
 )
 from openminion.cli.commands.daemon import daemon_start, daemon_stop
 from openminion.modules.artifact.config import (
@@ -38,12 +41,14 @@ from openminion.modules.task.constants import (
     DEFAULT_PROJECT_VERIFICATION_TIMEOUT_SECONDS,
 )
 from openminion.modules.task.project.models import ProjectCheckpoint
+from openminion.modules.task.project import project_workspace
+from openminion.modules.tool.diagnostics.events import structural_tool_results
 from openminion.tools.security.review_schemas import SecurityFindingReview
 from openminion.tools.security.schemas import SecurityAuditReport
 from tests.e2e.cli.focus.harness import FocusProbe, FocusScenario
 from tests.e2e.cli.focus.harness.artifacts import artifact_root, write_transcript
 from tests.e2e.cli.focus.harness.assertions import read_focus_evidence
-from tests.e2e.cli.focus.harness.probe import focus_session_id
+from tests.e2e.cli.focus.harness.probe import _record_approval_event, focus_session_id
 from tests.e2e.cli.focus.test_live_goal_only import _events, _usage
 from tests.e2e.cli.focus.test_live_security_researcher import (
     EXPECTED_TOOLS,
@@ -51,7 +56,6 @@ from tests.e2e.cli.focus.test_live_security_researcher import (
     _install_profile,
 )
 from tests.e2e.cli.focus.test_live_simple_input_project import (
-    _assert_completed_child_lifecycle,
     _git,
     _project_owners,
     _tool_evidence,
@@ -120,8 +124,10 @@ def _configuration(
                 "allow_host": True,
             },
         }
+    config["agents"][_IMPLEMENTER]["role"] = "coding implementer"
+    config["agents"][_CODE_REVIEWER]["role"] = "read-only code reviewer"
     config["default_agent"] = _PARENT
-    config["enabled_channels"] = []
+    config["enabled_channels"] = ["console"]
     config["enabled_plugins"] = []
     config["identity"] = {"db_path": "identity/identity.db"}
     config.setdefault("storage", {})["path"] = "state/openminion.db"
@@ -166,11 +172,21 @@ def _install_roles(probe: FocusProbe) -> None:
         )
 
 
+def _approve_review(kind: str, screen: str) -> None:
+    preview: list[dict[str, object]] = []
+    _record_approval_event(preview, kind=kind, screen_text=screen, reply="yes")
+    assert preview[0]["action"] == "security.review_report", (
+        "unexpected approval; no action approved"
+    )
+
+
 def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dict:
     (root / f"{name}.prompt.txt").write_text(prompt)
     profile = (
         "security_readonly" if probe.agent_id == _RESEARCHER else "security_review"
     )
+    approvals: list[dict[str, object]] = []
+    review_turn = probe.agent_id == _REVIEWER
     with probe.session(
         rows=52,
         cols=180,
@@ -183,16 +199,36 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
             f"/tools activate {profile} approved=yes",
             marker=f"Activated: {profile}",
         )
-        probe.run_turn(
-            session, FocusScenario(scenario_id=name, prompt=prompt, timeout=360)
+        try:
+            probe.run_turn(
+                session,
+                FocusScenario(
+                    scenario_id=name,
+                    prompt=prompt,
+                    timeout=360,
+                    requires_approval=review_turn,
+                    max_auto_approvals=1,
+                ),
+                approval_events=approvals,
+                check_approval=_approve_review,
+            )
+        finally:
+            (root / f"{name}.approvals.json").write_text(
+                json.dumps(approvals, indent=2)
+            )
+        assert [event["action"] for event in approvals] == (
+            ["security.review_report"] if review_turn else []
         )
         probe.run_slash(
             session, f"/tools deactivate {profile}", marker=f"Deactivated: {profile}"
         )
-    observed, _, brain_session = read_focus_evidence(
+    observed, messages, brain_session = read_focus_evidence(
         probe.environment(), probe.session_id
     )
-    events = [(event.event_type, event.data) for event in observed]
+    events = [
+        (event.event_type, event.data)
+        for event in sorted(observed, key=lambda event: event.timestamp)
+    ]
     allowed = (
         EXPECTED_TOOLS
         if probe.agent_id == _RESEARCHER
@@ -207,22 +243,25 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
     assert exposures and all(tools == allowed for tools in exposures)
     calls = [data for kind, data in events if kind == "tool.call.requested"]
     assert calls and all(data["canonical_name"] in allowed for data in calls)
-    assert not any(kind == "tool.call.blocked" for kind, _ in events)
-    assert all(
-        data["status"] == "success"
-        for kind, data in events
-        if kind == "tool.call.completed"
-    )
     expected_security = (
         ["security.scan_code", "security.publish_report"]
         if probe.agent_id == _RESEARCHER
         else ["security.review_report"]
     )
-    assert [
-        call["canonical_name"]
-        for call in calls
-        if call["canonical_name"].startswith("security.")
-    ] == expected_security
+    terminal_statuses = [
+        message.metadata.get("brain_status")
+        for message in messages
+        if message.role == "outbound"
+    ]
+    for message in messages:
+        if message.role != "outbound":
+            continue
+        for field in ("tool_results", "tool_calls_cumulative"):
+            results = json.loads(message.metadata[field])
+            assert results and results == structural_tool_results(results), (
+                f"persisted {field} contains nonstructural tool data"
+            )
+    recovered = _assert_readonly_outcomes(events, expected_security, terminal_statuses)
     usage = _usage(
         _events(probe.data_root / "telemetry/telemetry.db", 0),
         probe.session_id,
@@ -248,10 +287,50 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
         "profile": profile,
         "exposed_tools": sorted(allowed),
         "calls": calls,
+        "recovered_validation_attempts": recovered,
+        "terminal_statuses": terminal_statuses,
+        "approvals": approvals,
         "usage": usage,
         "tool_transcript": f"{name}.tools.json",
         "content_boundary": "Structural transcript omits invocation arguments and results; canonical CAS documents are read in full by the operator.",
     }
+
+
+def _assert_readonly_outcomes(
+    events: list, expected_security: list[str], terminal_statuses: list
+) -> list[dict]:
+    assert terminal_statuses == ["done"], f"turn did not complete: {terminal_statuses}"
+    calls = {
+        data["call_id"]: data["canonical_name"]
+        for kind, data in events
+        if kind == "tool.call.requested"
+    }
+    successful_security: list[str] = []
+    recovered: list[dict] = []
+    finished: set[str] = set()
+    for kind, data in events:
+        if kind not in {"tool.call.completed", "tool.call.blocked"}:
+            continue
+        call_id = data["call_id"]
+        tool = calls[call_id]
+        assert call_id not in finished
+        finished.add(call_id)
+        if kind == "tool.call.blocked":
+            code = data["error"]["code"]
+            assert tool in {"security.publish_report", "security.review_report"}
+            assert tool in expected_security
+            assert code == "INVALID_ARGUMENT"
+            assert tool not in successful_security, "error after successful publication"
+            recovered.append(
+                {"call_id": call_id, "tool_name": tool, "error_code": code}
+            )
+        else:
+            assert data["status"] == "success"
+            if tool.startswith("security."):
+                successful_security.append(tool)
+    assert finished == set(calls)
+    assert successful_security == expected_security
+    return recovered
 
 
 def _published(
@@ -321,7 +400,8 @@ def _handoff(
             "failing_before_exit_code": 1,
             "operator_approved": True,
             "delivery": f"Delegate exactly one code-bearing child to {_IMPLEMENTER}; parent must not edit app.py. "
-            f"Use task.delegate review with distinct {_CODE_REVIEWER}, then explicitly accept only a passing artifact. "
+            "Instruct that child to edit only app.py using the existing file.write allowance; leave verification to the runtime. "
+            f"Use task.delegate mode=review with distinct {_CODE_REVIEWER}, then mode=accept only for a passing artifact. "
             "No security tools, network, installation, push or PR. Do not commit; operator commits accepted patch. "
             "Use the configured verifier and git.status; retain the actual child artifact ref and complete the public task plan.",
         }
@@ -329,6 +409,304 @@ def _handoff(
     redacted, count = redact_sensitive_text(text)
     assert not count and len(redacted) <= 4000, "complete approved handoff does not fit"
     return redacted
+
+
+def _approve_project_delegate(probe, ctl, run, checkpoint, expected_mode):
+    command_id = checkpoint.payload["pending_confirmation_command_id"]
+    sessions = SQLiteSessionStore(probe.data_root / "state/brain/sessions.db")
+    try:
+        snapshot = sessions.get_latest_working_state(
+            f"{probe.session_id}::conv:{checkpoint.project_run.project_run_id}",
+            agent_id=_PARENT,
+        )
+        pending = snapshot["state_inline"]["pending_confirmation_command"]
+    finally:
+        sessions.close()
+    assert pending["command_id"] == command_id
+    assert pending["tool_name"] == "task.delegate"
+    args = pending["args"]
+    assert expected_mode in {"sync", "review", "accept"}
+    assert args.get("mode", "sync") == expected_mode
+    child_ref = None
+    if expected_mode == "sync":
+        assert args["agent_id"] == _IMPLEMENTER and args["code_bearing"] is True
+        assert (
+            project_workspace(checkpoint.project_run.workspace_ref).resolve()
+            == probe.workdir.resolve()
+        )
+    else:
+        child_ref = ctl.alias_resolve(args["child_artifact"]["record_alias"]).ref
+        child = json.loads(ctl.read_bytes(child_ref))
+        assert child["agent_id"] == _IMPLEMENTER
+        assert child["target_digest"] == args["child_artifact"]["target_digest"]
+        assert Path(child["repository"]).resolve() == probe.workdir.resolve()
+        assert child["touched_paths"] == ["app.py"] and child["validation"]["passed"]
+        if expected_mode == "review":
+            assert args["agent_id"] == _CODE_REVIEWER
+        else:
+            assert child["review_receipt"]["passed"]
+            assert child["review_receipt"]["reviewer_agent_id"] == _CODE_REVIEWER
+    with probe.session() as session:
+        probe.wait_ready(session)
+        shown = probe.run_slash(
+            session,
+            f"/project show {run.run_id}",
+            marker=f"input_request_id: {command_id}",
+        )
+        answered = probe.run_slash(
+            session,
+            f"/project answer {run.run_id} --input-request-id {command_id} --answer allow_once",
+            marker=f"input_request_id: {command_id}",
+        )
+        _, manager = _project_owners(probe)
+        try:
+            answers = manager.get_task(run.task_id).metadata["operator_answers"]
+            assert len(answers) == 1
+            assert answers[0]["request_id"] == command_id
+            assert answers[0]["answer"] == "allow_once"
+        finally:
+            manager.close()
+        resumed = probe.run_slash(
+            session,
+            f"/project resume {run.run_id}",
+            marker="task_state: active",
+        )
+    return {
+        "command_id": command_id,
+        "tool_name": "task.delegate",
+        "mode": expected_mode,
+        "reply": "allow_once",
+        "args": args,
+        "child_ref_before": child_ref,
+        "show": shown,
+        "answer": answered,
+        "resume": resumed,
+    }
+
+
+def _approved_replays(probe, project_run_id, approvals):
+    session_id = f"{probe.session_id}::conv:{project_run_id}"
+    with sqlite3.connect(probe.data_root / "state/brain/sessions.db") as connection:
+        rows = connection.execute(
+            "SELECT event_type, payload_json FROM session_events "
+            "WHERE session_id = ? AND actor_id = ? AND event_type IN "
+            "('brain.confirm_replay', 'tool.request', 'tool.completed') ORDER BY seq",
+            (session_id, _PARENT),
+        ).fetchall()
+    events = [(kind, json.loads(raw)) for kind, raw in rows]
+    replay_ids = [
+        data["command_id"] for kind, data in events if kind == "brain.confirm_replay"
+    ]
+    assert len(replay_ids) == len(set(replay_ids)) == len(approvals) == 3
+    assert [item["mode"] for item in approvals] == ["sync", "review", "accept"]
+    requests = [
+        data
+        for kind, data in events
+        if kind == "tool.request" and data["command_id"] in replay_ids
+    ]
+    completions = [
+        data
+        for kind, data in events
+        if kind == "tool.completed" and data["command_id"] in replay_ids
+    ]
+    assert [item["command_id"] for item in requests] == replay_ids
+    assert [item["command_id"] for item in completions] == replay_ids
+    for approval, request, completion in zip(
+        approvals, requests, completions, strict=True
+    ):
+        assert (
+            request["brain_session_id"] == completion["brain_session_id"] == session_id
+        )
+        assert request["tool_name"] == completion["tool_name"] == "task.delegate"
+        assert request["args"] == approval["args"]
+        assert completion["status"] == "success" and not completion.get("error")
+    return replay_ids
+
+
+def _corrected_repair_arguments(events: list[dict]) -> list[dict]:
+    """Record corrected, pre-execution input errors; never excuse policy failures."""
+    requests = {}
+    failures = []
+    successes = []
+    replacements = []
+    replacing = {}
+    for position, event in enumerate(events):
+        actor = event["agent_id"]
+        if actor not in {_PARENT, _IMPLEMENTER, _CODE_REVIEWER}:
+            continue
+        scope = tuple(
+            event[key]
+            for key in (
+                "agent_id",
+                "session_id",
+                "turn_id",
+                "invocation_id",
+                "execution_id",
+            )
+        )
+        data = event["data"]
+        kind = event["event_type"]
+        if (
+            actor == _PARENT
+            and kind == "task_plan.abandoned"
+            and data.get("reason") == "replaced_by_new_task_plan"
+        ):
+            replacing[scope] = (position, data["plan_id"])
+        elif kind == "task_plan.declared" and scope in replacing:
+            abandoned_at, old_id = replacing.pop(scope)
+            replacements.append(
+                (scope, old_id, data["plan"]["plan_id"], abandoned_at, position)
+            )
+        elif kind == "tool.call.requested":
+            tool = data["canonical_name"]
+            args = data["sanitized_normalized_arguments"]
+            if tool == "tool.request" and args.get("name"):
+                key = (tool, args["name"], "request")
+            elif (
+                actor == _PARENT
+                and tool == "plan"
+                and args.get("action") in {"declare", "complete"}
+            ):
+                key = (tool, args["plan_id"], args["action"])
+            else:
+                continue
+            requests[scope, data["call_id"]] = (position, key)
+        elif kind in {"tool.call.blocked", "tool.call.completed"}:
+            call_id = data["call_id"]
+            if (scope, call_id) not in requests:
+                continue
+            requested_at, key = requests[scope, call_id]
+            if kind == "tool.call.blocked":
+                code = data["error"]["code"]
+                if key[2] == "declare":
+                    allowed = {"PLAN_VALIDATION_FAILED", "PLAN_REVISION_REQUIRED"}
+                elif key[2] == "complete":
+                    allowed = {"PLAN_STEPS_UNRESOLVED"}
+                else:
+                    allowed = {"TOOL_REQUEST_INVALID_ARGUMENTS"}
+                if code in allowed:
+                    failures.append((position, event["id"], scope, call_id, key, code))
+            elif data["status"] == "success":
+                if key[0] == "tool.request":
+                    output = data.get("output", {}).get("outputs", {})
+                    if (
+                        output.get("activated") is not True
+                        or output.get("tool_name") != key[1]
+                    ):
+                        continue
+                successes.append((scope, requested_at, position, call_id, key))
+    corrected = []
+    for failed_at, event_id, scope, call_id, key, code in failures:
+        matches = [
+            (corrected_id, corrected_key[1])
+            for completed_scope, requested_at, completed_at, corrected_id, corrected_key in successes
+            if completed_scope == scope
+            and failed_at < requested_at < completed_at
+            and (
+                corrected_key == key
+                or (
+                    key[0] == corrected_key[0] == "plan"
+                    and key[2] == corrected_key[2] == "declare"
+                    and any(
+                        replacement_scope == scope
+                        and (old_id, new_id) == (key[1], corrected_key[1])
+                        and requested_at < abandoned_at < declared_at < completed_at
+                        for replacement_scope, old_id, new_id, abandoned_at, declared_at in replacements
+                    )
+                )
+            )
+        ]
+        assert matches, f"uncorrected argument error: {call_id}"
+        corrected.append(
+            {
+                "event_id": event_id,
+                "agent_id": scope[0],
+                "session_id": scope[1],
+                "call_id": call_id,
+                "corrected_call_id": matches[0][0],
+                "corrected_target": matches[0][1],
+                "tool_name": key[0],
+                "target": key[1],
+                "error_code": code,
+            }
+        )
+    return corrected
+
+
+def _repair_usage(events: list[dict], agent_id: str) -> dict:
+    role_events = [event for event in events if event["agent_id"] == agent_id]
+    assert not any(event["event_type"] == "llm.call.failed" for event in role_events)
+    completions = list(
+        {
+            (event["session_id"], event["turn_id"], event["data"]["llm_call_id"]): event
+            for event in role_events
+            if event["event_type"] == "llm.call.completed"
+        }.values()
+    )
+    timings = [
+        event for event in role_events if event["event_type"] == "chat.phase_timing"
+    ]
+    phases = {event["data"]["turn_id"]: event for event in timings}
+    assert completions and timings and len(phases) == len(timings)
+    for event in timings:
+        data = event["data"]
+        assert (event["agent_id"], event["session_id"], event["turn_id"]) == (
+            data["agent_id"],
+            data["session_id"],
+            data["turn_id"],
+        )
+        assert all(
+            isinstance(data.get(key), int)
+            for key in (
+                "provider_input_tokens",
+                "provider_output_tokens",
+                "provider_calls_total",
+            )
+        ), f"missing observed phase usage for {agent_id}"
+        assert data.get("provider_attempts") and all(
+            attempt["outcome"] == "ok" for attempt in data["provider_attempts"]
+        ), f"unsuccessful provider attempt for {agent_id}"
+    auxiliary = []
+    for event in completions:
+        data = event["data"]
+        assert data["trace_id"] in phases, f"missing provider phase for {agent_id}"
+        if all(
+            isinstance(data.get("usage", {}).get(key), int)
+            for key in ("input_tokens", "output_tokens")
+        ):
+            continue
+        assert (
+            data.get("usage") == {}
+            and data.get("auxiliary") is True
+            and data.get("purpose") == "freshness_classify_fallback"
+            and data.get("fallback_reason") == "missing_or_invalid_entry_contract"
+        ), f"missing provider usage for {agent_id}"
+        assert any(
+            attempt["semantic_purpose"] == "freshness_classify"
+            and attempt["logical_call_id"] == event["turn_id"]
+            for attempt in phases[data["trace_id"]]["data"]["provider_attempts"]
+        ), f"missing physical freshness attempt for {agent_id}"
+        auxiliary.append(event)
+    return {
+        "usage_scope": "Observed phase aggregates; auxiliary markers have no per-call token usage.",
+        "turn_costs": [
+            project_turn_cost(
+                [
+                    *[
+                        event
+                        for event in completions
+                        if event["data"]["trace_id"] == turn_id
+                    ],
+                    timing,
+                ],
+                turn_id=turn_id,
+                session_id=timing["data"]["session_id"],
+            ).as_dict()
+            for turn_id, timing in phases.items()
+        ],
+        "completed_calls": completions,
+        "auxiliary_usage_markers": auxiliary,
+    }
 
 
 def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> dict:
@@ -343,13 +721,27 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
             repository=probe.workdir,
             require_git_repository=True,
             verification_commands=(command, "git status"),
-            max_iterations=3,
+            max_iterations=6,
             max_tool_calls=28,
             max_wall_clock_ms=600_000,
             config_ref=str(probe.config_path),
             turn_target="focus",
         )
         run = launch_project(request, store=store, manager=manager)
+        cron_store = configured_cron_store(
+            Namespace(
+                config=str(probe.config_path),
+                home_root=probe.environment()["OPENMINION_HOME"],
+                data_root=str(probe.data_root),
+            ),
+            config_ref=run.execution_selectors.config_ref,
+        )
+        try:
+            run = schedule_project_wake(
+                cron_store=cron_store, store=store, manager=manager, run=run
+            )
+        finally:
+            cron_store.close()
         initial = manager.get_checkpoint(run.task_id, run.checkpoint_id)
         checkpoint = ProjectCheckpoint.model_validate(initial)
         assert (
@@ -360,48 +752,84 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         )
     finally:
         manager.close()
-    run, checkpoint = _wait_for_run(
-        probe,
-        run.run_id,
-        lambda state, _: state.status == AutonomyRunStatus.COMPLETED,
-        timeout=660,
+    approvals = []
+    deadline = time.monotonic() + 660
+    for mode in ("sync", "review", "accept", None):
+        run, checkpoint = _wait_for_run(
+            probe,
+            run.run_id,
+            lambda state, _: (
+                state.status
+                in {AutonomyRunStatus.COMPLETED, AutonomyRunStatus.WAITING_FOR_INPUT}
+            ),
+            timeout=max(1, int(deadline - time.monotonic())),
+        )
+        if run.status == AutonomyRunStatus.COMPLETED:
+            break
+        approvals.append(_approve_project_delegate(probe, ctl, run, checkpoint, mode))
+        (probe.data_root.parent / "repair.approvals.json").write_text(
+            json.dumps(approvals, indent=2)
+        )
+    assert run.status == AutonomyRunStatus.COMPLETED
+    approved_ids = {item["command_id"] for item in approvals}
+    replay_ids = _approved_replays(
+        probe, checkpoint.project_run.project_run_id, approvals
     )
-    calls, children, _ = _tool_evidence(probe, after_event_id=0)
-    assert not any(item["event"] == "tool.call.blocked" for item in calls)
-    assert not any(str(item["tool"]).startswith("security.") for item in calls)
-    _assert_completed_child_lifecycle(children, parent_agent_id=_PARENT)
-    assert children[0]["child_agent_id"] == _IMPLEMENTER
+    calls, _, _ = _tool_evidence(probe, after_event_id=0)
     events = _events(probe.data_root / "telemetry/telemetry.db", 0)
+    corrected = _corrected_repair_arguments(events)
+    corrected_event_ids = {item["event_id"] for item in corrected}
+    assert not any(str(item["tool"]).startswith("security.") for item in calls)
+    assert {
+        item["call_id"]
+        for item in calls
+        if item["tool"] == "task.delegate"
+        and item["event"] in {"tool.call.requested", "tool.request"}
+    } == approved_ids | set(replay_ids)
     usage = {}
     for agent_id in (_PARENT, _IMPLEMENTER, _CODE_REVIEWER):
         role_events = [event for event in events if event["agent_id"] == agent_id]
-        completions = [
-            event
-            for event in role_events
-            if event["event_type"] == "llm.call.completed"
-        ]
-        completions = list(
-            {event["data"]["llm_call_id"]: event for event in completions}.values()
-        )
-        assert completions and all(
-            isinstance(event["data"].get("usage", {}).get(key), int)
-            for event in completions
-            for key in ("input_tokens", "output_tokens")
-        ), f"missing provider usage for {agent_id}"
         assert not any(
-            event["event_type"] in {"llm.call.failed", "tool.call.blocked"}
+            (
+                event["event_type"] == "tool.completed"
+                and event["data"]["status"] != "success"
+                and not (
+                    event["data"]["status"] == "needs_user"
+                    and event["data"]["command_id"] in approved_ids
+                )
+            )
+            or (
+                event["event_type"] == "tool.call.blocked"
+                and event["data"]["call_id"] not in approved_ids
+                and event["id"] not in corrected_event_ids
+            )
             for event in role_events
         )
         assert not any(
-            event["data"].get("canonical_name", "").startswith("security.")
+            (
+                event["data"].get("canonical_name")
+                or event["data"].get("tool_name", "")
+            ).startswith("security.")
             for event in role_events
-            if event["event_type"] == "tool.call.requested"
+            if event["event_type"] in {"tool.call.requested", "tool.request"}
         )
-        usage[agent_id] = {
-            "cost": project_turn_cost(completions).as_dict(),
-            "completed_calls": completions,
-        }
-    child = load_child_worktree_record(ctl, str(children[-1]["record_alias"]))
+        usage[agent_id] = _repair_usage(role_events, agent_id)
+    child_alias = approvals[-1]["args"]["child_artifact"]["record_alias"]
+    child = load_child_worktree_record(ctl, child_alias)
+    snapshots = [
+        json.loads(ctl.read_bytes(item["child_ref_before"])) for item in approvals[1:]
+    ]
+    assert all(item["agent_id"] == _IMPLEMENTER for item in [*snapshots, child])
+    assert len({item["target_digest"] for item in [*snapshots, child]}) == 1
+    assert (
+        snapshots[0]["integration_status"]
+        == snapshots[1]["integration_status"]
+        == "pending_parent_review"
+    )
+    assert snapshots[0]["validation"]["passed"]
+    assert snapshots[1]["review_receipt"]["passed"]
+    assert snapshots[1]["review_receipt"]["reviewer_agent_id"] == _CODE_REVIEWER
+    assert child["status"] == "completed"
     assert child["integration_status"] == "accepted" and child["cleaned_up"]
     assert child["validation"]["passed"] and child["review_receipt"]["passed"]
     assert child["review_receipt"]["reviewer_agent_id"] == _CODE_REVIEWER
@@ -409,7 +837,7 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         child["review_receipt"]["verifier_refs"] == child["validation"]["verifier_refs"]
     )
     proof = json.loads(Path(run.proof_packet_ref).read_text())
-    accepted_ref = ctl.alias_resolve(str(children[-1]["record_alias"])).ref
+    accepted_ref = ctl.alias_resolve(child_alias).ref
     assert accepted_ref in proof["artifact_refs"], (
         "terminal proof omitted accepted child CAS record"
     )
@@ -430,19 +858,21 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
         manager.close()
     with probe.session() as session:
         probe.wait_ready(session)
-        status = probe.run_slash_turn(
+        status = probe.run_slash(
             session,
             f"/project show {run.run_id}",
             marker="outcome: completed-verified",
-            timeout=60,
         )
     return {
-        "launch": "operator-approved existing launch_project API",
+        "launch": "operator-approved existing launch_project + schedule_project_wake APIs",
         "run_id": run.run_id,
         "proof_packet_ref": run.proof_packet_ref,
         "accepted_child_ref": accepted_ref,
         "child": child,
         "tool_calls": calls,
+        "approvals": approvals,
+        "replay_command_ids": replay_ids,
+        "corrected_argument_attempts": corrected,
         "focus_status": status,
         "usage_by_role": usage,
     }
@@ -519,10 +949,14 @@ def test_live_security_remediation(
                 root,
                 "initial-audit",
                 f"Audit approved clean repository {target} at exact revision {base}. "
-                "Run only security.scan_code with include_evidence_artifact=true and expected_target_revision. "
-                "Read app.py and verify.py. Publish one completed source_readonly report for requested_checks=[code], "
+                "Call security.scan_code exactly once with include_evidence_artifact=true and expected_target_revision. "
+                'Read app.py and verify.py. Publish one completed source_readonly report for scope.requested_checks=["code"], '
                 "one scanner-backed candidate F-1 for the unconditional authorization in app.py line 2. "
-                "Use canonical scan evidence and actual scanner finding IDs. Stop after security.publish_report.",
+                "Use JSON arrays for check_evidence, findings, locations, and scanner_finding_ids; "
+                'never {"item": ...} wrappers. '
+                "Use canonical scan evidence and actual scanner finding IDs. Publish one report with security.publish_report; "
+                "if it rejects arguments, correct them using its feedback. "
+                "after its successful result, return the report ref and stop without further inspection or scanning.",
             )
             report_ref, report_json = _published(
                 ctl, _RESEARCHER, "security.publish_report", previous
@@ -545,7 +979,9 @@ def test_live_security_remediation(
                 "initial-review",
                 "Independently review this complete source evidence and inspect app.py/verify.py readonly. "
                 "Call security.review_report review_kind=initial for the exact report ref, disposition each candidate once, "
-                "and give accepted findings a minimal objective and explicit regression criteria, with the complete remediation brief under 1000 characters. Do not repair.\n"
+                "using JSON arrays for finding_reviews and verification_criteria, not objects with item keys, "
+                "and give accepted findings a minimal objective and explicit regression criteria, with the complete remediation brief under 1000 characters. "
+                "If review publication rejects arguments, correct them using its feedback; stop after successful publication. Do not repair.\n"
                 + _operator_evidence(
                     reviewer, ctl, [report_ref, *report.evidence_refs]
                 ),
@@ -602,9 +1038,13 @@ def test_live_security_remediation(
                 root,
                 "rescan",
                 f"Rescan approved clean repository {target} at exact revision {patched}. "
-                "Run only security.scan_code with expected_target_revision and include_evidence_artifact=true, "
-                "then security.publish_report with requested_checks=[code], completed source_readonly evidence "
-                "and truthful current findings. Use the returned canonical reference. Stop after publication.",
+                "Call security.scan_code exactly once with expected_target_revision and include_evidence_artifact=true, "
+                'then publish one report with security.publish_report using scope.requested_checks=["code"], completed source_readonly evidence '
+                "and truthful current findings. Use JSON arrays for check_evidence, findings, locations, and scanner_finding_ids; "
+                'never {"item": ...} wrappers. Use [] for no findings. '
+                "If publication rejects arguments, correct them using its feedback. "
+                "Use the returned canonical reference; after successful publication, return the report ref "
+                "and stop without further inspection or scanning.",
             )
             rescan_ref, rescan_json = _published(
                 ctl, _RESEARCHER, "security.publish_report", previous
@@ -624,7 +1064,9 @@ def test_live_security_remediation(
                 "Independently evaluate the original accepted finding against the fresh complete rescan. "
                 "Call security.review_report review_kind=follow_up with the initial review ref and rescan report ref, "
                 "one closure per accepted finding and decisions for unmatched current candidates. "
-                "Use evidence to choose resolved/residual/not_reproduced. Do not repair.\n"
+                "Use JSON arrays for closure_reviews, new_finding_reviews and current_finding_ids, including [] when empty. "
+                "Use evidence to choose resolved/residual/not_reproduced. "
+                "If review publication rejects arguments, correct them using its feedback; stop after successful publication. Do not repair.\n"
                 + _operator_evidence(
                     reviewer,
                     ctl,

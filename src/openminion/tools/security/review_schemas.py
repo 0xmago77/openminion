@@ -18,14 +18,27 @@ class SecurityFindingDecision(BaseModel):
     decision: Literal["accepted", "rejected", "needs_more_evidence"]
     rationale: str = Field(min_length=1, max_length=3000)
     remediation_objective: str | None = Field(
-        default=None, min_length=1, max_length=2000
+        default=None,
+        min_length=1,
+        max_length=2000,
+        description="Required for accepted decisions; omit for rejected or needs_more_evidence decisions.",
     )
     verification_criteria: (
         list[Annotated[str, Field(min_length=1, max_length=1000)]] | None
-    ) = Field(default=None, min_length=1, max_length=10)
+    ) = Field(
+        default=None,
+        min_length=1,
+        max_length=10,
+        description="Nonempty JSON array required for accepted decisions; omit for rejected or needs_more_evidence decisions.",
+    )
     evidence_requests: (
         list[Annotated[str, Field(min_length=1, max_length=1000)]] | None
-    ) = Field(default=None, min_length=1, max_length=10)
+    ) = Field(
+        default=None,
+        min_length=1,
+        max_length=10,
+        description="Nonempty JSON array required for needs_more_evidence decisions; omit for accepted or rejected decisions.",
+    )
 
     @model_validator(mode="after")
     def _decision_fields(self) -> "SecurityFindingDecision":
@@ -49,7 +62,9 @@ class SecurityFindingDecision(BaseModel):
             )
         if not valid:
             raise ValueError(
-                "decision fields must match accepted, rejected, or needs_more_evidence"
+                "accepted requires remediation_objective and verification_criteria; omit evidence_requests. "
+                "needs_more_evidence requires evidence_requests; omit remediation_objective and verification_criteria. "
+                "rejected must omit all three fields."
             )
         return self
 

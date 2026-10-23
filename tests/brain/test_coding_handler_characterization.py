@@ -831,7 +831,7 @@ class TestCodingHandlerPureHelperBehavior:
             PROJECT_CODING_ALLOWED_TOOLS - {"plan"}
         )
 
-    def test_coding_profile_preserves_entry_selected_order(self) -> None:
+    def test_coding_profile_preserves_entry_order_and_used_tools(self) -> None:
         tool_specs = handler._build_tool_specs(PROJECT_CODING_ALLOWED_TOOLS)
         seed = LLMResponse(
             ok=True,
@@ -846,14 +846,78 @@ class TestCodingHandlerPureHelperBehavior:
         _profile, active_specs, _requestable_specs = (
             CodingProfileRunner()._iteration_profile(
                 SimpleNamespace(),
-                loop=AdaptiveToolLoopState(),
+                loop=AdaptiveToolLoopState(
+                    tool_calls_made=["file.read", "file.find", "file.find"]
+                ),
                 allowed_tools=PROJECT_CODING_ALLOWED_TOOLS,
                 tool_specs=tool_specs,
                 seed_response=seed,
             )
         )
 
-        assert [spec.name for spec in active_specs] == ["git.status", "file.read"]
+        assert [spec.name for spec in active_specs] == [
+            "git.status",
+            "file.read",
+            "file.find",
+        ]
+
+    @pytest.mark.parametrize(
+        "restriction",
+        [
+            "registry",
+            "verify",
+            "required_write",
+            "verification_reserve",
+            "final_answer",
+        ],
+    )
+    def test_used_tool_visibility_respects_current_scope(
+        self, monkeypatch: pytest.MonkeyPatch, restriction: str
+    ) -> None:
+        runner = CodingProfileRunner()
+        loop = AdaptiveToolLoopState(tool_calls_made=["task.delegate", "task.delegate"])
+        if restriction == "verify":
+            runner._coding_plan = CodingPlan.model_validate(
+                {
+                    "goal": "Verify the repair",
+                    "phases": [{"name": "verify"}],
+                    "current_phase": "verify",
+                }
+            )
+        elif restriction == "required_write":
+            loop.scratchpad["coding.required_write_direct_tool"] = "file.write"
+        elif restriction == "verification_reserve":
+            loop.scratchpad["coding.verification_reserve_used"] = True
+        elif restriction == "final_answer":
+            loop.scratchpad["coding.final_answer_reserve_used"] = True
+        specs = handler._build_tool_specs(PROJECT_CODING_ALLOWED_TOOLS)
+        if restriction == "registry":
+            specs = [spec for spec in specs if spec.name != "task.delegate"]
+
+        monkeypatch.setattr(
+            coding_runtime,
+            "collect_runtime_tool_schemas",
+            lambda _: [
+                {"name": spec.name, "parameters": spec.input_schema} for spec in specs
+            ],
+        )
+        ctx = SimpleNamespace(
+            state=SimpleNamespace(goal=None),
+            _services=SimpleNamespace(runner=SimpleNamespace(tool_api=object())),
+        )
+        _profile, active_specs, requestable_specs = runner._iteration_profile(
+            ctx,
+            loop=loop,
+            allowed_tools=PROJECT_CODING_ALLOWED_TOOLS,
+            tool_specs=specs,
+        )
+
+        assert "task.delegate" not in {spec.name for spec in active_specs}
+        assert "task.delegate" not in {spec.name for spec in requestable_specs}
+        if restriction == "final_answer":
+            assert active_specs == []
+        elif restriction == "required_write":
+            assert [spec.name for spec in active_specs] == ["file.write"]
 
     def test_every_coding_execution_schema_supports_exact_activation(self) -> None:
         for allowed_tools in (

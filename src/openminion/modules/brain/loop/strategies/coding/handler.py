@@ -61,6 +61,7 @@ from .llm import DefaultCodingLLMRuntime
 from .loop_state import CodingLoopState
 from .plan import CodingPhase, CodingPlan, coding_plan_from_payload
 from .planning_flow import CodingPlanningMixin
+from .prompts import build_coding_project_replay_context
 from .reserves import CodingReserveMixin
 from .resume import CodingResumeMixin
 from .runtime import (
@@ -380,10 +381,12 @@ class CodingProfileRunner(
                 selected_names.append(name)
             if len(selected_names) == len(CODING_INITIAL_TOOL_IDS):
                 break
-        if not selected_names:
-            selected_names = [
-                name for name in CODING_INITIAL_TOOL_IDS if name in requestable_by_name
-            ]
+        selected_names = selected_names or [
+            name for name in CODING_INITIAL_TOOL_IDS if name in requestable_by_name
+        ]
+        for name in loop.tool_calls_made:
+            if name in requestable_by_name and name not in selected_names:
+                selected_names.append(name)
         active_tool_specs = [requestable_by_name[name] for name in selected_names]
         inactive_names = sorted(set(requestable_by_name) - set(selected_names))
         loop.scratchpad.update(
@@ -564,6 +567,15 @@ class CodingProfileRunner(
             if ctx.user_input:
                 self._loop_state.messages.append(
                     Message(role="user", content=ctx.user_input)
+                )
+            elif fresh_project_plan and canonical_task_plan is not None:
+                self._loop_state.messages.append(
+                    Message(
+                        role="system",
+                        content=build_coding_project_replay_context(
+                            ctx.state.goal, canonical_task_plan
+                        ),
+                    )
                 )
             if canonical_task_plan is None:
                 initialized = self._initialize_plan(

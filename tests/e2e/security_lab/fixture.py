@@ -173,7 +173,9 @@ def local_lab(tmp_path: Path):
         ), "The real resource-boundary probes require Docker cgroup v2"
         for image in (target_image, worker_image):
             metadata = lab.inspect("image", image)
-            assert image in metadata["RepoDigests"]
+            assert image.rpartition("@")[2] in {
+                value.rpartition("@")[2] for value in metadata["RepoDigests"]
+            }
             assert not metadata["Config"].get("Volumes"), (
                 "Images must not declare volumes"
             )

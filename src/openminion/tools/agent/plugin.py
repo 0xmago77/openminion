@@ -79,32 +79,37 @@ class AgentGetArgs(BaseModel):
 
 
 class TaskDelegateArgs(BaseModel):
-    """Arguments for ``task.delegate``.
-
-    The target is exactly ``agent_id`` (accept-or-fail; no capability
-    inference). ``instruction`` is the goal handed to the sub-agent.
-    """
+    """Delegate the instruction to exactly agent_id, without capability inference."""
 
     mode: str = Field(
         default="sync",
         description=(
-            "Delegation lifecycle action. Use sync or async to start child work; "
-            "use list for recent owned work; use status, result, or cancel with "
-            "task_id; resume is a deprecated unsupported spelling; use review, accept, or "
-            "reject only after a child_artifact is returned. There is no create mode."
+            'Omitting mode starts sync work; for artifact review set mode="review". '
+            "child_artifact and review_criteria do not select mode. "
+            'After passing review, mode="accept" integrates; mode="reject" discards. '
+            "Use sync or async to start child work with agent_id and instruction. "
+            "list shows recent work; status/result/cancel require task_id; resume is unsupported. "
+            "review requires agent_id, instruction, child_artifact, and review_criteria; "
+            "accept/reject require child_artifact. There is no create mode."
         ),
     )
     agent_id: str = Field(
         default="",
         description=(
-            "Exact target sub-agent identifier for sync/async delegation or review. Call "
-            "agent.list first unless an exact visible agent_id was already supplied; "
-            "never invent a role name or alias."
+            "Exact sync/async/review agent_id. Call agent.list first unless an exact "
+            "visible agent_id is supplied; never invent a role name or alias."
         ),
     )
     instruction: str = Field(
         default="",
-        description="Instruction for sync/async work or the exact review objective.",
+        description=(
+            "Required for sync, async, and review: the work instruction or exact "
+            "review objective, supplied separately from review_criteria. For "
+            "code_bearing work, name files relative to the repository; do not "
+            "prescribe the parent workspace path. The runtime supplies the "
+            "isolated checkout. Request edits and a change summary from the child; "
+            "the runtime creates the child artifact after the child returns."
+        ),
     )
     task_id: str = Field(
         default="",
@@ -132,21 +137,29 @@ class TaskDelegateArgs(BaseModel):
     child_artifact: dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "Durable child worktree artifact record returned by delegated "
-            "code-bearing work. Its record_alias is required for "
-            "review/accept/reject."
+            "JSON object returned as child_artifact, not an alias string. "
+            "record_alias is required for review/accept/reject."
         ),
+        json_schema_extra={
+            "properties": {
+                "record_alias": {"type": "string"},
+                "target_digest": {"type": "string"},
+                "integration_status": {"type": "string"},
+            }
+        },
     )
     workspace_root: str = Field(
         default="",
         description=(
-            "Legacy parent repository input; artifact disposition uses the "
-            "owner-bound repository instead."
+            "Legacy input; artifact disposition uses its owner-bound repository."
         ),
     )
     review_criteria: list[str] = Field(
         default_factory=list,
-        description="Explicit criteria for read-only review.",
+        description=(
+            "Required nonempty criteria for read-only review; these do not replace "
+            "instruction, which supplies the review objective."
+        ),
     )
     repository_instructions: str = Field(
         default="",
@@ -156,7 +169,9 @@ class TaskDelegateArgs(BaseModel):
         default=False,
         description=(
             "Set true for synchronous repository edits that must run in an isolated "
-            "child worktree and return a durable child_artifact for review."
+            "child worktree and return a durable child_artifact for review. "
+            "Child edits remain isolated and the parent checkout is unchanged "
+            "until review succeeds and accept is explicitly called."
         ),
     )
 
@@ -619,8 +634,13 @@ def _handle_code_bearing_delegate(
         "agent_id": args.agent_id,
         "mode": "sync",
         "status": "success",
-        "content": result.content,
+        "summary": (
+            "Child edits passed verification in an isolated checkout; the parent "
+            "checkout is unchanged. Use the returned child_artifact with "
+            "task.delegate mode=review, then explicit mode=accept after a passing review."
+        ),
         "child_artifact": child_artifact,
+        "content": result.content,
         "outputs": {**dict(result.outputs or {}), "child_artifact": child_artifact},
         "trace_id": result.trace_id,
         "task_id": result.task_id,
@@ -704,9 +724,13 @@ def _delegate_and_verify_code(
 ) -> tuple[Any, tuple[TestEvidence, ...]]:
     instruction = (
         f"{args.instruction}\n\n"
-        "Work only in the provided isolated checkout. Make the requested edits and "
-        "return when they are complete. The runtime owns verification and artifact "
-        "creation; do not claim or fabricate a child artifact."
+        f"The authoritative workspace for this task is {lease.worktree}. "
+        "Use repository-relative file paths in this isolated checkout. Parent "
+        "source paths are references only; do not use them as the working directory. "
+        "You are the implementation child. Make the requested edits directly "
+        "without delegating further, then return a concise change summary. "
+        "After you return, the runtime verifies the checkout and creates the "
+        "child artifact; the parent owns review and acceptance."
     )
     completed = False
     try:
@@ -714,7 +738,8 @@ def _delegate_and_verify_code(
             agent_id=args.agent_id,
             instruction=instruction,
             timeout_seconds=args.timeout_seconds,
-            permission_mode=str(getattr(ctx, "permission_mode", "ask") or "ask"),
+            permission_mode=ctx.base_permission_mode,
+            permission_overrides=ctx.permission_overrides,
             workspace_root=str(lease.worktree),
             cwd=str(lease.worktree),
         )
@@ -775,11 +800,12 @@ def _handle_child_artifact_disposition(
             artifactctl=artifactctl,
         )
     if result.get("ok") is True:
-        save_child_worktree_record(artifactctl, record)
+        record_alias = save_child_worktree_record(artifactctl, record)
+        record_ref = artifactctl.alias_resolve(record_alias).ref
         _emit_child_disposition(
             ctx, AGENT_HANDOFF_COMPLETED, disposition_payload, status="completed"
         )
-        return {"ok": True, "mode": args.mode, **result}
+        return {"ok": True, "mode": args.mode, **result, "artifact_refs": [record_ref]}
     _emit_child_disposition(
         ctx,
         AGENT_HANDOFF_FAILED,
@@ -851,21 +877,22 @@ def _handle_child_artifact_review(
                 "target_digest": str(record.get("target_digest") or ""),
             },
         )
-    record["review_receipt"] = dict(result.outputs["review_receipt"])
+    receipt = dict(result.outputs["review_receipt"])
+    record["review_receipt"] = receipt
     save_child_worktree_record(artifactctl, record)
+    status = "passed" if receipt["passed"] is True else "correction_required"
     return {
         "ok": True,
         "mode": "review",
-        "status": "passed"
-        if record["review_receipt"]["passed"] is True
-        else "correction_required",
+        "status": status,
+        "summary": f"Review {status}; parent checkout unchanged until explicit mode=accept.",
         "agent_id": args.agent_id,
         "child_artifact": {
             "record_alias": record["record_alias"],
             "target_digest": record["target_digest"],
             "integration_status": record["integration_status"],
         },
-        "review_receipt": record["review_receipt"],
+        "review_receipt": receipt,
     }
 
 

@@ -30,7 +30,9 @@ def test_daemon_status_json_output_when_reachable(monkeypatch, capsys) -> None:
             data_root=Path("/tmp/data"),
         ),
     )
-    monkeypatch.setattr(daemon_core, "resolve_daemon_pid_file", lambda _cfg: pid_file)
+    monkeypatch.setattr(
+        daemon_core, "resolve_daemon_pid_file", lambda _cfg, **_roots: pid_file
+    )
     monkeypatch.setattr(daemon_core, "read_pid", lambda _path: 4321)
     monkeypatch.setattr(daemon_core, "process_alive", lambda _pid: True)
     monkeypatch.setattr(
@@ -47,7 +49,9 @@ def test_daemon_status_json_output_when_reachable(monkeypatch, capsys) -> None:
             },
         ),
     )
-    monkeypatch.setattr(daemon_core, "resolve_daemon_log_file", lambda _cfg: log_file)
+    monkeypatch.setattr(
+        daemon_core, "resolve_daemon_log_file", lambda _cfg, **_roots: log_file
+    )
 
     code = daemon_command.daemon_status("config.json")
 
@@ -98,7 +102,9 @@ def test_daemon_status_json_output_when_unreachable(monkeypatch, capsys) -> None
             data_root=Path("/tmp/data"),
         ),
     )
-    monkeypatch.setattr(daemon_core, "resolve_daemon_pid_file", lambda _cfg: pid_file)
+    monkeypatch.setattr(
+        daemon_core, "resolve_daemon_pid_file", lambda _cfg, **_roots: pid_file
+    )
     monkeypatch.setattr(daemon_core, "read_pid", lambda _path: None)
     monkeypatch.setattr(daemon_core, "process_alive", lambda _pid: False)
     monkeypatch.setattr(
@@ -106,7 +112,9 @@ def test_daemon_status_json_output_when_unreachable(monkeypatch, capsys) -> None
         "probe_daemon_endpoint",
         lambda _endpoint: ("unreachable", {}),
     )
-    monkeypatch.setattr(daemon_core, "resolve_daemon_log_file", lambda _cfg: log_file)
+    monkeypatch.setattr(
+        daemon_core, "resolve_daemon_log_file", lambda _cfg, **_roots: log_file
+    )
 
     code = daemon_command.daemon_status("config.json")
 

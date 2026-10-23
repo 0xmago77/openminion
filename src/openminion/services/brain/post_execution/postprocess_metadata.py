@@ -137,6 +137,16 @@ def _attach_session_task_plan_metadata(
 
     if not request_id:
         return
+    selected_plan_id = active_plan["plan_id"] if active_plan else None
+    if selected_plan_id is None:
+        declarations = session_api.list_events(
+            session_id, event_type="task_plan.declared", trace_id=request_id
+        )
+        if declarations:
+            plan = declarations[-1]["payload"].get("plan")
+            if isinstance(plan, dict):
+                metadata.setdefault("task_plan", json.dumps(plan, sort_keys=True))
+                selected_plan_id = plan["plan_id"]
     revision_events = session_api.list_events(
         session_id, event_type="task_plan.revised", trace_id=request_id
     )
@@ -144,26 +154,21 @@ def _attach_session_task_plan_metadata(
     for event in revision_events:
         payload = event.get("payload")
         revision = payload.get("revision") if isinstance(payload, dict) else None
-        if isinstance(revision, dict):
+        if isinstance(revision, dict) and (
+            selected_plan_id is None or revision.get("plan_id") == selected_plan_id
+        ):
             revisions.append(dict(revision))
-    if "task_plan" not in metadata:
-        declarations = session_api.list_events(
-            session_id, event_type="task_plan.declared", trace_id=request_id
-        )
-        if declarations:
-            payload = declarations[-1].get("payload")
-            if isinstance(payload, dict) and isinstance(payload.get("plan"), dict):
-                metadata["task_plan"] = json.dumps(payload["plan"], sort_keys=True)
     if revisions:
         metadata["task_plan.revisions"] = json.dumps(revisions, sort_keys=True)
         metadata["task_plan.revision"] = json.dumps(revisions[-1], sort_keys=True)
     for suffix in ("step_completed", "step_blocked", "abandoned", "completed"):
         event_type = f"task_plan.{suffix}"
-        events = session_api.list_events(
+        for event in session_api.list_events(
             session_id, event_type=event_type, trace_id=request_id
-        )
-        if events:
-            metadata[event_type] = json.dumps(events[-1]["payload"], sort_keys=True)
+        ):
+            payload = event["payload"]
+            if selected_plan_id is None or payload.get("plan_id") == selected_plan_id:
+                metadata[event_type] = json.dumps(payload, sort_keys=True)
 
 
 def _security_events_from_tool_results(

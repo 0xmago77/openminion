@@ -120,8 +120,7 @@ src/openminion/modules/brain/loop/tools/duplicate_batch.py	1	0	current broad-han
 src/openminion/modules/brain/loop/tools/phases/child_execution.py	1	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
 src/openminion/modules/brain/loop/tools/phases/eval.py	1	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
 src/openminion/modules/brain/loop/tools/phases/refine.py	1	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
-src/openminion/modules/brain/loop/tools/plan.py	8	1	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
-src/openminion/modules/brain/loop/tools/plan_control.py	1	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
+src/openminion/modules/brain/loop/tools/plan.py	7	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
 src/openminion/modules/brain/loop/tools/postprocess/engine.py	2	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
 src/openminion/modules/brain/loop/tools/postprocess/rules.py	1	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
 src/openminion/modules/brain/loop/tools/runtime.py	1	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition

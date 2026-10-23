@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 import json
 import threading
 import time
@@ -48,6 +49,7 @@ from openminion.modules.brain.constants import (
 from openminion.modules.brain.schemas import (
     ActionError,
     ActionResult,
+    AskUserCommand,
     ArtifactRef,
     BudgetCounters,
     Deliverable,
@@ -59,6 +61,10 @@ from openminion.modules.brain.schemas import (
     new_uuid,
 )
 from openminion.modules.brain.schemas.closure import ClosureJudgment
+from openminion.modules.brain.adapters.session import LocalSessionStore
+from openminion.modules.brain.tools.executor.command_executor import (
+    RunnerCommandExecutor,
+)
 from openminion.modules.brain.tools.executor import CommandExecutionOutcome
 from openminion.modules.llm.schemas import LLMRequest, LLMResponse, ToolCall
 from openminion.modules.llm.transcript import validate_tool_transcript
@@ -3331,6 +3337,102 @@ def test_coding_loop_replays_confirmed_pending_tool_without_llm_yes() -> None:
     assert any(message.role == "tool" for message in first_llm_messages)
 
 
+@pytest.mark.parametrize("prepared", [False, True])
+def test_coding_replay_persists_distinct_next_confirmation(
+    tmp_path: Path, prepared: bool
+) -> None:
+    first = ToolCommand(title="first", tool_name="exec.run", args={"command": "first"})
+    question = "Approve the second command?"
+    policy_executor = RunnerCommandExecutor(
+        SimpleNamespace(
+            _approve=lambda **kwargs: AskUserCommand(
+                title="approval", question=question
+            )
+        )
+    )
+
+    class _NextConfirmationExecutor(_FakeCommandExecutor):
+        def execute_command(self, *, state, command, logger, **kwargs):
+            if command.args == {"command": "second"}:
+                self.calls.append(command)
+                return policy_executor.execute_command(
+                    state=state, command=command, logger=logger
+                )
+            return super().execute_command(
+                state=state, command=command, logger=logger, **kwargs
+            )
+
+        def prepare_tool_dispatch(self, *, state, command, logger, **kwargs):
+            self.calls.append(command)
+            return policy_executor.prepare_tool_dispatch(
+                state=state, command=command, logger=logger, **kwargs
+            )
+
+        def execute_prepared_tool_dispatch(self, **kwargs):
+            pytest.fail("Unapproved second command must not execute")
+
+        def finalize_tool_result(self, **kwargs):
+            pytest.fail("Unapproved second command has no execution result")
+
+    state = _state()
+    state.module_state["coding"] = _coding_resume_payload()
+    state.pending_confirmation_command = first
+    state.status = "waiting_user"
+    executor = _NextConfirmationExecutor()
+    if not prepared:
+        executor.execute_prepared_tool_dispatch = None
+    llm = _FakeLLMClient(
+        responses=[
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="fake-model",
+                output_text="",
+                tool_calls=[
+                    ToolCall(
+                        id="second-call",
+                        name="exec.run",
+                        arguments={"command": "second"},
+                    )
+                ],
+            )
+        ]
+    )
+    result = CodingMode().execute(
+        _ctx(llm, executor, state=state, user_input="allow_once")
+    )
+
+    assert result.status == "waiting_user"
+    assert executor.calls[0].args == first.args
+    assert executor.calls[0].inputs["confirmation_source"] == "policy_replay"
+    second = executor.calls[1]
+    assert second.command_id != first.command_id
+    assert "confirmation_grant_id" not in second.inputs
+    store = LocalSessionStore(tmp_path / "sessions")
+    store.put_working_state(
+        state.session_id, state_inline=result.working_state.model_dump(mode="json")
+    )
+    saved = WorkingState.model_validate(
+        store.get_latest_working_state(state.session_id)["state_inline"]
+    )
+    assert saved.pending_confirmation_command == second
+    assert saved.post_action_user_message == question
+
+    approved_executor = _FakeCommandExecutor()
+    done = CodingMode().execute(
+        _ctx(
+            _FakeLLMClient(responses=[]),
+            approved_executor,
+            state=saved,
+            user_input="allow_once",
+        )
+    )
+    assert done.status == "done"
+    assert saved.pending_confirmation_command is None
+    assert [command.args for command in approved_executor.calls] == [second.args]
+    assert approved_executor.calls[0].inputs["confirmation_source"] == "policy_replay"
+
+
 def test_coding_loop_does_not_session_grant_pending_blockchain_send() -> None:
     state = _state()
     state.module_state["coding"] = _coding_resume_payload()
@@ -3564,6 +3666,107 @@ def test_coding_loop_replays_confirmed_batch_without_policy_grant_api() -> None:
         "demo/pyproject.toml",
         "demo/README.md",
     ]
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "args"),
+    [
+        ("task.delegate", {"mode": "sync"}),
+        ("task.delegate", {"mode": "review"}),
+        ("file.find", {"pattern": "*.py"}),
+    ],
+)
+def test_project_confirmation_replay_preserves_context_in_provider_request(
+    monkeypatch: pytest.MonkeyPatch, tool_name: str, args: dict[str, Any]
+) -> None:
+    from openminion.modules.brain.loop.strategies.coding import handler
+    from openminion.modules.brain.runner.tick.context import (
+        _apply_pending_confirmation_metadata_for_replay,
+    )
+    from openminion.modules.llm.providers.base import ProviderResponse
+    from openminion.services.agent.service import AgentService
+    from openminion.services.brain.client import OpenMinionLLMClient
+    from openminion.tools.agent.plugin import TaskDelegateArgs
+    from openminion.tools.file.plugin import FileFindArgs
+
+    schema_model = TaskDelegateArgs if tool_name == "task.delegate" else FileFindArgs
+    schema = schema_model.model_json_schema()
+    monkeypatch.setattr(
+        coding_runtime,
+        "collect_runtime_tool_schemas",
+        lambda _: [
+            {**item, "parameters": schema} if item["name"] == tool_name else item
+            for item in _coding_runtime_schemas()
+        ],
+    )
+    state = _state()
+    state.goal = "allow_once"
+    state.pending_confirmation_goal = (
+        "Repair app.py only; review the child before acceptance. No exec.run."
+    )
+    state.pending_confirmation_last_user_input = state.pending_confirmation_goal
+    _apply_pending_confirmation_metadata_for_replay(state)
+    state.module_state["adaptive_loop"] = {
+        "message_transcript": [{"role": "user", "content": "stale plan and task"}]
+    }
+    plan = {
+        "plan_id": "approved-repair-plan",
+        "objective": "Repair authorization",
+        "steps": [
+            {"step_id": "implement", "description": "Implement", "status": "completed"},
+            {"step_id": "review", "description": "Review", "status": "in_progress"},
+            {"step_id": "accept", "description": "Accept", "status": "pending"},
+        ],
+    }
+    monkeypatch.setattr(handler, "_canonical_project_plan", lambda _: (plan, True))
+    payloads = []
+
+    async def record(request):
+        payloads.append(AgentService._provider_request_to_llm_payload(None, request))
+        return ProviderResponse(text="Awaiting the next project step.")
+
+    client = OpenMinionLLMClient(
+        SimpleNamespace(name="recording"), invoke_provider_request=record
+    )
+    command = ToolCommand(title="Confirmed tool", tool_name=tool_name, args=args)
+    action = ActionResult(
+        command_id=command.command_id,
+        status="success",
+        summary="Verified isolated child; parent unchanged until acceptance.",
+        outputs={
+            "child_artifact": {"record_alias": "child-artifact-1"},
+            "status": "passed",
+        },
+    )
+    executor = _FakeCommandExecutor(
+        outcomes=[
+            CommandExecutionOutcome(approved_command=command, action_result=action)
+        ]
+    )
+    ctx = _ctx(client, executor, state=state, user_input=None)
+    ctx.decision.reason_code = "confirmation_replay"
+    ctx.decision._seeded_commands = [command]
+
+    CodingMode().execute(ctx)
+
+    messages, tools, _metadata = payloads[0]
+    visible_schema = next(
+        tool["input_schema"] for tool in tools if tool["name"] == tool_name
+    )
+    assert visible_schema == schema
+    rendered = json.dumps(messages)
+    assert rendered.count(state.goal) == 1
+    assert rendered.count(plan["plan_id"]) == 1
+    assert "stale plan and task" not in rendered
+    assert json.dumps(plan, sort_keys=True) in messages[0]["content"]
+    tool_index = next(
+        i for i, message in enumerate(messages) if message["role"] == "tool"
+    )
+    assert messages[tool_index - 1]["tool_calls"][0]["id"] == command.command_id
+    result = json.loads(messages[tool_index]["content"])
+    assert result["summary"] == action.summary
+    assert result["outputs"]["child_artifact"] == {"record_alias": "child-artifact-1"}
+    assert [call.command_id for call in executor.calls] == [command.command_id]
 
 
 def test_coding_loop_replays_seeded_confirmation_decision_without_llm_regeneration() -> (

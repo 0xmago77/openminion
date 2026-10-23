@@ -6,6 +6,8 @@ from dataclasses import replace
 import pytest
 from pydantic import ValidationError
 
+from openminion.modules.brain.loop.tools.messages import action_result_to_tool_message
+from openminion.modules.brain.schemas import ActionError, ActionResult
 from openminion.modules.tool.errors import ToolRuntimeError
 from openminion.tools.security.plugin import _h_publish_report, _h_review_report
 from openminion.tools.security.review_schemas import SecurityReviewArgs
@@ -362,8 +364,29 @@ def test_decision_specific_schema_rejects_invalid_fields(decision):
     args["finding_reviews"] = [
         {"finding_id": "F-1", "rationale": "Evidence.", **decision}
     ]
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as failure:
         SecurityReviewArgs.model_validate(args)
+    feedback = action_result_to_tool_message(
+        "review-failure",
+        "security.review_report",
+        ActionResult(
+            command_id="review-failure",
+            status="failed",
+            error=ActionError(code="INVALID_ARGUMENT", message=str(failure.value)),
+        ),
+    )
+    message = json.loads(feedback.content)["error"]["message"]
+    assert (
+        "accepted requires remediation_objective and verification_criteria; omit evidence_requests"
+        in message
+    )
+    assert (
+        "needs_more_evidence requires evidence_requests; omit remediation_objective and verification_criteria"
+        in message
+    )
+    assert "rejected must omit all three fields" in message
+    args["finding_reviews"] = [_decision(decision=decision["decision"])]
+    assert SecurityReviewArgs.model_validate(args).root.finding_reviews
 
 
 @pytest.mark.parametrize("outcome", ["residual", "not_reproduced"])

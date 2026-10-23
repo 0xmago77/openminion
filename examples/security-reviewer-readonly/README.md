@@ -92,6 +92,14 @@ review admission. Before launch or resumed mutation:
    a new reviewed artifact. Commit the accepted patch and record its new clean
    full revision.
 
+If the project pauses for an operation approval, use `/project show <run-id>`
+to read its current `input_request_id` and inspect the pending action. Approve
+that action with `/project answer <run-id> --input-request-id <id> --answer allow_once`,
+then `/project resume <run-id>`. Each changed delegation action requires its own
+approval. If direction or priority is already queued, resume to apply it first,
+then read and answer the current request. Do not combine a confirmation answer
+with other guidance. Include these operator resume cycles in the project limit.
+
 Project terminal proof retains the input through `checkpoint_refs`: load the
 named terminal checkpoint and read
 `repository_lifecycle[project_run.objective_ledger_ref].source_request`.

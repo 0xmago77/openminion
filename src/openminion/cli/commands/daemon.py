@@ -129,7 +129,11 @@ def daemon_stop(
         data_root=data_root,
     )
     config = load_config(endpoint.config_path)
-    pid_file = resolve_daemon_pid_file(config)
+    pid_file = resolve_daemon_pid_file(
+        config,
+        home_root=endpoint.home_root or None,
+        data_root=endpoint.data_root or None,
+    )
     pid = read_pid(pid_file)
     if pid is None:
         if daemon_is_reachable(endpoint):
@@ -247,7 +251,7 @@ def build_daemon_status_payload(
         data_root=Path(data_root).expanduser().resolve() if data_root else None,
     )
     config = manager.base_config
-    pid_file = resolve_daemon_pid_file(config)
+    pid_file = resolve_daemon_pid_file(config, home_root=home_root, data_root=data_root)
     pid = read_pid(pid_file)
     alive = bool(pid and process_alive(pid))
     probe_status, health_payload = probe_daemon_endpoint(endpoint)
@@ -288,7 +292,9 @@ def build_daemon_status_payload(
         "port": endpoint.port,
         "config_path": endpoint.config_path,
         "pid_file": str(pid_file),
-        "log_file": str(resolve_daemon_log_file(config)),
+        "log_file": str(
+            resolve_daemon_log_file(config, home_root=home_root, data_root=data_root)
+        ),
     }
 
 
@@ -308,7 +314,11 @@ def daemon_logs(
         data_root=data_root,
     )
     config = load_config(endpoint.config_path)
-    log_file = resolve_daemon_log_file(config)
+    log_file = resolve_daemon_log_file(
+        config,
+        home_root=endpoint.home_root or None,
+        data_root=endpoint.data_root or None,
+    )
     if not log_file.exists():
         print(f"Log file does not exist: {log_file}")
         return 1
@@ -350,8 +360,16 @@ def _start_daemon(endpoint: DaemonEndpoint) -> dict[str, object]:
     )
 
     config = load_config(endpoint.config_path)
-    pid_file = resolve_daemon_pid_file(config)
-    log_file = resolve_daemon_log_file(config)
+    pid_file = resolve_daemon_pid_file(
+        config,
+        home_root=endpoint.home_root or None,
+        data_root=endpoint.data_root or None,
+    )
+    log_file = resolve_daemon_log_file(
+        config,
+        home_root=endpoint.home_root or None,
+        data_root=endpoint.data_root or None,
+    )
 
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -380,6 +398,57 @@ def _start_daemon(endpoint: DaemonEndpoint) -> dict[str, object]:
     if existing_pid:
         _safe_unlink(pid_file)
 
+    process = _spawn_daemon(endpoint, pid_file, log_file)
+
+    started = False
+    try:
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            probe_status, payload = probe_daemon_endpoint(endpoint, timeout_s=1.5)
+            if probe_status == "ok":
+                started = True
+                pid = read_pid(pid_file) or process.pid
+                return {
+                    "ok": True,
+                    "message": f"Started daemon pid={pid} ({endpoint.host}:{endpoint.port})",
+                }
+            if probe_status == _PROBE_STATUS_MISMATCH:
+                remote_config_path = _remote_config_path_from_probe_payload(payload)
+                return {
+                    "ok": False,
+                    "message": (
+                        "Daemon port became reachable, but the endpoint identity does not match "
+                        f"the requested config (expected {endpoint.config_path}, got "
+                        f"{remote_config_path or 'unknown'})."
+                    ),
+                }
+            if process.poll() is not None:
+                break
+            time.sleep(0.1)
+
+        return {
+            "ok": False,
+            "message": (
+                "Daemon failed to become healthy within timeout. "
+                f"Inspect logs at {log_file}."
+            ),
+        }
+    finally:
+        if not started:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            if read_pid(pid_file) == process.pid:
+                _safe_unlink(pid_file)
+
+
+def _spawn_daemon(
+    endpoint: DaemonEndpoint, pid_file: Path, log_file: Path
+) -> subprocess.Popen[bytes]:
     command = [
         sys.executable,
         "-m",
@@ -401,7 +470,7 @@ def _start_daemon(endpoint: DaemonEndpoint) -> dict[str, object]:
     if endpoint.data_root:
         env["OPENMINION_DATA_ROOT"] = endpoint.data_root
     with log_file.open("a", encoding="utf-8") as stream:
-        process = subprocess.Popen(  # noqa: S603
+        return subprocess.Popen(  # noqa: S603
             command,
             env=env,
             stdout=stream,
@@ -409,37 +478,6 @@ def _start_daemon(endpoint: DaemonEndpoint) -> dict[str, object]:
             start_new_session=True,
             close_fds=True,
         )
-
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        probe_status, payload = probe_daemon_endpoint(endpoint, timeout_s=1.5)
-        if probe_status == "ok":
-            pid = read_pid(pid_file) or process.pid
-            return {
-                "ok": True,
-                "message": f"Started daemon pid={pid} ({endpoint.host}:{endpoint.port})",
-            }
-        if probe_status == _PROBE_STATUS_MISMATCH:
-            remote_config_path = _remote_config_path_from_probe_payload(payload)
-            return {
-                "ok": False,
-                "message": (
-                    "Daemon port became reachable, but the endpoint identity does not match "
-                    f"the requested config (expected {endpoint.config_path}, got "
-                    f"{remote_config_path or 'unknown'})."
-                ),
-            }
-        if process.poll() is not None:
-            break
-        time.sleep(0.1)
-
-    return {
-        "ok": False,
-        "message": (
-            "Daemon failed to become healthy within timeout. "
-            f"Inspect logs at {log_file}."
-        ),
-    }
 
 
 def _safe_unlink(path: Path) -> None:

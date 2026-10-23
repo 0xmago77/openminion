@@ -59,6 +59,9 @@ def build_policy_adapter(
         tool_policy_lookup=policy_lookup,
         budget_state=tool_budget_state,
         blast_radius_adapter=turn_boundary_adapter,
+        security_lab_required=service_port.identity_security_lab_facts.get(
+            "lab_required", False
+        ),
     )
 
 

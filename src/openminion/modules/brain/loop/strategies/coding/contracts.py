@@ -13,6 +13,7 @@ from openminion.modules.brain.loop.tools import (
     AdaptiveToolLoopLLMRuntime,
 )
 from openminion.modules.brain.loop.tools.plan_control import PLAN_TOOL_NAME
+from openminion.modules.brain.loop.tools.shortlisting import TOOL_REQUEST_TOOL_NAME
 from openminion.modules.tool.contracts.model_ids import (
     MODEL_AGENT_GET,
     MODEL_AGENT_LIST,
@@ -165,6 +166,24 @@ def select_coding_allowed_tools(
     if project_launch_approved:
         return PROJECT_CODING_ALLOWED_TOOLS
     return CODING_ALLOWED_TOOLS
+
+
+def select_project_allowed_tools(
+    *,
+    verification_domain: str,
+    plan_revision_required: bool,
+    project_launch_approved: bool,
+    release_approved: bool,
+) -> tuple[str, ...]:
+    if plan_revision_required:
+        return (PLAN_TOOL_NAME,)
+    if verification_domain == "research":
+        return ()
+    requestable = select_coding_allowed_tools(
+        project_launch_approved=project_launch_approved,
+        release_approved=release_approved,
+    )
+    return tuple(sorted(requestable | {TOOL_REQUEST_TOOL_NAME}))
 
 
 CODING_V1_ALLOWED_TOOLS = CODING_ALLOWED_TOOLS

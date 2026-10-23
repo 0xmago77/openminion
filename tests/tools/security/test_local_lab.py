@@ -14,6 +14,7 @@ from openminion.api.core.exposure import (
     _security_lab_activation,
 )
 from openminion.api.operations.tools import execute_tool_run
+from openminion.api.runtime import APIRuntime
 from openminion.api.routes.contracts import APIRouteContext
 from openminion.api.routes.tools import handle_request as tools_handle_request
 from openminion.base.config import AgentProfileConfig, OpenMinionConfig
@@ -27,13 +28,28 @@ from openminion.modules.runtime.sandboxes.security_lab import (
 )
 from openminion.base.types import Message
 from openminion.modules.artifact.control import ArtifactCtl
-from openminion.modules.runtime.sandboxes.docker import DockerLabScope
+from openminion.modules.runtime.sandboxes.docker import (
+    DockerLabScope,
+    DockerSandboxRunner,
+)
 from openminion.modules.storage.runtime.migrations import migrate_database
 from openminion.modules.storage.runtime.session_store import SessionStore
 from openminion.modules.storage.runtime.sqlite import connect_database
 from openminion.modules.identity.runtime.service import IdentityCtl
 from openminion.modules.identity.storage import InMemoryIdentityStore
 from openminion.modules.tool.errors import ToolRuntimeError
+from openminion.modules.policy import (
+    SecurityPolicyContext,
+    SecurityPolicyEngine,
+    default_internal_actor,
+)
+from openminion.modules.policy.adapters.tool import (
+    build_execution_boundary_policy_adapter,
+)
+from openminion.modules.llm.providers.base import ProviderToolCall
+from openminion.modules.tool.sidecars import (
+    maybe_allow_denied_call_with_operator_approval,
+)
 from openminion.modules.tool.base import ToolExecutionResult
 from openminion.modules.tool.exposure import ToolExposureService
 from openminion.tools.security.lab_metadata import (
@@ -47,6 +63,9 @@ from openminion.tools.security.family import SECURITY_FAMILY
 from openminion.tools.security.plugin import _h_publish_report
 from openminion.tools.security.schemas import SecurityLabPublishArgs
 from openminion.services.agent.context.runtime import build_context
+from openminion.services.brain.post_execution import BrainBridgeTurnMixin
+from openminion.modules.brain.tools.schema import collect_runtime_tool_names
+from openminion.modules.brain.loop.services import turn_tool_scope
 from openminion.services.runtime.ingress.execution import _enforce_security_lab_route
 from openminion.services.runtime.ingress.requests import (
     _security_lab_inbound_metadata,
@@ -142,6 +161,167 @@ def _exposure_service() -> ToolExposureService:
         if profile.profile_id == "security_lab"
     )
     return ToolExposureService([profile])
+
+
+def test_loaded_lab_config_is_typed_before_default_and_other_agent_construction(
+    tmp_path, monkeypatch
+):
+    payload = json.loads(
+        (_ROOT / "examples/security-researcher-local-lab/profile.json").read_text()
+    )
+    payload["default_agent"] = _AGENT
+    payload["enabled_channels"] = []
+    payload["enabled_plugins"] = []
+    payload["runtime"].update(process_mode="single-process", daemon_auto_start=False)
+    payload["storage"] = {"path": str(tmp_path / "state.db")}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(payload))
+    monkeypatch.setattr(
+        DockerSandboxRunner,
+        "from_config",
+        classmethod(
+            lambda cls, config: cls(config, docker_binary="/not-invoked/docker")
+        ),
+    )
+    monkeypatch.setattr(DockerSandboxRunner, "preflight", lambda self: _scope())
+    runtime = APIRuntime.from_config_path(
+        str(path), home_root=tmp_path, data_root=tmp_path / "data"
+    )
+    try:
+        lab_config = runtime.security_lab_runner.config
+        assert isinstance(lab_config, SecurityLabConfig)
+        assert runtime.config.runtime.security_lab is lab_config
+        agent = runtime.resolve_agent_service(_AGENT)
+        assert agent._config.runtime.security_lab is lab_config
+        assert agent._identity_security_lab_facts()["lab_required"] is True
+        other = runtime.resolve_agent_service("default-agent")
+        assert other._config.runtime.security_lab is lab_config
+        assert other._identity_security_lab_facts()["lab_required"] is False
+        for selected, expected in ((agent, True), (other, False)):
+            brain_runner = SimpleNamespace(
+                tool_api=SimpleNamespace(policy_adapter=None)
+            )
+            BrainBridgeTurnMixin._bind_tool_policy_adapter(
+                selected,
+                runner=brain_runner,
+                message=Message(channel="console", target="focus", body="inspect lab"),
+                session_id="typed-config::conv:focus-typed-config",
+                request_id="lab-policy-binding",
+            )
+            adapter = brain_runner.tool_api.policy_adapter
+            assert adapter.security_lab_required is expected
+            decision = adapter.evaluate(
+                tool_name="exec.run",
+                tool_spec=SimpleNamespace(name="exec.run", dangerous=True),
+                args={"command": "curl http://127.0.0.1:8080/defect"},
+            )
+            assert decision.requires_confirm is expected
+            assert not decision.allowed
+            assert decision.reason == (
+                "approval_required_high_risk"
+                if expected
+                else "read_only_exec_has_structured_tool"
+            )
+        agent._identityctl.load_profiles_from_path(
+            _ROOT / "examples/identity/security-researcher-local-lab.yaml"
+        )
+        runtime.sessions.resolve_session(
+            agent_id=_AGENT,
+            channel="console",
+            target="focus",
+            session_id="typed-config",
+        )
+        activation = runtime.activate_tool_profile(
+            "security_lab",
+            session_id="typed-config::conv:focus-typed-config",
+            approved=True,
+            ttl_seconds=60,
+            approved_by="operator",
+            activation_reason="typed configuration regression",
+        )
+        assert activation["agent_id"] == _AGENT
+        assert (
+            runtime._security_lab_status(session_id=activation["session_id"])["state"]
+            == "ready"
+        )
+        agent._refresh_prep_identity_state()
+        real_runner = agent._get_runner()
+        scope_metadata = {"session_id": activation["session_id"]}
+        agent._bind_tool_policy_adapter(
+            runner=real_runner,
+            message=Message(channel="console", target="focus", body="inspect lab"),
+            session_id=activation["session_id"],
+            request_id="lab-roundtrip",
+        )
+        docker_execution = _LabRunner()
+        monkeypatch.setattr(
+            DockerSandboxRunner,
+            "run_exec",
+            lambda _runner, spec, sandbox: docker_execution.run_exec(spec, sandbox),
+        )
+        approvals = []
+
+        def approve(tool, args, call_id, facts):
+            approvals.append(tool)
+            return True
+
+        real_runner.tool_api.set_approval_callback(approve)
+        with turn_tool_scope(real_runner, scope_metadata, agent._identity_tool_filter):
+            assert collect_runtime_tool_names(real_runner, metadata=scope_metadata) == {
+                "exec.run",
+                "security.publish_report",
+            }
+            assert "security.publish_report" not in collect_runtime_tool_names(
+                real_runner, metadata={"session_id": "wrong-session"}
+            )
+            execution = real_runner.tool_api.execute(
+                command={
+                    "command_id": "lab-exec",
+                    "tool_name": "exec.run",
+                    "args": {
+                        "command": "curl http://127.0.0.1:8080/defect",
+                        "host": "sandbox",
+                        "security": "deny",
+                        "timeout_s": 10,
+                        "include_evidence_artifact": True,
+                    },
+                    "inputs": {"permission_mode": "ask"},
+                },
+                session_id=activation["session_id"],
+                trace_id="lab-roundtrip",
+            )
+            assert execution["status"] == "success", execution
+            assert len(docker_execution.calls) == 1
+            evidence_ref = execution["outputs"]["evidence_artifact"]["ref"]
+            report_command = {
+                "command_id": "lab-publish",
+                "tool_name": "security.publish_report",
+                "args": _active_report_payload([evidence_ref]),
+                "inputs": {"permission_mode": "ask"},
+            }
+            report = real_runner.tool_api.execute(
+                command=report_command,
+                session_id=activation["session_id"],
+                trace_id="lab-roundtrip",
+            )
+            assert report["status"] == "success", report
+            assert report["outputs"]["execution_status"] == "completed"
+            assert approvals == ["exec.run"]
+            assert runtime.deactivate_tool_profile(
+                "security_lab", session_id=activation["session_id"]
+            )
+            assert "security.publish_report" not in collect_runtime_tool_names(
+                real_runner, metadata=scope_metadata
+            )
+            revoked = real_runner.tool_api.execute(
+                command=report_command,
+                session_id=activation["session_id"],
+                trace_id="lab-revoked",
+            )
+            assert revoked["status"] == "error", revoked
+            assert len(docker_execution.calls) == 1
+    finally:
+        runtime.close()
 
 
 def test_local_lab_examples_are_explicit_and_exact() -> None:
@@ -242,6 +422,94 @@ def test_lab_route_requires_exact_non_room_session() -> None:
             routed_agents=(_AGENT, "other"),
             routing_mode="broadcast",
         )
+
+
+@pytest.mark.parametrize(
+    "invalid", [None, "suffix", "non_focus", "room", "wrong_owner", "missing"]
+)
+def test_focus_lab_activation_validates_root_but_binds_conversation(tmp_path, invalid):
+    database = tmp_path / "sessions.db"
+    migrate_database(database)
+    connection = connect_database(database)
+    sessions = SessionStore(connection)
+    root_id = "focus-lab"
+    scoped_id = f"{root_id}::conv:focus-{root_id}"
+    try:
+        if invalid == "room":
+            sessions.create_room(
+                channel="console",
+                target="focus",
+                session_id=root_id,
+                active_agent_id=_AGENT,
+            )
+        elif invalid != "missing":
+            sessions.resolve_session(
+                agent_id="other" if invalid == "wrong_owner" else _AGENT,
+                channel="console",
+                target="tui" if invalid == "non_focus" else "focus",
+                session_id=root_id,
+            )
+        if invalid == "suffix":
+            scoped_id += "-other"
+        config = _config()
+        runner = SimpleNamespace(config=config, preflight=_scope)
+        exposure = _exposure_service()
+        runtime = SimpleNamespace(
+            config=SimpleNamespace(runtime=SimpleNamespace(security_lab=config)),
+            sessions=sessions,
+            security_lab_runner=runner,
+            resolve_agent_service=lambda _: SimpleNamespace(
+                _identity_security_lab_facts=_identity
+            ),
+            tools=SimpleNamespace(exposure_service=exposure),
+        )
+        arguments = dict(
+            session_id=scoped_id,
+            target_id="security-target",
+            approved=True,
+            ttl_seconds=60,
+            activation_reason="Focus operator approval",
+            approved_by="operator",
+            policy_source="focus",
+        )
+        if invalid is not None:
+            with pytest.raises(ToolRuntimeError):
+                _security_lab_activation(runtime, **arguments)
+            assert (
+                RuntimeToolExposureMixin._security_lab_status(
+                    runtime, session_id=scoped_id
+                )["state"]
+                == "unavailable"
+            )
+            return
+        activation = _security_lab_activation(runtime, **arguments)
+        assert activation.session_id == scoped_id
+        assert sessions.get_session(scoped_id) is None
+        status = RuntimeToolExposureMixin._security_lab_status(
+            runtime, session_id=scoped_id
+        )
+        assert status["state"] == "ready" and status["approved_by"] == "operator"
+        assert (
+            resolve_security_lab_metadata(
+                exposure,
+                config=config,
+                runner=runner,
+                identity=_identity(),
+                session_id=root_id,
+            )["security_lab_state"]
+            != "ready"
+        )
+        exposure.deactivate(
+            "security_lab", session_id=scoped_id, target_id="security-target"
+        )
+        assert (
+            RuntimeToolExposureMixin._security_lab_status(
+                runtime, session_id=scoped_id
+            )["state"]
+            != "ready"
+        )
+    finally:
+        connection.close()
 
 
 def test_activation_freezes_identity_scope_and_refuses_duplicates() -> None:
@@ -616,6 +884,58 @@ def lab_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         yield ctx, runner, ordinary_runner
     finally:
         artifactctl.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "lab_required,approved", [(True, True), (True, False), (False, True)]
+)
+async def test_lab_curl_policy_approval_reaches_only_the_lab_runner(
+    lab_context, lab_required: bool, approved: bool
+) -> None:
+    ctx, runner, ordinary_runner = lab_context
+    args = {
+        "command": "curl http://127.0.0.1:8080/defect",
+        "host": "sandbox",
+        "security": "deny",
+        "timeout_s": 10,
+        "include_evidence_artifact": True,
+    }
+    adapter = build_execution_boundary_policy_adapter(
+        policy=SecurityPolicyEngine(),
+        actor=default_internal_actor(_AGENT),
+        context=SecurityPolicyContext(session_id=ctx.session_id),
+        security_lab_required=lab_required,
+    )
+    decision = adapter.evaluate(
+        tool_name="runtime.exec.run",
+        tool_spec=SimpleNamespace(name="runtime.exec.run", dangerous=True),
+        args=args,
+    )
+    approval_calls = []
+
+    async def approve(tool, arguments, call_id, facts):
+        approval_calls.append((tool, arguments, call_id, facts))
+        return approved
+
+    call = await maybe_allow_denied_call_with_operator_approval(
+        call=ProviderToolCall(id="lab-curl", name="runtime.exec.run", arguments=args),
+        tool_name="runtime.exec.run",
+        tool_args=args,
+        decision=decision,
+        approval_callback=approve,
+    )
+    assert not decision.allowed
+    if lab_required and approved:
+        assert call is not None and call.approval_id == "lab-curl"
+        result = _h_exec_run(call.arguments, ctx)
+        assert result["status"] == "ok"
+        assert runner.calls[0][0].cmd == ["curl", "http://127.0.0.1:8080/defect"]
+    else:
+        assert call is None
+        assert runner.calls == []
+    assert len(approval_calls) == int(lab_required)
+    assert ordinary_runner.calls == []
 
 
 def test_lab_exec_uses_direct_argv_and_persists_exact_bytes(lab_context) -> None:

@@ -269,6 +269,8 @@ class RuntimeContext:
     authored_tools_api: Any | None = None
     a2a_delegate_api: A2ADelegateApi | None = None
     permission_mode: str = "ask"
+    base_permission_mode: str = "ask"
+    permission_overrides: dict[str, str] = field(default_factory=dict)
     agent_query: Callable[[], list[dict[str, Any]]] | None = None
     agent_profile: Optional[Any] = None
     session_id: str | None = None

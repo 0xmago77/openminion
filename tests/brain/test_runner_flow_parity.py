@@ -4,19 +4,20 @@ import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from openminion.modules.brain.adapters.a2a import LocalA2AAdapter
 from openminion.modules.brain.adapters.context import LocalContextAdapter
-from openminion.modules.brain.adapters.llm import LocalLLMAdapter
+from openminion.modules.brain.adapters.llm import LlmctlAdapter, LocalLLMAdapter
 from openminion.modules.brain.adapters.memory import LocalMemoryAdapter
 from openminion.modules.brain.adapters.policy import LocalPolicyAdapter
 from openminion.modules.brain.adapters.session import LocalSessionStore
 from openminion.modules.brain.adapters.tool import LocalToolAdapter
 from openminion.modules.brain.runner import RunnerOptions, BrainRunner
 from openminion.modules.llm import ProviderError
+from openminion.modules.llm.schemas import LLMResponse, ToolCall, UsageInfo
 from openminion.modules.session.capture import (
     RuntimeTerminalCaptureWriter,
     build_capture_identity,
@@ -680,3 +681,68 @@ def test_async_job_pending_transitions_to_failed_with_polling() -> None:
         types = [event["type"] for event in events]
         assert "tool.request" in types
         assert output.status == "job_pending"
+
+
+@pytest.mark.parametrize(
+    "provider_failure", [False, True], ids=["malformed-verdict", "provider-error"]
+)
+def test_closure_failure_after_tool_stops_turn(
+    tmp_path: Path, provider_failure: bool
+) -> None:
+    runner, session = _build_runner(tmp_path)
+    original_call = runner.llm_api.call_structured
+    client = MagicMock()
+    failure = ProviderError(
+        "judge unavailable", code="TIMEOUT", details={"request_id": "judge-1"}
+    )
+    if provider_failure:
+        client.call.side_effect = failure
+    else:
+        client.call.return_value = LLMResponse(
+            ok=True,
+            provider="test",
+            model="judge",
+            output_text="",
+            tool_calls=[
+                ToolCall(name="submit_output", arguments={"final_answer": "Done"})
+            ],
+            usage=UsageInfo(total_tokens=1),
+            finish_reason="tool_calls",
+        )
+    judge = LlmctlAdapter(client)
+
+    def call_structured(**kwargs):
+        if kwargs["schema"].__name__ == "ClosureJudgment":
+            return judge.call_structured(**kwargs)
+        return original_call(**kwargs)
+
+    with (
+        patch.object(runner.llm_api, "call_structured", side_effect=call_structured),
+        patch.object(
+            runner.tool_api, "execute", wraps=runner.tool_api.execute
+        ) as execute,
+    ):
+        if provider_failure:
+            with pytest.raises(ProviderError) as raised:
+                runner.run(
+                    session_id="closure-failure", user_input='tool echo {"value":"one"}'
+                )
+            assert raised.value is failure
+        else:
+            output = runner.run(
+                session_id="closure-failure", user_input='tool echo {"value":"one"}'
+            )
+            assert output.status == "error"
+            assert output.action_result.status == "failed"
+            assert output.action_result.error.code == "RUNTIME_ERROR"
+
+    assert execute.call_count == 1
+    assert client.call.call_count == 1
+    events = session.list_events("closure-failure")
+    outcomes = [event for event in events if event["type"] == "turn.outcome"]
+    assert len(outcomes) == 1
+    assert outcomes[0]["payload"]["status"] == "error"
+    assert not any(event["type"] == "brain.closure_gate.completed" for event in events)
+    if provider_failure:
+        assert outcomes[0]["payload"]["error"]["code"] == "TIMEOUT"
+        assert outcomes[0]["payload"]["error"]["details"] == {"request_id": "judge-1"}

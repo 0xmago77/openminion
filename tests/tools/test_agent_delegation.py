@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from pydantic import ValidationError
 
 from openminion.api.core.profiles import _build_agent_discovery_record
 from openminion.base.config import AgentProfileConfig
@@ -111,12 +112,68 @@ def test_task_delegate_schema_makes_lifecycle_order_explicit() -> None:
     agent_description = TaskDelegateArgs.model_fields["agent_id"].description or ""
     assert "Call agent.list first" in agent_description
     assert "never invent" in agent_description
+    instruction_description = TaskDelegateArgs.model_fields["instruction"].description
+    assert instruction_description is not None
+    assert "name files relative to the repository" in instruction_description
+    assert "runtime supplies the isolated checkout" in instruction_description
+    assert (
+        "Request edits and a change summary from the child" in instruction_description
+    )
+    assert (
+        "runtime creates the child artifact after the child returns"
+        in instruction_description
+    )
+    code_description = TaskDelegateArgs.model_fields["code_bearing"].description
+    assert code_description is not None
+    assert "parent checkout is unchanged" in code_description
+    assert "until review succeeds and accept is explicitly called" in code_description
 
 
 def test_readonly_blocks_task_delegate() -> None:
     assert is_tool_blocked_by_readonly("task.delegate")
     assert not is_tool_blocked_by_readonly("agent.list")
     assert not is_tool_blocked_by_readonly("agent.get")
+
+
+def test_task_delegate_provider_schema_preserves_child_artifact_object() -> None:
+    from openminion.modules.llm.providers.base import ProviderToolSpec
+    from openminion.modules.llm.providers.tool_calling.contracts import (
+        build_openai_tools_payload,
+    )
+
+    schema = build_openai_tools_payload(
+        [
+            ProviderToolSpec(
+                name="task.delegate",
+                description="Delegate",
+                parameters=TaskDelegateArgs.model_json_schema(),
+            )
+        ]
+    )[0]["function"]["parameters"]["properties"]["child_artifact"]
+    artifact = {
+        "record_alias": "a2a-child:review-candidate",
+        "target_digest": "target-digest",
+        "integration_status": "pending_parent_review",
+    }
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is True
+    assert schema["properties"] == {key: {"type": "string"} for key in artifact}
+    assert "required" not in schema
+    request = {
+        "mode": "review",
+        "agent_id": "reviewer",
+        "instruction": "Review the patch",
+        "review_criteria": ["Only the authorized file changed"],
+        "child_artifact": artifact,
+    }
+    assert TaskDelegateArgs.model_validate(request).child_artifact == artifact
+    assert TaskDelegateArgs.model_validate(
+        {**request, "child_artifact": {"record_alias": artifact["record_alias"]}}
+    ).child_artifact == {"record_alias": artifact["record_alias"]}
+    with pytest.raises(ValidationError, match="valid dictionary"):
+        TaskDelegateArgs.model_validate(
+            {**request, "child_artifact": artifact["record_alias"]}
+        )
 
 
 def test_agent_list_defaults() -> None:
@@ -142,6 +199,36 @@ def test_task_delegate_requires_fields() -> None:
         TaskDelegateArgs(agent_id="", instruction="hi")  # type: ignore[call-arg]
     with pytest.raises(Exception):
         TaskDelegateArgs(agent_id="x", instruction="")  # type: ignore[call-arg]
+
+
+def test_review_schema_requires_objective_separately_from_criteria() -> None:
+    properties = TaskDelegateArgs.model_json_schema()["properties"]
+    assert "Omitting mode starts sync work" in properties["mode"]["description"]
+    assert 'set mode="review"' in properties["mode"]["description"]
+    assert "do not select mode" in properties["mode"]["description"]
+    assert (
+        "review requires agent_id, instruction, child_artifact, and review_criteria"
+        in properties["mode"]["description"]
+    )
+    assert (
+        "Required for sync, async, and review"
+        in properties["instruction"]["description"]
+    )
+    assert "do not replace instruction" in properties["review_criteria"]["description"]
+    request = {
+        "mode": "review",
+        "agent_id": "security-code-reviewer",
+        "child_artifact": {"record_alias": "a2a-child:review-candidate"},
+        "review_criteria": ["Only an explicitly allowed role is authorized."],
+    }
+    with pytest.raises(ValidationError, match="instruction.*required for review"):
+        TaskDelegateArgs.model_validate(request)
+    request["instruction"] = (
+        "Review the exact child change for authorization correctness."
+    )
+    assert TaskDelegateArgs.model_validate(request).mode == "review"
+    request.pop("mode")
+    assert TaskDelegateArgs.model_validate(request).mode == "sync"
 
 
 def test_task_delegate_timeout_bounds() -> None:
@@ -534,9 +621,13 @@ def test_task_delegate_rejects_incompatible_child_permission_modes(
         TaskDelegateArgs.model_validate(arguments)
 
 
+@pytest.mark.parametrize(
+    "entry", ["native", "confirmation_replay", "generic_only", "failed_review"]
+)
 def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    entry: str,
 ) -> None:
     from openminion.modules.brain.execution.worktree_children import (
         load_child_worktree_record,
@@ -609,6 +700,7 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
 
     delegate_timeouts: list[int] = []
     verifier_timeouts: list[int] = []
+    caller_instruction = f"Set VALUE to 1 in {repository / 'value.py'}."
 
     def run_verifier(commands, *, workspace, timeout_seconds):  # noqa: ANN001
         verifier_timeouts.append(timeout_seconds)
@@ -625,8 +717,25 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
 
     class _Seam:
         def delegate(self, **kwargs):
+            assert kwargs["permission_mode"] == "ask"
+            assert kwargs["permission_overrides"] == {
+                "file.write": "bypass",
+                "task.delegate": "bypass",
+            }
             delegate_timeouts.append(kwargs["timeout_seconds"])
             child = Path(kwargs["workspace_root"])
+            assert child != repository and kwargs["cwd"] == str(child)
+            assert kwargs["instruction"].startswith(caller_instruction + "\n\n")
+            assert (
+                f"authoritative workspace for this task is {child}."
+                in kwargs["instruction"]
+            )
+            assert "Use repository-relative file paths" in kwargs["instruction"]
+            assert "You are the implementation child" in kwargs["instruction"]
+            assert "without delegating further" in kwargs["instruction"]
+            assert "return a concise change summary" in kwargs["instruction"]
+            assert "After you return, the runtime verifies" in kwargs["instruction"]
+            assert "parent owns review and acceptance" in kwargs["instruction"]
             (child / "value.py").write_text("VALUE = 1\n", encoding="utf-8")
             return A2ADelegateResult(
                 ok=True,
@@ -644,7 +753,7 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
                 target_agent_id=kwargs["reviewer_agent_id"],
                 outputs={
                     "review_receipt": {
-                        "passed": True,
+                        "passed": entry != "failed_review",
                         "reviewer_agent_id": kwargs["reviewer_agent_id"],
                         "target_digest": kwargs["target_digest"],
                         "bundle_ref": kwargs["bundle_ref"],
@@ -665,25 +774,81 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
             task_manager=manager,
             agent_id="parent",
         )
-        result = adapter.execute(
-            command={
-                "tool_name": "task.delegate",
-                "command_id": "delegate-code",
-                "args": {
-                    "mode": "sync",
-                    "agent_id": "implementer",
-                    "instruction": "Set VALUE to 1.",
-                    "code_bearing": True,
-                    "timeout_seconds": 31,
-                },
-                "inputs": {"permission_mode": "bypass"},
-                "meta": {"orchestration": {"task_backed_task_id": "task-1"}},
-            },
-            session_id="session-1",
-            trace_id="turn-1",
+        from openminion.modules.brain.schemas import (
+            BudgetCounters,
+            ToolCommand,
+            WorkingState,
         )
+        from openminion.modules.brain.tools.executor.dispatch import (
+            _command_lineage_payload,
+        )
+        from openminion.modules.brain.tools.executor.tool import _tool_dispatch_payload
+        from openminion.modules.brain.runner.tick.confirmation import (
+            _prepare_confirmation_replay_commands,
+        )
+
+        state = WorkingState(
+            session_id="session-1",
+            agent_id="parent",
+            budgets_remaining=BudgetCounters(
+                ticks=10, tool_calls=5, a2a_calls=5, tokens=1000, time_ms=10000
+            ),
+        )
+        state.task_backed_task_id = (
+            "task-1" if entry == "generic_only" else "internal-task"
+        )
+        state.resume_task_id_hint = None if entry == "generic_only" else "task-1"
+        state.permission_mode = "ask"
+        state.permission_overrides = {"file.write": "bypass", "task.delegate": "bypass"}
+        command = ToolCommand(
+            kind="tool",
+            command_id="delegate-code",
+            idempotency_key="delegate-code",
+            title="Delegate fixture repair",
+            tool_name="task.delegate",
+            args={
+                "mode": "sync",
+                "agent_id": "implementer",
+                "instruction": caller_instruction,
+                "code_bearing": True,
+                "timeout_seconds": 31,
+            },
+        )
+        if entry == "confirmation_replay":
+            command = _prepare_confirmation_replay_commands(
+                runner=SimpleNamespace(),
+                state=state,
+                confirmed=command,
+                session_grant=False,
+                logger=SimpleNamespace(),
+            )[0]
+            assert command.inputs["confirmation_source"] == "policy_replay"
+        payload = _tool_dispatch_payload(
+            command=command,
+            state=state,
+            lineage=_command_lineage_payload(state=state, command=command),
+            permission_mode="default" if entry == "confirmation_replay" else "bypass",
+        )
+        result = adapter.execute(
+            command=payload, session_id="session-1", trace_id="turn-1"
+        )
+        if entry == "generic_only":
+            manager.close()
+            assert (
+                result["error"]["details"]["reason_code"]
+                == "project_context_unavailable"
+            )
+            assert not delegate_timeouts
+            assert (repository / "value.py").read_text() == "VALUE = 0\n"
+            return
         assert result["status"] == "success", result
         artifact = result["outputs"]["child_artifact"]
+        assert "Child edits passed verification" in result["summary"]
+        assert "parent checkout is unchanged" in result["summary"]
+        assert "task.delegate mode=review" in result["summary"]
+        assert "explicit mode=accept after a passing review" in result["summary"]
+        assert artifact["integration_status"] == "pending_parent_review"
+        assert (repository / "value.py").read_text() == "VALUE = 0\n"
         review = adapter.execute(
             command={
                 "tool_name": "task.delegate",
@@ -701,6 +866,17 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
             trace_id="turn-2",
         )
         assert review["status"] == "success", review
+        review_status = "correction_required" if entry == "failed_review" else "passed"
+        assert review["outputs"]["status"] == review_status
+        assert f"Review {review_status}" in review["summary"]
+        assert (
+            "parent checkout unchanged until explicit mode=accept" in review["summary"]
+        )
+        assert review["outputs"]["child_artifact"] == artifact
+        reviewed = load_child_worktree_record(ctl, artifact["record_alias"])
+        assert reviewed["review_receipt"]["passed"] is (entry != "failed_review")
+        assert reviewed["integration_status"] == "pending_parent_review"
+        assert (repository / "value.py").read_text() == "VALUE = 0\n"
         accepted = adapter.execute(
             command={
                 "tool_name": "task.delegate",
@@ -711,6 +887,11 @@ def test_tool_adapter_binds_code_delegate_to_project_worktree_and_verifier(
             session_id="session-1",
             trace_id="turn-3",
         )
+        if entry == "failed_review":
+            assert accepted["error"]["code"] == "POLICY_DENIED"
+            assert (repository / "value.py").read_text() == "VALUE = 0\n"
+            manager.close()
+            return
         assert accepted["status"] == "success", accepted
         record = load_child_worktree_record(ctl, artifact["record_alias"])
 
@@ -775,6 +956,8 @@ def test_code_bearing_delegate_releases_worktree_when_delegate_raises(
                     workspace=tmp_path,
                     task_manager=object(),
                     project_task_id="task-1",
+                    base_permission_mode="ask",
+                    permission_overrides={},
                 ),
             ),
         )
@@ -889,7 +1072,7 @@ def test_code_bearing_delegate_normalizes_non_project_checkpoint_through_adapter
                 "code_bearing": True,
             },
             "inputs": {"permission_mode": "bypass"},
-            "meta": {"orchestration": {"task_backed_task_id": "task-1"}},
+            "meta": {"orchestration": {"project_task_id": "task-1"}},
         },
         session_id="session-1",
         trace_id="turn-1",
@@ -934,7 +1117,7 @@ def test_code_bearing_delegate_preserves_malformed_project_checkpoint_error(
                 "code_bearing": True,
             },
             "inputs": {"permission_mode": "bypass"},
-            "meta": {"orchestration": {"task_backed_task_id": "task-1"}},
+            "meta": {"orchestration": {"project_task_id": "task-1"}},
         },
         session_id="session-1",
         trace_id="turn-1",

@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from openminion.modules.tool.diagnostics.events import structural_tool_results
+
 from openminion.modules.task import (
     AutonomyRunPhase,
     AutonomyRunStatus,
@@ -812,3 +814,36 @@ def test_autonomy_loop_judgment_rejects_unknown_fields_and_missing_operator_acti
             reason_code="progress",
             assistant_text="I think I am stuck",  # type: ignore[call-arg]
         )
+
+
+@pytest.mark.parametrize("structural", [False, True])
+def test_project_turn_carries_explicit_successful_tool_artifact_refs(structural):
+    accepted = "artifact://sha256/" + "a" * 64
+    previous = "artifact://sha256/" + "b" * 64
+    failed = "artifact://sha256/" + "c" * 64
+    results = [
+        {
+            "tool_name": "task.delegate",
+            "ok": True,
+            "data": {"artifact_refs": [accepted, accepted]},
+        },
+        {
+            "tool_name": "task.delegate",
+            "ok": False,
+            "data": {"artifact_refs": [failed]},
+        },
+        {"tool_name": "file.read", "ok": True, "data": {"content": failed}},
+    ]
+    if structural:
+        results = structural_tool_results(results)
+    result = project_turn_result_from_response(
+        response={
+            "summary": "Accepted child",
+            "metadata": {
+                "artifact_refs": [previous],
+                "tool_calls_cumulative": json.dumps(results),
+            },
+        }
+    )
+    assert result.artifact_refs == (previous, accepted)
+    assert result.evidence_refs == (previous, accepted)

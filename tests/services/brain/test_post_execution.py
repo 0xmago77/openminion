@@ -14,8 +14,12 @@ from openminion.modules.memory.storage.memory import InMemoryMemoryStore
 from openminion.modules.brain.loop.context.pending_turn import (
     PENDING_TURN_CONTEXT_MAX_STALE_TURNS,
 )
-from openminion.modules.brain.schemas import BudgetCounters, WorkingState
+from openminion.modules.brain.schemas import BudgetCounters, ToolCommand, WorkingState
 from openminion.modules.tool import ToolRegistry, ToolSpec
+from openminion.modules.tool.diagnostics.events import structural_tool_result
+from openminion.modules.storage.runtime.migrations import migrate_database
+from openminion.modules.storage.runtime.session_store import SessionStore
+from openminion.modules.storage.runtime.sqlite import connect_database
 from openminion.modules.llm.providers.base import ProviderError, ProviderResponse
 from openminion.modules.llm.schemas import UsageInfo
 from openminion.services.agent.constants import PRIOR_TURN_CONTEXT_CHAR_LIMIT
@@ -53,6 +57,7 @@ def test_tool_policy_adapter_includes_configured_internal_actor_scopes() -> None
         internal_actor_scopes=frozenset({"tool.execute.elevated"})
     )
     bridge._identity_agent_id = "agent-a"
+    bridge._identity_security_lab_facts = lambda: {"lab_required": False}
     bridge._tools = tools
     runner = SimpleNamespace(tool_api=SimpleNamespace(policy_adapter=None))
 
@@ -199,6 +204,7 @@ class _DummyRunner:
         self.session_api = _DummySessionAPI(state)
         self.profile = SimpleNamespace(
             agent_id="test-agent",
+            structural_tool_results=False,
             budgets=SimpleNamespace(
                 max_ticks_per_user_turn=8,
                 max_tool_calls=8,
@@ -812,6 +818,125 @@ def test_build_turn_response_metadata_recovers_terminal_plan_signal() -> None:
         "plan_id": "plan-1",
         "reason": "verified",
     }
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_replaced_plan_projection_roundtrips_current_sqlite_facts(tmp_path, complete):
+    from openminion.modules.brain.loop.tools.plan_control import handle_plan_tool_call
+    from openminion.modules.session import SQLiteSessionStore
+    from openminion.modules.task.project.checkpoints import (
+        save_project_run_checkpoint,
+        updated_checkpoint_task_plan,
+    )
+    from openminion.modules.task.project.turn import project_turn_result_from_response
+    from openminion.services.brain.post_execution.postprocess_metadata import (
+        _attach_session_task_plan_metadata,
+    )
+    from tests.brain.tool_loops.test_plan_control import _Ctx
+    from tests.task.test_project_run import _create_project_task
+
+    sessions = SQLiteSessionStore(tmp_path / "sessions.db")
+    sessions.create_session(session_id="s-plan", initial_agent_id="agent")
+    manager, project_run = _create_project_task(tmp_path)
+    ctx = _Ctx(session_api=sessions)
+    steps = [{"step_id": "repair", "description": "Repair the fixture"}]
+    try:
+        for plan_id in ("old-plan", "new-plan"):
+            declared = handle_plan_tool_call(
+                loop_ctx=ctx,
+                arguments={
+                    "action": "declare",
+                    "plan_id": plan_id,
+                    "objective": "Repair",
+                    "steps": steps,
+                },
+            )
+            assert declared.status == "success"
+            if plan_id == "old-plan":
+                checkpoint = save_project_run_checkpoint(
+                    manager,
+                    project_run,
+                    checkpoint_id="old-plan",
+                    payload={"task_plan": declared.outputs["task_plan"]},
+                )
+            revised = handle_plan_tool_call(
+                loop_ctx=ctx,
+                arguments={
+                    "action": "revise",
+                    "plan_id": plan_id,
+                    "revision_id": f"{plan_id}-revision",
+                    "reason": "Verifier feedback",
+                    "verifier_refs": ["verify:failed"],
+                    "revised_steps": steps,
+                },
+            )
+            assert revised.status == "success"
+        assert (
+            handle_plan_tool_call(
+                loop_ctx=ctx,
+                arguments={
+                    "action": "step_completed",
+                    "plan_id": "new-plan",
+                    "step_id": "repair",
+                    "output_summary": "fixed",
+                },
+            ).status
+            == "success"
+        )
+        if complete:
+            assert (
+                handle_plan_tool_call(
+                    loop_ctx=ctx,
+                    arguments={
+                        "action": "complete",
+                        "plan_id": "new-plan",
+                        "reason": "verified",
+                    },
+                ).status
+                == "success"
+            )
+        metadata = {"task_plan": json.dumps(declared.outputs["task_plan"])}
+        _attach_session_task_plan_metadata(
+            metadata=metadata,
+            runner=SimpleNamespace(session_api=sessions),
+            session_id="s-plan",
+            request_id="trace",
+        )
+        assert "task_plan.abandoned" not in metadata
+        assert [
+            item["plan_id"] for item in json.loads(metadata["task_plan.revisions"])
+        ] == ["new-plan"]
+        turn = project_turn_result_from_response(response={"metadata": metadata})
+        plan, revision, count = updated_checkpoint_task_plan(checkpoint, turn)
+        assert plan.plan_id == "new-plan" and plan.steps[0].status == "completed"
+        assert plan.status == ("completed" if complete else "active")
+        assert revision.plan_id == "new-plan" and count == 1
+        assert (
+            sessions.list_events("s-plan", event_type="task_plan.abandoned")[0][
+                "payload"
+            ]["plan_id"]
+            == "old-plan"
+        )
+        invalid = {
+            **metadata,
+            "task_plan.abandoned": json.dumps(
+                {"plan_id": "old-plan", "reason": "wrong current plan"}
+            ),
+        }
+        _attach_session_task_plan_metadata(
+            metadata=invalid,
+            runner=SimpleNamespace(session_api=sessions),
+            session_id="s-plan",
+            request_id="trace",
+        )
+        with pytest.raises(ValueError, match="must match the checkpoint task plan"):
+            updated_checkpoint_task_plan(
+                checkpoint,
+                project_turn_result_from_response(response={"metadata": invalid}),
+            )
+    finally:
+        manager.close()
+        sessions.close()
 
 
 def test_build_turn_response_metadata_captures_provider_error_facts() -> None:
@@ -2794,6 +2919,63 @@ def test_follow_up_after_tool_preserves_typed_cache_usage_in_completed_event() -
     assert completed["payload"]["provider"] == "fake-provider"
 
 
+@pytest.mark.parametrize("pending", [False, True])
+def test_postprocess_turn_exposes_only_pending_confirmation_identity(
+    pending: bool,
+) -> None:
+    bridge = DummyBridge()
+    bridge._config = OpenMinionConfig()
+    _csc_install_default_agent(bridge._config)
+    bridge._provider = SimpleNamespace(name="fake-provider")
+    bridge._telemetryctl = None
+    bridge._identity_metadata = dict
+    state = WorkingState(
+        session_id="s-confirmation",
+        agent_id="test-agent",
+        budgets_remaining=BudgetCounters(
+            ticks=8, tool_calls=8, a2a_calls=0, tokens=1000, time_ms=1000
+        ),
+        pending_confirmation_command=(
+            ToolCommand(
+                command_id="pending-delegation-1",
+                title="Delegate repair",
+                tool_name="task.delegate",
+                args={"task": "PRIVATE_PENDING_ARGUMENT_CANARY"},
+                requires_confirmation=True,
+            )
+            if pending
+            else None
+        ),
+    )
+    response = asyncio.run(
+        bridge._postprocess_turn(
+            runner=_DummyRunner({}),
+            step_out=SimpleNamespace(
+                message="Confirmation required." if pending else "Done.",
+                status="waiting_user" if pending else "done",
+                action_result=None,
+                working_state=state,
+            ),
+            message=Message(channel="console", target="user", body="Repair"),
+            history=[],
+            session_id="s-confirmation",
+            request_id="trace-confirmation",
+            turn_id="turn-confirmation",
+            turn_start_time=0.0,
+        )
+    )
+    if pending:
+        assert (
+            response.metadata["pending_confirmation_command_id"]
+            == "pending-delegation-1"
+        )
+    else:
+        assert "pending_confirmation_command_id" not in response.metadata
+    serialized = json.dumps(response.metadata)
+    assert "PRIVATE_PENDING_ARGUMENT_CANARY" not in serialized
+    assert '"pending_confirmation_command"' not in serialized
+
+
 def test_postprocess_turn_attaches_clarify_request_metadata() -> None:
     bridge = DummyBridge()
     bridge._config = OpenMinionConfig()
@@ -2801,12 +2983,13 @@ def test_postprocess_turn_attaches_clarify_request_metadata() -> None:
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = None
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     step_out = SimpleNamespace(
         message="Please clarify.",
         status="waiting_user",
         action_result=None,
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="plan",
@@ -2854,7 +3037,7 @@ def test_postprocess_turn_attaches_tool_and_security_metadata() -> None:
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = _DummyTelemetry()
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     action_error = SimpleNamespace(
         code="tool_budget_cost_exceeded",
         message="tool budget exceeded",
@@ -2885,6 +3068,7 @@ def test_postprocess_turn_attaches_tool_and_security_metadata() -> None:
         status="running",
         action_result=action_result,
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[_Step()]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -2928,12 +3112,13 @@ def test_postprocess_turn_prefixes_response_with_selected_runtime_agent() -> Non
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = None
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     step_out = SimpleNamespace(
         message="Here is the answer.",
         status="done",
         action_result=SimpleNamespace(outputs={}),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -2965,7 +3150,7 @@ def test_postprocess_turn_preserves_explicit_duplicate_termination_reason() -> N
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = _DummyTelemetry()
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     action_error = SimpleNamespace(
         code="act_adaptive_duplicate_tool_calls",
         message="repeated identical tool calls detected without reaching a final answer",
@@ -2995,6 +3180,7 @@ def test_postprocess_turn_preserves_explicit_duplicate_termination_reason() -> N
         status="running",
         action_result=action_result,
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=None,
             llm_calls_used=4,
             active_mode_name="act",
@@ -3026,7 +3212,7 @@ def test_postprocess_turn_uses_aggregated_tool_results_from_action_outputs() -> 
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = _DummyTelemetry()
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     step_out = SimpleNamespace(
         message="Done.",
         status="done",
@@ -3060,6 +3246,7 @@ def test_postprocess_turn_uses_aggregated_tool_results_from_action_outputs() -> 
             },
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3096,7 +3283,7 @@ def test_postprocess_turn_rejects_empty_aggregated_model_continuation() -> None:
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = _DummyTelemetry()
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     step_out = SimpleNamespace(
         message="",
         status="done",
@@ -3117,6 +3304,7 @@ def test_postprocess_turn_rejects_empty_aggregated_model_continuation() -> None:
             },
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3149,7 +3337,7 @@ def test_postprocess_turn_preserves_no_tool_termination_reason() -> None:
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = _DummyTelemetry()
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     step_out = SimpleNamespace(
         message="The requested tool was not executed.",
         status="error",
@@ -3164,6 +3352,7 @@ def test_postprocess_turn_preserves_no_tool_termination_reason() -> None:
             ),
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3190,14 +3379,20 @@ def test_postprocess_turn_preserves_no_tool_termination_reason() -> None:
     )
 
 
-def test_postprocess_turn_exposes_cumulative_tool_results_from_last_result() -> None:
+@pytest.mark.parametrize("structural_only", [False, True])
+def test_postprocess_turn_exposes_cumulative_tool_results_from_last_result(
+    structural_only: bool,
+) -> None:
     bridge = DummyBridge()
     bridge._config = OpenMinionConfig()
     _csc_install_default_agent(bridge._config)
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = _DummyTelemetry()
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = SimpleNamespace(
+        session_api=_DummySessionAPI({}),
+        profile=SimpleNamespace(structural_tool_results=structural_only),
+    )
     prior_result = SimpleNamespace(
         outputs={
             "tool_results": [
@@ -3241,6 +3436,7 @@ def test_postprocess_turn_exposes_cumulative_tool_results_from_last_result() -> 
             },
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3272,6 +3468,14 @@ def test_postprocess_turn_exposes_cumulative_tool_results_from_last_result() -> 
         "file.list_dir",
     ]
 
+    for key in ("tool_results", "tool_calls_cumulative"):
+        results = json.loads(response.metadata[key])
+        assert all(
+            bool(item.get("structural_only")) == structural_only for item in results
+        )
+        assert all(("content" not in item) == structural_only for item in results)
+    assert prior_result.outputs["tool_results"][0]["content"] == "wrote pyproject"
+
 
 def test_postprocess_turn_ignores_last_result_from_prior_turn() -> None:
     bridge = DummyBridge()
@@ -3280,7 +3484,7 @@ def test_postprocess_turn_ignores_last_result_from_prior_turn() -> None:
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = _DummyTelemetry()
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     prior_result = SimpleNamespace(
         outputs={
             "tool_results": [
@@ -3300,6 +3504,7 @@ def test_postprocess_turn_ignores_last_result_from_prior_turn() -> None:
         status="done",
         action_result=None,
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="respond",
@@ -3329,27 +3534,40 @@ def test_postprocess_turn_ignores_last_result_from_prior_turn() -> None:
     assert "tool_calls_cumulative" not in response.metadata
 
 
-def test_postprocess_turn_uses_current_adaptive_snapshot_tool_results() -> None:
+@pytest.mark.parametrize("structural_only", [False, True])
+@pytest.mark.parametrize("tool_name", ["time", "exec.run", "security.publish_report"])
+def test_postprocess_turn_uses_current_adaptive_snapshot_tool_results(
+    structural_only: bool, tool_name: str, tmp_path: Path
+) -> None:
     bridge = DummyBridge()
     bridge._config = OpenMinionConfig()
     _csc_install_default_agent(bridge._config)
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = _DummyTelemetry()
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = SimpleNamespace(
+        session_api=_DummySessionAPI({}),
+        profile=SimpleNamespace(structural_tool_results=structural_only),
+    )
     tool_result = {
-        "tool_name": "time",
+        "tool_name": tool_name,
         "ok": True,
         "verified": True,
         "call_id": "time-1",
         "turn_scope_id": "trace-current",
-        "content": "12:00 UTC",
+        "content": "private-output-canary",
+        "data": {
+            "stdout": "private-output-canary",
+            "artifact_refs": ["artifact://sha256/" + "a" * 64],
+        },
+        "args": {"command": "private-argument-canary"},
     }
     step_out = SimpleNamespace(
         message="It is 12:00 UTC.",
         status="done",
         action_result=None,
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=2,
             active_mode_name="respond",
@@ -3384,10 +3602,53 @@ def test_postprocess_turn_uses_current_adaptive_snapshot_tool_results() -> None:
         )
     )
 
+    database_path = tmp_path / "messages.db"
+    migrate_database(database_path)
+    connection = connect_database(database_path)
+    try:
+        sessions = SessionStore(connection)
+        persisted_session = sessions.resolve_session(
+            agent_id="test-agent", channel="console", target="user"
+        )
+        sessions.append_message(
+            session_id=persisted_session.id,
+            role="outbound",
+            body=response.text,
+            metadata=response.metadata,
+        )
+        persisted_metadata = sessions.list_messages(session_id=persisted_session.id)[
+            0
+        ].metadata
+        assert persisted_metadata == response.metadata
+    finally:
+        connection.close()
+
     assert response.metadata["tool_execution_count"] == "1"
     assert response.metadata["tool_execution_count_cumulative"] == "1"
-    assert json.loads(response.metadata["tool_results"]) == [tool_result]
-    assert json.loads(response.metadata["tool_calls_cumulative"]) == [tool_result]
+    projected = structural_only or tool_name == "security.publish_report"
+    for key in ("tool_results", "tool_calls_cumulative"):
+        results = json.loads(persisted_metadata[key])
+        if projected:
+            assert results == [
+                {
+                    "structural_only": True,
+                    "tool_name": tool_name,
+                    "ok": True,
+                    "verified": True,
+                    "call_id": "time-1",
+                    "error_code": "",
+                    "source": "",
+                    "data": {
+                        "artifact_refs": ["artifact://sha256/" + "a" * 64],
+                        "artifact_count": 1,
+                    },
+                }
+            ]
+            assert "private-output-canary" not in persisted_metadata[key]
+            assert "private-argument-canary" not in persisted_metadata[key]
+        else:
+            assert results == [tool_result]
+    assert tool_result["data"]["stdout"] == "private-output-canary"
 
 
 def test_postprocess_turn_attaches_watch_outcome_metadata() -> None:
@@ -3397,7 +3658,7 @@ def test_postprocess_turn_attaches_watch_outcome_metadata() -> None:
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = _DummyTelemetry()
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     step_out = SimpleNamespace(
         message="Deployment is unhealthy.",
         status="done",
@@ -3411,6 +3672,7 @@ def test_postprocess_turn_attaches_watch_outcome_metadata() -> None:
             },
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3443,7 +3705,7 @@ def test_postprocess_turn_attaches_structured_action_output_metadata() -> None:
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = None
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     step_out = SimpleNamespace(
         message="## PLAN\n1. Compare tools.\n## TABLE\n...\n## UNCERTAINTIES\n...",
         status="done",
@@ -3488,6 +3750,7 @@ def test_postprocess_turn_attaches_structured_action_output_metadata() -> None:
             },
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3535,7 +3798,7 @@ def test_postprocess_turn_salvages_finalization_status_trailer_from_message() ->
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = None
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     step_out = SimpleNamespace(
         message=(
             "## PLAN\n1. Done.\n"
@@ -3549,6 +3812,7 @@ def test_postprocess_turn_salvages_finalization_status_trailer_from_message() ->
             outputs={},
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3584,7 +3848,7 @@ def test_postprocess_turn_salvages_attribute_style_finalization_status_trailer()
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = None
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     step_out = SimpleNamespace(
         message=(
             "## PLAN\n1. Done.\n"
@@ -3598,6 +3862,7 @@ def test_postprocess_turn_salvages_attribute_style_finalization_status_trailer()
             outputs={},
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3631,7 +3896,7 @@ def test_postprocess_turn_salvages_summary_alias_finalization_status_trailer() -
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = None
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     step_out = SimpleNamespace(
         message=(
             "## SOURCES\n- official docs checked.\n"
@@ -3645,6 +3910,7 @@ def test_postprocess_turn_salvages_summary_alias_finalization_status_trailer() -
             outputs={},
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3807,7 +4073,8 @@ def test_postprocess_turn_emits_mode_aware_tool_and_tick_telemetry() -> None:
         session_api=SimpleNamespace(
             get_active_task_plan=lambda _sid: None,
             list_events=lambda _sid, **_filters: [],
-        )
+        ),
+        profile=SimpleNamespace(structural_tool_results=False),
     )
     step_out = SimpleNamespace(
         status="done",
@@ -3820,6 +4087,7 @@ def test_postprocess_turn_emits_mode_aware_tool_and_tick_telemetry() -> None:
             outputs={},
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             llm_calls_used=1,
             active_mode_name="plan",
             trace_id="trace-1",
@@ -3869,6 +4137,7 @@ def _fael_make_step_out(message_text: str) -> SimpleNamespace:
             outputs={},
         ),
         working_state=SimpleNamespace(
+            pending_confirmation_command=None,
             plan=SimpleNamespace(steps=[]),
             llm_calls_used=1,
             active_mode_name="act",
@@ -3884,7 +4153,7 @@ def test_postprocess_turn_unwraps_final_answer_envelope() -> None:
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = None
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     envelope_body = json.dumps(
         {
             "status": "final_answer",
@@ -3928,7 +4197,7 @@ def test_postprocess_turn_preserves_plain_text_body() -> None:
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = None
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     plain_body = "It is 68F and partly cloudy in Austin today."
     step_out = _fael_make_step_out(plain_body)
 
@@ -3958,7 +4227,7 @@ def test_postprocess_turn_preserves_nonmatching_json_body() -> None:
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = None
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     non_matching_body = json.dumps(
         {"status": "final_answer", "output": "missing summary key"}
     )
@@ -3990,7 +4259,7 @@ def test_postprocess_turn_unwraps_incomplete_envelope() -> None:
     bridge._provider = SimpleNamespace(name="fake-provider")
     bridge._telemetryctl = None
     bridge._identity_metadata = dict
-    runner = SimpleNamespace(session_api=_DummySessionAPI({}))
+    runner = _DummyRunner({})
     envelope_body = json.dumps(
         {
             "status": "incomplete",
@@ -4017,3 +4286,27 @@ def test_postprocess_turn_unwraps_incomplete_envelope() -> None:
     assert "{" not in response.text
     payload = json.loads(response.metadata["adaptive.finalization_status"])
     assert payload["status"] == "incomplete"
+
+
+def test_structural_tool_result_projection_retains_existing_facts() -> None:
+    raw = {
+        "tool_name": "security.publish_report",
+        "ok": True,
+        "verified": True,
+        "call_id": "publication",
+        "source": "native",
+        "data": {
+            "execution_status": "completed",
+            "finding_count": 1,
+            "artifact_refs": ["artifact://sha256/" + "a" * 64],
+            "stdout": "private-output-canary",
+        },
+    }
+    projected = structural_tool_result(raw)
+    assert projected["data"] == {
+        "result_status": "completed",
+        "finding_count": 1,
+        "artifact_refs": ["artifact://sha256/" + "a" * 64],
+        "artifact_count": 1,
+    }
+    assert structural_tool_result(projected) == projected

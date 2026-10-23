@@ -50,6 +50,7 @@ def _command_lineage_payload(
         "step_total": step_total or None,
         "command_id": str(getattr(command, "command_id", "") or "").strip() or None,
         "command_kind": str(getattr(command, "kind", "") or "").strip() or None,
+        "project_task_id": state.resume_task_id_hint,
         "task_backed_task_id": str(
             getattr(state, "task_backed_task_id", "") or ""
         ).strip()
@@ -81,6 +82,8 @@ def _inject_runtime_tool_metadata(
         meta = {}
         payload["meta"] = meta
     meta["orchestration"] = dict(lineage)
+    meta["base_permission_mode"] = state.permission_mode
+    meta["permission_overrides"] = dict(state.permission_overrides)
     module_state = getattr(state, STATE_KEY_MODULE_STATE, None)
     worktree_state = (
         module_state.get("worktree_children")
