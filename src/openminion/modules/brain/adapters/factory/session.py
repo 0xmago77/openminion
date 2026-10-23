@@ -20,6 +20,7 @@ def create_session_adapter(
     db_path: str | Path | Any | None = None,
     *,
     artifactctl: Any | None = None,
+    artifact_config: Any | None = None,
     telemetryctl: Any | None = None,
 ) -> Any:
     if isinstance(db_path, (str, Path)):
@@ -31,7 +32,9 @@ def create_session_adapter(
     local_root = _local_session_root(resolved_path)
     if mode_is_local(mode):
         return LocalSessionStore(local_root)
-    runtime_artifactctl = resolve_artifactctl(artifactctl=artifactctl)
+    runtime_artifactctl = resolve_artifactctl(
+        artifactctl=artifactctl, config=artifact_config
+    )
     try:
         if runtime_artifactctl is None:
             return SessctlAdapter(resolved_path, telemetryctl=telemetryctl)

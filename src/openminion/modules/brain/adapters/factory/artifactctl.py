@@ -5,11 +5,13 @@ from typing import Any
 from openminion.modules.artifact.refs import create_default_artifactctl
 
 
-def resolve_artifactctl(*, artifactctl: Any | None) -> Any | None:
+def resolve_artifactctl(
+    *, artifactctl: Any | None, config: Any | None = None
+) -> Any | None:
     if artifactctl is not None:
         return artifactctl
     try:
-        return create_default_artifactctl()
+        return create_default_artifactctl(config)
     except Exception:
         return None
 
