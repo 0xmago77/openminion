@@ -791,18 +791,30 @@ def test_repair_argument_corrections_preserve_failure_boundaries(
         ),
         event("tool.call.completed", call_id="fixed", status="success"),
     ]
-    corrections = source._corrected_parent_arguments(events)
+    for i, event in enumerate(events):
+        event.update(
+            id=i,
+            session_id="session",
+            turn_id="turn",
+            invocation_id="invocation",
+            execution_id="execution",
+        )
+    if tool == "tool.request":
+        events[3]["data"]["output"] = {
+            "outputs": {"activated": True, "tool_name": target}
+        }
+    corrections = source._corrected_repair_arguments(events)
     assert [item["call_id"] for item in corrections] == (["bad"] if accepted else [])
     if accepted:
         assert corrections[0]["corrected_call_id"] == "fixed"
         with pytest.raises(AssertionError, match="uncorrected argument error"):
-            source._corrected_parent_arguments(events[:2])
+            source._corrected_repair_arguments(events[:2])
         with pytest.raises(AssertionError, match="uncorrected argument error"):
-            source._corrected_parent_arguments(events[2:] + events[:2])
+            source._corrected_repair_arguments(events[2:] + events[:2])
         key = "plan_id" if tool == "plan" else "name"
         events[2]["data"]["sanitized_normalized_arguments"][key] = "different-target"
         with pytest.raises(AssertionError, match="uncorrected argument error"):
-            source._corrected_parent_arguments(events)
+            source._corrected_repair_arguments(events)
 
 
 @pytest.mark.parametrize("abandoned_id", ["p1", "unrelated"])
@@ -835,10 +847,124 @@ def test_repair_plan_correction_requires_canonical_replacement(abandoned_id):
         event("task_plan.declared", plan={"plan_id": "p2"}),
         event("tool.call.completed", call_id="fixed", status="success"),
     ]
+    for i, event in enumerate(events):
+        event.update(
+            id=i,
+            session_id="session",
+            turn_id="turn",
+            invocation_id="invocation",
+            execution_id="execution",
+        )
     if abandoned_id == "p1":
-        corrected = source._corrected_parent_arguments(events)
+        corrected = source._corrected_repair_arguments(events)
         assert corrected[0]["target"] == "p1"
         assert corrected[0]["corrected_target"] == "p2"
     else:
         with pytest.raises(AssertionError, match="uncorrected argument error"):
-            source._corrected_parent_arguments(events)
+            source._corrected_repair_arguments(events)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "",
+        "agent_id",
+        "session_id",
+        "turn_id",
+        "invocation_id",
+        "execution_id",
+        "target",
+        "no_success",
+        "not_activated",
+        "wrong_activated_tool",
+        "policy",
+    ],
+)
+def test_child_activation_correction_requires_exact_lifecycle(change):
+    events = [
+        {
+            "event_type": "tool.call.requested",
+            "data": {
+                "call_id": "bad",
+                "canonical_name": "tool.request",
+                "sanitized_normalized_arguments": {
+                    "name": "file.list_dir",
+                    "freshness": {"time_sensitive": False},
+                },
+            },
+        },
+        {
+            "event_type": "tool.call.blocked",
+            "data": {
+                "call_id": "bad",
+                "status": "error",
+                "error": {"code": "TOOL_REQUEST_INVALID_ARGUMENTS"},
+            },
+        },
+        {
+            "event_type": "tool.call.requested",
+            "data": {
+                "call_id": "fixed",
+                "canonical_name": "tool.request",
+                "sanitized_normalized_arguments": {"name": "file.list_dir"},
+            },
+        },
+        {
+            "event_type": "tool.call.completed",
+            "data": {
+                "call_id": "fixed",
+                "status": "success",
+                "output": {
+                    "outputs": {"activated": True, "tool_name": "file.list_dir"}
+                },
+            },
+        },
+        {
+            "event_type": "tool.call.requested",
+            "data": {
+                "call_id": "read",
+                "canonical_name": "file.list_dir",
+                "sanitized_normalized_arguments": {"path": "."},
+            },
+        },
+        {
+            "event_type": "tool.call.completed",
+            "data": {"call_id": "read", "status": "success"},
+        },
+    ]
+    for i, event in enumerate(events):
+        event.update(
+            id=i,
+            agent_id=source._IMPLEMENTER,
+            session_id="child-session",
+            turn_id="child-turn",
+            invocation_id="invocation",
+            execution_id="execution",
+        )
+    if change in {"agent_id", "session_id", "turn_id", "invocation_id", "execution_id"}:
+        for event in events[2:]:
+            event[change] = (
+                source._CODE_REVIEWER if change == "agent_id" else "different"
+            )
+    elif change == "target":
+        events[2]["data"]["sanitized_normalized_arguments"]["name"] = "file.read"
+        events[3]["data"]["output"]["outputs"]["tool_name"] = "file.read"
+    elif change == "no_success":
+        events[3]["data"]["status"] = "error"
+    elif change == "not_activated":
+        events[3]["data"]["output"]["outputs"]["activated"] = False
+    elif change == "wrong_activated_tool":
+        events[3]["data"]["output"]["outputs"]["tool_name"] = "file.read"
+    elif change == "policy":
+        events[1]["data"]["error"]["code"] = "POLICY_DENIED"
+    if change == "policy":
+        assert source._corrected_repair_arguments(events) == []
+    elif change:
+        with pytest.raises(AssertionError, match="uncorrected argument error"):
+            source._corrected_repair_arguments(events)
+    else:
+        corrections = source._corrected_repair_arguments(events)
+        assert len(corrections) == 1
+        assert corrections[0]["call_id"] == "bad"
+        assert corrections[0]["corrected_call_id"] == "fixed"
+        assert corrections[0]["event_id"] == events[1]["id"]

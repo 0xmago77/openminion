@@ -523,44 +523,62 @@ def _approved_replays(probe, project_run_id, approvals):
     return replay_ids
 
 
-def _corrected_parent_arguments(events: list[dict]) -> list[dict]:
+def _corrected_repair_arguments(events: list[dict]) -> list[dict]:
     """Record corrected, pre-execution input errors; never excuse policy failures."""
     requests = {}
     failures = []
     successes = []
     replacements = []
-    replacing = None
+    replacing = {}
     for position, event in enumerate(events):
-        if event["agent_id"] != _PARENT:
+        actor = event["agent_id"]
+        if actor not in {_PARENT, _IMPLEMENTER, _CODE_REVIEWER}:
             continue
+        scope = tuple(
+            event[key]
+            for key in (
+                "agent_id",
+                "session_id",
+                "turn_id",
+                "invocation_id",
+                "execution_id",
+            )
+        )
         data = event["data"]
         kind = event["event_type"]
         if (
-            kind == "task_plan.abandoned"
+            actor == _PARENT
+            and kind == "task_plan.abandoned"
             and data.get("reason") == "replaced_by_new_task_plan"
         ):
-            replacing = (position, data["plan_id"])
-        elif kind == "task_plan.declared" and replacing is not None:
-            abandoned_at, old_id = replacing
+            replacing[scope] = (position, data["plan_id"])
+        elif kind == "task_plan.declared" and scope in replacing:
+            abandoned_at, old_id = replacing.pop(scope)
             replacements.append(
-                (old_id, data["plan"]["plan_id"], abandoned_at, position)
+                (scope, old_id, data["plan"]["plan_id"], abandoned_at, position)
             )
-            replacing = None
         elif kind == "tool.call.requested":
             tool = data["canonical_name"]
             args = data["sanitized_normalized_arguments"]
-            if tool == "tool.request" and args.get("name") == "file.read":
-                key = (tool, "file.read", "request")
-            elif tool == "plan" and args.get("action") in {"declare", "complete"}:
+            if tool == "tool.request" and args.get("name") in {
+                "file.read",
+                "file.list_dir",
+            }:
+                key = (tool, args["name"], "request")
+            elif (
+                actor == _PARENT
+                and tool == "plan"
+                and args.get("action") in {"declare", "complete"}
+            ):
                 key = (tool, args["plan_id"], args["action"])
             else:
                 continue
-            requests[data["call_id"]] = (position, key)
+            requests[scope, data["call_id"]] = (position, key)
         elif kind in {"tool.call.blocked", "tool.call.completed"}:
             call_id = data["call_id"]
-            if call_id not in requests:
+            if (scope, call_id) not in requests:
                 continue
-            requested_at, key = requests[call_id]
+            requested_at, key = requests[scope, call_id]
             if kind == "tool.call.blocked":
                 code = data["error"]["code"]
                 if key[2] == "declare":
@@ -570,24 +588,33 @@ def _corrected_parent_arguments(events: list[dict]) -> list[dict]:
                 else:
                     allowed = {"TOOL_REQUEST_INVALID_ARGUMENTS"}
                 if code in allowed:
-                    failures.append((position, call_id, key, code))
-            elif kind == "tool.call.completed" and data["status"] == "success":
-                successes.append((requested_at, position, call_id, key))
+                    failures.append((position, event["id"], scope, call_id, key, code))
+            elif data["status"] == "success":
+                if key[0] == "tool.request":
+                    output = data.get("output", {}).get("outputs", {})
+                    if (
+                        output.get("activated") is not True
+                        or output.get("tool_name") != key[1]
+                    ):
+                        continue
+                successes.append((scope, requested_at, position, call_id, key))
     corrected = []
-    for failed_at, call_id, key, code in failures:
+    for failed_at, event_id, scope, call_id, key, code in failures:
         matches = [
             (corrected_id, corrected_key[1])
-            for requested_at, completed_at, corrected_id, corrected_key in successes
-            if failed_at < requested_at < completed_at
+            for completed_scope, requested_at, completed_at, corrected_id, corrected_key in successes
+            if completed_scope == scope
+            and failed_at < requested_at < completed_at
             and (
                 corrected_key == key
                 or (
                     key[0] == corrected_key[0] == "plan"
                     and key[2] == corrected_key[2] == "declare"
                     and any(
-                        (old_id, new_id) == (key[1], corrected_key[1])
+                        replacement_scope == scope
+                        and (old_id, new_id) == (key[1], corrected_key[1])
                         and requested_at < abandoned_at < declared_at < completed_at
-                        for old_id, new_id, abandoned_at, declared_at in replacements
+                        for replacement_scope, old_id, new_id, abandoned_at, declared_at in replacements
                     )
                 )
             )
@@ -595,6 +622,9 @@ def _corrected_parent_arguments(events: list[dict]) -> list[dict]:
         assert matches, f"uncorrected argument error: {call_id}"
         corrected.append(
             {
+                "event_id": event_id,
+                "agent_id": scope[0],
+                "session_id": scope[1],
                 "call_id": call_id,
                 "corrected_call_id": matches[0][0],
                 "corrected_target": matches[0][1],
@@ -674,13 +704,8 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
     )
     calls, _, _ = _tool_evidence(probe, after_event_id=0)
     events = _events(probe.data_root / "telemetry/telemetry.db", 0)
-    corrected = _corrected_parent_arguments(events)
-    corrected_ids = {item["call_id"] for item in corrected}
-    assert all(
-        item["call_id"] in approved_ids | corrected_ids
-        for item in calls
-        if item["event"] == "tool.call.blocked"
-    )
+    corrected = _corrected_repair_arguments(events)
+    corrected_event_ids = {item["event_id"] for item in corrected}
     assert not any(str(item["tool"]).startswith("security.") for item in calls)
     assert {
         item["call_id"]
@@ -716,7 +741,8 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
             )
             or (
                 event["event_type"] == "tool.call.blocked"
-                and event["data"]["call_id"] not in approved_ids | corrected_ids
+                and event["data"]["call_id"] not in approved_ids
+                and event["id"] not in corrected_event_ids
             )
             for event in role_events
         )
