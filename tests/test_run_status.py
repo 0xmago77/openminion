@@ -28,6 +28,7 @@ from tests._run_status_scenarios import (
     append_runs,
     check_review_cases,
     check_run_readers,
+    check_token_text_ids,
     stepping_clock,
 )
 
@@ -530,14 +531,14 @@ def test_run_readers_normalize_payload_values_as_the_python_readers(tmp_path) ->
     try:
         append_payload_variants(sessions, session.id)
         check_run_readers(sessions, session.id)
-        check_review_cases(
-            sessions,
-            lambda target: (
-                sessions.resolve_session(
-                    agent_id="main", channel="console", target=target
-                ).id
-            ),
-        )
+
+        def new_session(target: str) -> str:
+            return sessions.resolve_session(
+                agent_id="main", channel="console", target=target
+            ).id
+
+        check_review_cases(sessions, new_session)
+        check_token_text_ids(sessions, new_session)
     finally:
         connection.close()
 

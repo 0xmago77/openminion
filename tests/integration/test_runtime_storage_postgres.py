@@ -35,6 +35,7 @@ from tests._run_status_scenarios import (
     append_thread_payload_variants,
     append_threads,
     check_review_cases,
+    check_token_text_ids,
     check_run_readers,
     check_thread_payload_variants,
     check_thread_projection,
@@ -547,6 +548,7 @@ def test_postgres_run_status_normalizes_payload_values(tmp_path: Path) -> None:
             check_run_readers(sessions, runs)
             check_thread_payload_variants(sessions, threads)
             check_review_cases(sessions, new_session)
+            check_token_text_ids(sessions, new_session)
         finally:
             storage.close()
 

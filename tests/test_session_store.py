@@ -718,16 +718,11 @@ class SessionStoreTests(unittest.TestCase):
                 read(payload, falsy_empty=True), str(value or "").strip(), value
             )
         self.assertEqual(read({}), "")
-        # Not JSON (NaN, Infinity) or not text in Postgres (NUL), and the text
-        # rewritten with them: never empty.
-        for value in (
-            float("nan"),
-            float("inf"),
-            float("-inf"),
-            f"x{chr(0)}",
-            "a: NaN text",
-        ):
-            self.assertNotEqual(read({"value": value, "other": value}), "", value)
+        # Text that looks like a JSON token is read exactly, whatever else the
+        # payload holds.
+        for value in ("trace: NaN", "trace, Infinity", "[NaN]", "a: -Infinity b"):
+            payload = {"value": value, "other": [value, {"nested": value}]}
+            self.assertEqual(read(payload), value)
 
     def test_payload_text_accepts_fixed_keys_only(self) -> None:
         postgres_backend = SessionStore(

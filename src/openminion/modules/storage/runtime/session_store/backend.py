@@ -25,30 +25,6 @@ _STRIP_CODE_POINTS = (
     8287,
     12288,
 )
-# `metadata_json` writes NaN, Infinity and -Infinity, which are not JSON (Postgres
-# and SQLite before 3.42 reject them), and escapes NUL as \u0000, which Postgres
-# cannot return as text. The payload readers parse a copy rewritten in SQL: an
-# escaped backslash becomes \u005c first, so none is read as the start of a
-# \u0000; NUL becomes U+0001; the three tokens become 1e999 or -1e999 where a
-# value can start as `metadata_json` writes them, which also rewrites them in a
-# string after ": ", ", " or "[". SQLAlchemy would read ":NaN" as a parameter.
-# Every other value reads as stored.
-_PAYLOAD_REWRITES = (
-    ("\\\\", "\\u005c"),
-    ("\\u0000", "\\u0001"),
-    *(
-        (f"{lead}{token}", f"{lead}{number}")
-        for token, number in (
-            ("-Infinity", "-1e999"),
-            ("Infinity", "1e999"),
-            ("NaN", "1e999"),
-        )
-        for lead in (": ", ", ", "[")
-    ),
-)
-_PAYLOAD_DOCUMENT = "payload_json"
-for _old, _new in _PAYLOAD_REWRITES:
-    _PAYLOAD_DOCUMENT = f"REPLACE({_PAYLOAD_DOCUMENT}, '{_old}', '{_new}')"
 
 
 class RuntimeSessionStoreBackend:
@@ -89,14 +65,19 @@ class RuntimeSessionStoreBackend:
         null is `null` ("None", or "" for a reader that maps None to ""), a
         boolean is "True" or "False", and a number, object or array is its JSON
         text. With `falsy_empty` a value Python treats as false (null, false, 0,
-        "", {} or []) is "", as in `str(payload.get(key) or "").strip()`. A float
-        is never empty, but its text can differ from Python's: SQLite writes
-        1e16 as 1.0e+16, and NaN or Infinity read as 1e999 (`_PAYLOAD_REWRITES`).
-        A NUL in a string reads as U+0001.
+        "", {} or []) is "", as in `str(payload.get(key) or "").strip()`. Strings
+        are read exactly. A float is never empty, but its text can differ from
+        Python's: SQLite writes 1e16 as 1.0e+16.
+
+        `metadata_json` can also store NaN and Infinity, which are not JSON, and
+        a NUL in a string, which Postgres cannot return as text. These are read
+        as stored, not substituted: Postgres and SQLite before 3.42 reject a
+        payload with NaN or Infinity, newer SQLite reads NaN as null, and
+        Postgres rejects a payload with a NUL in any string.
 
         `backend_type` is the one `build_runtime_storage` gives
-        `migrate_record_store`. SQLite reads the rewritten JSON with `json_type`
-        and `json_extract`; Postgres casts it to `json` and reads it with
+        `migrate_record_store`. SQLite reads the stored JSON with `json_type` and
+        `json_extract`; Postgres casts it to `json` and reads it with
         `json_typeof`, `->` and `->>`. `key` is a fixed payload key from this
         package; values are bound as parameters.
         """
@@ -107,7 +88,7 @@ class RuntimeSessionStoreBackend:
         null_text = "" if falsy_empty else null
         false_text = "" if falsy_empty else "False"
         if self._backend_type == "postgres":
-            document = f"CAST({_PAYLOAD_DOCUMENT} AS json)"
+            document = "CAST(payload_json AS json)"
             value = f"({document} ->> '{key}')"
             other = value
             if falsy_empty:
@@ -122,12 +103,12 @@ class RuntimeSessionStoreBackend:
                 f" ELSE {other} END, '')"
             )
         path = f"'$.{key}'"
-        value = f"json_extract({_PAYLOAD_DOCUMENT}, {path})"
+        value = f"json_extract(payload_json, {path})"
         other = f"CAST({value} AS TEXT)"
         if falsy_empty:
             other = f"CASE WHEN {value} IN (0, '{{}}', '[]') THEN '' ELSE {other} END"
         return (
-            f"COALESCE(CASE json_type({_PAYLOAD_DOCUMENT}, {path})"
+            f"COALESCE(CASE json_type(payload_json, {path})"
             f" WHEN 'text' THEN {self.strip_text(value)}"
             f" WHEN 'null' THEN '{null_text}'"
             f" WHEN 'true' THEN 'True'"

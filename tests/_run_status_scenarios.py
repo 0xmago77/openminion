@@ -115,8 +115,8 @@ def append_payload_variants(sessions: SessionStore, session_id: str) -> None:
 
     `append_run_state_event(payload=...)` stores these as given: text padded
     with any whitespace `str.strip()` removes, JSON null, booleans, numbers, an
-    empty object or array, NaN, Infinity and NUL. A `RUN.` event type is listed
-    by SQLite `LIKE` but gets no state from its suffix.
+    empty object or array, and text that looks like a JSON token. A `RUN.` event
+    type is listed by SQLite `LIKE` but gets no state from its suffix.
     """
 
     def run(event_state: str, run_id: Any, /, **payload: Any) -> None:
@@ -143,9 +143,10 @@ def append_payload_variants(sessions: SessionStore, session_id: str) -> None:
     run("queued", [], error={})
     run("queued", "", error="no run")
     run("queued", PADDING, error="no run")
-    # NaN and Infinity are not JSON, and Postgres cannot return a NUL as text.
-    run("running", "r", step=float("nan"), latency=float("inf"))
-    run("running", "r", error=f"bad{chr(0)}byte", output=[float("-inf"), chr(0)])
+    # Text that looks like a JSON token stays text, and distinct runs stay apart.
+    run("queued", "trace: NaN", step="[Infinity]", error="trace, -Infinity")
+    run("running", "trace: 1e999", error="loss: NaN, retry")
+    run("queued", "[NaN]")
     sessions.append_event(
         session_id=session_id,
         event_type="RUN.failed",
@@ -296,11 +297,17 @@ def append_thread_payload_variants(sessions: SessionStore, session_id: str) -> N
         "run.running", conversation_id=False, thread_id=0, run_id="t4", state="running"
     )
     event("run.waiting_tool", conversation_id=None, thread_id=None, run_id="t5")
-    # Any event of the session is read: one Postgres could not parse or return.
+    # Ids that look like JSON tokens: their own conversation and thread.
     event(
-        "tool.result", conversation_id="conv", thread_id="t", output=f"bin{chr(0)}ary"
+        "run.queued",
+        conversation_id="trace: NaN",
+        thread_id="[NaN]",
+        run_id="trace, Infinity",
+        invocation_id="trace: 1e999",
     )
-    event("tool.metrics", conversation_id="conv", thread_id="t", score=float("nan"))
+    event(
+        "run.running", conversation_id="trace: 1e999", thread_id="[1e999]", run_id="x"
+    )
     # A zero-width space is not whitespace: another thread.
     event("run.queued", conversation_id="conv", thread_id="\u200bt", run_id="zw")
     event("run.failed", **padded, run_id=f"{PADDING}t1{PADDING}", state="\tfailed\n")
@@ -313,6 +320,8 @@ def check_thread_payload_variants(sessions: SessionStore, session_id: str) -> No
         ("conv", "\u200bt"),
         ("", "t"),
         (f" conv{PADDING}", f"{PADDING}t"),
+        ("trace: NaN", "[NaN]"),
+        ("trace: 1e999", "[1e999]"),
     ):
         projection = resolve_thread_lifecycle(
             sessions,
@@ -383,6 +392,45 @@ def check_review_cases(
         RUN_STATE_FAILED,
         failed.id,
     )
+
+
+def check_token_text_ids(
+    sessions: SessionStore, new_session: Callable[[str], str]
+) -> None:
+    """Ids that look like JSON tokens keep their exact text (second #372 review).
+
+    Each id is a run, conversation and thread id, written with the ordinary
+    `append_run_state_event` arguments; "trace: NaN" and "trace: 1e999" must
+    stay two runs.
+    """
+    session_id = new_session("token-text-ids")
+    ids = ("trace: NaN", "trace: 1e999", "trace, Infinity", "[NaN]")
+    events = {
+        value: append_run_state_event(
+            sessions,
+            session_id=session_id,
+            run_id=value,
+            state="queued",
+            current_step="",
+            conversation_id=value,
+            thread_id=value,
+        )
+        for value in ids
+    }
+    runs = list_session_runs(sessions, session_id=session_id)
+    assert sorted((run.run_id, run.event_count) for run in runs) == sorted(
+        (value, 1) for value in ids
+    )
+    for value, event in events.items():
+        listed = list_session_run_events(sessions, session_id=session_id, run_id=value)
+        assert [item.id for item in listed] == [event.id], value
+        projection = resolve_thread_lifecycle(
+            sessions, session_id=session_id, conversation_id=value, thread_id=value
+        )
+        assert (projection.latest_run_id, projection.latest_event_id) == (
+            value,
+            event.id,
+        ), value
 
 
 def expected_thread(
