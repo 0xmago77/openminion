@@ -995,3 +995,121 @@ def test_child_activation_correction_requires_exact_lifecycle(change, target):
         assert corrections[0]["corrected_call_id"] == "fixed"
         assert corrections[0]["event_id"] == events[1]["id"]
         assert events[5]["id"] not in {item["event_id"] for item in corrections}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "",
+        "primary_usage",
+        "marker",
+        "missing_phase",
+        "actor",
+        "trace",
+        "logical_id",
+        "failed_attempt",
+        "missing_aggregate",
+        "failed_event",
+        "duplicate_phase",
+    ],
+)
+def test_repair_usage_correlates_auxiliary_marker_to_physical_turn(change):
+    actor = source._CODE_REVIEWER
+    events = [
+        {
+            "agent_id": actor,
+            "session_id": "inner-session",
+            "turn_id": "inner-turn",
+            "event_type": "llm.call.completed",
+            "data": {
+                "llm_call_id": "aux",
+                "trace_id": "outer-turn",
+                "purpose": "freshness_classify_fallback",
+                "auxiliary": True,
+                "usage": {},
+                "fallback_reason": "missing_or_invalid_entry_contract",
+            },
+        },
+        {
+            "agent_id": actor,
+            "session_id": "inner-session",
+            "turn_id": "inner-turn",
+            "event_type": "llm.call.completed",
+            "data": {
+                "llm_call_id": "entry",
+                "trace_id": "outer-turn",
+                "purpose": "entry",
+                "usage": {"input_tokens": 5856, "output_tokens": 1355},
+            },
+        },
+        {
+            "agent_id": actor,
+            "session_id": "outer-session",
+            "turn_id": "outer-turn",
+            "event_type": "chat.phase_timing",
+            "data": {
+                "agent_id": actor,
+                "session_id": "outer-session",
+                "turn_id": "outer-turn",
+                "provider_calls_total": 3,
+                "provider_input_tokens": 11413,
+                "provider_output_tokens": 2612,
+                "provider_attempts": [
+                    {
+                        "logical_call_id": "reflect",
+                        "semantic_purpose": "reflect",
+                        "outcome": "ok",
+                    },
+                    {
+                        "logical_call_id": "outer-turn",
+                        "semantic_purpose": "entry",
+                        "outcome": "ok",
+                    },
+                    {
+                        "logical_call_id": "inner-turn",
+                        "semantic_purpose": "freshness_classify",
+                        "outcome": "ok",
+                    },
+                ],
+            },
+        },
+    ]
+    if change == "primary_usage":
+        events[1]["data"]["usage"] = {}
+    elif change == "marker":
+        events[0]["data"]["purpose"] = "unknown_auxiliary"
+    elif change == "missing_phase":
+        events.pop()
+    elif change == "actor":
+        events[2]["agent_id"] = source._PARENT
+        events[2]["data"]["agent_id"] = source._PARENT
+    elif change == "trace":
+        events[0]["data"]["trace_id"] = "different-turn"
+    elif change == "logical_id":
+        events[2]["data"]["provider_attempts"][2]["logical_call_id"] = (
+            "different-inner-turn"
+        )
+    elif change == "failed_attempt":
+        events[2]["data"]["provider_attempts"][0]["outcome"] = "error"
+    elif change == "missing_aggregate":
+        del events[2]["data"]["provider_input_tokens"]
+    elif change == "failed_event":
+        events.append({"agent_id": actor, "event_type": "llm.call.failed", "data": {}})
+    elif change == "duplicate_phase":
+        events.append(events[2].copy())
+    if change:
+        with pytest.raises(AssertionError):
+            source._repair_usage(events, actor)
+    else:
+        second = json.loads(json.dumps(events[2]))
+        second["turn_id"] = second["data"]["turn_id"] = "second-turn"
+        second["data"].update(provider_input_tokens=100, provider_output_tokens=20)
+        events.append(second)
+        usage = source._repair_usage(events, actor)
+        assert [
+            (cost["turn_id"], cost["input_tokens"], cost["output_tokens"])
+            for cost in usage["turn_costs"]
+        ] == [("outer-turn", 11413, 2612), ("second-turn", 100, 20)]
+        assert usage["turn_costs"][0]["provider_calls_total"] == 3
+        assert usage["auxiliary_usage_markers"] == [events[0]]
+        assert events[0]["data"]["usage"] == {}

@@ -633,6 +633,82 @@ def _corrected_repair_arguments(events: list[dict]) -> list[dict]:
     return corrected
 
 
+def _repair_usage(events: list[dict], agent_id: str) -> dict:
+    role_events = [event for event in events if event["agent_id"] == agent_id]
+    assert not any(event["event_type"] == "llm.call.failed" for event in role_events)
+    completions = list(
+        {
+            (event["session_id"], event["turn_id"], event["data"]["llm_call_id"]): event
+            for event in role_events
+            if event["event_type"] == "llm.call.completed"
+        }.values()
+    )
+    timings = [
+        event for event in role_events if event["event_type"] == "chat.phase_timing"
+    ]
+    phases = {event["data"]["turn_id"]: event for event in timings}
+    assert completions and timings and len(phases) == len(timings)
+    for event in timings:
+        data = event["data"]
+        assert (event["agent_id"], event["session_id"], event["turn_id"]) == (
+            data["agent_id"],
+            data["session_id"],
+            data["turn_id"],
+        )
+        assert all(
+            isinstance(data.get(key), int)
+            for key in (
+                "provider_input_tokens",
+                "provider_output_tokens",
+                "provider_calls_total",
+            )
+        ), f"missing observed phase usage for {agent_id}"
+        assert data.get("provider_attempts") and all(
+            attempt["outcome"] == "ok" for attempt in data["provider_attempts"]
+        ), f"unsuccessful provider attempt for {agent_id}"
+    auxiliary = []
+    for event in completions:
+        data = event["data"]
+        assert data["trace_id"] in phases, f"missing provider phase for {agent_id}"
+        if all(
+            isinstance(data.get("usage", {}).get(key), int)
+            for key in ("input_tokens", "output_tokens")
+        ):
+            continue
+        assert (
+            data.get("usage") == {}
+            and data.get("auxiliary") is True
+            and data.get("purpose") == "freshness_classify_fallback"
+            and data.get("fallback_reason") == "missing_or_invalid_entry_contract"
+        ), f"missing provider usage for {agent_id}"
+        assert any(
+            attempt["semantic_purpose"] == "freshness_classify"
+            and attempt["logical_call_id"] == event["turn_id"]
+            for attempt in phases[data["trace_id"]]["data"]["provider_attempts"]
+        ), f"missing physical freshness attempt for {agent_id}"
+        auxiliary.append(event)
+    return {
+        "usage_scope": "Observed phase aggregates; auxiliary markers have no per-call token usage.",
+        "turn_costs": [
+            project_turn_cost(
+                [
+                    *[
+                        event
+                        for event in completions
+                        if event["data"]["trace_id"] == turn_id
+                    ],
+                    timing,
+                ],
+                turn_id=turn_id,
+                session_id=timing["data"]["session_id"],
+            ).as_dict()
+            for turn_id, timing in phases.items()
+        ],
+        "completed_calls": completions,
+        "auxiliary_usage_markers": auxiliary,
+    }
+
+
 def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> dict:
     store, manager = _project_owners(probe)
     try:
@@ -713,22 +789,8 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
     usage = {}
     for agent_id in (_PARENT, _IMPLEMENTER, _CODE_REVIEWER):
         role_events = [event for event in events if event["agent_id"] == agent_id]
-        completions = [
-            event
-            for event in role_events
-            if event["event_type"] == "llm.call.completed"
-        ]
-        completions = list(
-            {event["data"]["llm_call_id"]: event for event in completions}.values()
-        )
-        assert completions and all(
-            isinstance(event["data"].get("usage", {}).get(key), int)
-            for event in completions
-            for key in ("input_tokens", "output_tokens")
-        ), f"missing provider usage for {agent_id}"
         assert not any(
-            event["event_type"] == "llm.call.failed"
-            or (
+            (
                 event["event_type"] == "tool.completed"
                 and event["data"]["status"] != "success"
                 and not (
@@ -751,10 +813,7 @@ def _repair(probe: FocusProbe, ctl: ArtifactCtl, handoff: str, command: str) -> 
             for event in role_events
             if event["event_type"] in {"tool.call.requested", "tool.request"}
         )
-        usage[agent_id] = {
-            "cost": project_turn_cost(completions).as_dict(),
-            "completed_calls": completions,
-        }
+        usage[agent_id] = _repair_usage(role_events, agent_id)
     child_alias = approvals[-1]["args"]["child_artifact"]["record_alias"]
     child = load_child_worktree_record(ctl, child_alias)
     snapshots = [
