@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from openminion.base.config import OpenMinionConfig
+from openminion.modules.artifact.config import from_base_config
 from openminion.modules.artifact.models import sha_to_ref
 from openminion.modules.brain.adapters.factory import (
     create_memory_adapter,
@@ -66,7 +67,7 @@ def test_create_session_adapter_injects_artifactctl_on_live_factory_path(
     monkeypatch.setattr(
         artifactctl_module,
         "create_default_artifactctl",
-        lambda: artifactctl,
+        lambda config=None: artifactctl,
     )
 
     adapter = create_session_adapter(mode="auto", db_path=tmp_path / "sessions.db")
@@ -82,6 +83,28 @@ def test_create_session_adapter_injects_artifactctl_on_live_factory_path(
     assert artifactctl.calls == [("add", "session", session_id, _VALID_SHA)]
 
 
+def test_create_session_adapter_owns_artifactctl_from_runtime_config(
+    tmp_path,
+) -> None:
+    artifact_config = from_base_config(
+        base_config=OpenMinionConfig(),
+        home_root=tmp_path,
+        data_root=tmp_path / ".openminion",
+    )
+
+    adapter = create_session_adapter(
+        mode="auto",
+        db_path=tmp_path / "sessions.db",
+        artifact_config=artifact_config,
+    )
+    owned = adapter._owned_artifactctl  # noqa: SLF001
+    adapter.close()
+
+    assert owned.config is artifact_config
+    assert adapter._owned_artifactctl is None  # noqa: SLF001
+    assert (tmp_path / ".openminion" / "artifact" / "index.db").is_file()
+
+
 def test_session_adapter_ignores_runtime_local_paths_for_reference_edges(
     monkeypatch,
     tmp_path,
@@ -94,7 +117,7 @@ def test_session_adapter_ignores_runtime_local_paths_for_reference_edges(
     monkeypatch.setattr(
         artifactctl_module,
         "create_default_artifactctl",
-        lambda: artifactctl,
+        lambda config=None: artifactctl,
     )
 
     adapter = create_session_adapter(mode="auto", db_path=tmp_path / "sessions.db")
@@ -120,7 +143,7 @@ def test_create_memory_adapter_injects_artifactctl_and_filters_non_artifacts(
     monkeypatch.setattr(
         artifactctl_module,
         "create_default_artifactctl",
-        lambda: artifactctl,
+        lambda config=None: artifactctl,
     )
 
     adapter = create_memory_adapter(mode="auto", db_path=tmp_path / "memory.db")
