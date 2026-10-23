@@ -683,10 +683,12 @@ def build_brain_runner_bundle(service: Any) -> Any:
                 home_root=service._context.home_paths.home_root,
             )
         )
+    artifact_config = service._get_manager_config("artifact")
     session_api = bridge_module.create_session_api(
         mode=service.mode,
         db_path=service.db_path,
         telemetryctl=service._telemetryctl,
+        artifact_config=artifact_config,
     )
 
     default_agent_id, default_profile, a2a_api, a2a_delegate_api = (
@@ -701,7 +703,9 @@ def build_brain_runner_bundle(service: Any) -> Any:
     db_dir = db_path.parent if db_path.suffix else db_path
     memory_assembly = service._runtime_memory_assembly
     vector_adapter = getattr(memory_assembly, "vector_adapter", None)
-    artifactctl = None if service.mode == "local" else create_default_artifactctl()
+    artifactctl = (
+        None if service.mode == "local" else create_default_artifactctl(artifact_config)
+    )
     skill_config = service._get_manager_config("skill")
     retrieve_api = bridge_module.init_retrieve_adapter(
         mode=service.mode,

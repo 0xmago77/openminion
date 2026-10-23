@@ -1,7 +1,7 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-21
+Last updated: 2026-10-22
 
 This file tracks package-facing release notes for `openminion`.
 
@@ -18,6 +18,9 @@ This file tracks package-facing release notes for `openminion`.
   own an existing non-room session (`TurnRequestError`, HTTP 400, or an
   `invalid_request` turn error) before any provider request, instead of
   silently running the session owner (#325).
+- List runtime session events by insertion order, so run status and thread
+  lifecycle keep a failed run `failed` when the wall clock steps back during a
+  turn; stored event timestamps are unchanged (#345).
 
 ## Current package line - 2026-10-20
 

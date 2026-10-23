@@ -93,6 +93,35 @@ def test_active_assembly_owns_one_non_duplicated_runtime(tmp_path) -> None:
     assert assembly.close().closed is True
 
 
+def test_default_artifact_store_uses_runtime_artifact_config(
+    tmp_path, monkeypatch, fresh_config_manager
+) -> None:
+    configs: list[object] = []
+    monkeypatch.setattr(
+        "openminion.services.runtime.memory.create_default_artifactctl",
+        lambda config=None: configs.append(config),
+    )
+    config = OpenMinionConfig()
+    config.runtime.memory_enabled = True
+    config.runtime.memory_provider = "memory_v2"
+
+    assembly = build_memory_v2_runtime_assembly(
+        config=config,
+        agent_id="alpha",
+        memory_root=tmp_path,
+        logger=logging.getLogger("test.memory.assembly"),
+        config_manager=fresh_config_manager,
+        home_root=fresh_config_manager.home_root,
+        data_root=fresh_config_manager.data_root,
+        session_context=None,
+        retrieve_ctl=None,
+        storage_path=None,
+    )
+    assembly.close()
+
+    assert configs == [fresh_config_manager.get("artifact")]
+
+
 def test_disabled_assembly_keeps_gateway_without_runtime_owners() -> None:
     for gateway in (
         DisabledMemoryGatewayAdapter(agent_id="alpha"),

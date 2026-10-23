@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import itertools
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from openminion.modules.task.run import resolve_thread_lifecycle
+from openminion.modules.task.run import (
+    list_session_run_events,
+    list_session_runs,
+    resolve_thread_lifecycle,
+)
 from tests.services.gateway._gateway_service_support import (
     GatewayServiceTestCase,
     SessionStore,
@@ -145,6 +150,51 @@ class InvocationStartLifecycleTests(GatewayServiceTestCase):
         assert len(failed) == 1
         assert started[0].payload["source_event_id"] < failed[0].id
         assert terminal[0].payload["source_event_id"] == failed[0].id
+
+    def test_failed_turn_reads_failed_when_clock_steps_back(self) -> None:
+        gateway, _sink = self._build_gateway(
+            provider=_FlakyProvider(),
+            logger_name="openminion.tests.gateway.start.clock",
+            agent_logger_name="openminion.tests.gateway.start.clock.agent",
+            auto_resume=False,
+        )
+        start = datetime.now(timezone.utc)
+        ticks = itertools.count()
+
+        def _stepping_back_clock() -> str:
+            # Every event append reads a wall clock 1 ms earlier than the last.
+            return (start - timedelta(milliseconds=next(ticks))).isoformat()
+
+        with patch(
+            "openminion.modules.storage.runtime.session_store.lifecycle.utc_now_iso",
+            side_effect=_stepping_back_clock,
+        ):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(
+                    gateway.run_once(
+                        channel="console",
+                        target="local-user",
+                        message="fail",
+                        session_id="clock-step-back",
+                        deliver=True,
+                    )
+                )
+
+        runs = list_session_runs(self.sessions, session_id="clock-step-back")
+        assert len(runs) == 1
+        assert (runs[0].state, runs[0].current_step) == ("failed", "turn.failed")
+        events = list_session_run_events(
+            self.sessions,
+            session_id="clock-step-back",
+            run_id=runs[0].run_id,
+        )
+        assert [(event.state, event.current_step) for event in events] == [
+            ("queued", "turn.accepted"),
+            ("running", "agent.generate"),
+            ("failed", "turn.failed"),
+        ]
+        stored_times = [event.created_at for event in events]
+        assert stored_times == sorted(stored_times, reverse=True)
 
     def test_disabled_telemetry_callback_is_nonfatal(self) -> None:
         routing = self._routing(self.gateway, session_id="callback-failure")

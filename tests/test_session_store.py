@@ -2,6 +2,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from openminion.modules.storage.runtime import SessionStore as RuntimeSessionStore
 from openminion.modules.storage.runtime.migrations import migrate_database
@@ -22,6 +23,8 @@ from openminion.modules.storage.runtime.sqlite import connect_database
 from openminion.modules.storage.runtime.session_store.models import (
     RuntimeSessionStoreIntegrityError,
 )
+
+EVENT_CLOCK = "openminion.modules.storage.runtime.session_store.lifecycle.utc_now_iso"
 
 
 class SessionStoreTests(unittest.TestCase):
@@ -421,6 +424,93 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual(len(run_events), 2)
         self.assertEqual(run_events[0].event_type, "run.completed")
         self.assertEqual(run_events[1].event_type, "run.queued")
+
+    def test_list_events_follows_insertion_order_when_clock_steps_back(self) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="clock-step-back"
+        )
+        # The wall clock steps back after the second and the fourth append.
+        stamps = [
+            "2026-10-21T17:16:59.564721+00:00",
+            "2026-10-21T17:16:59.602657+00:00",
+            "2026-10-21T17:16:58.715677+00:00",
+            "2026-10-21T17:16:58.900000+00:00",
+            "2026-10-21T17:16:58.800000+00:00",
+        ]
+        with patch(EVENT_CLOCK, side_effect=stamps):
+            ids = [
+                self.store.append_event(
+                    session_id=session.id, event_type=f"step.{index}"
+                ).id
+                for index in range(len(stamps))
+            ]
+
+        ascending = self.store.list_events(session_id=session.id, limit=10)
+        descending = self.store.list_events(
+            session_id=session.id, limit=10, newest_first=True
+        )
+        oldest_two = self.store.list_events(session_id=session.id, limit=2)
+        newest_two = self.store.list_events(
+            session_id=session.id, limit=2, newest_first=True
+        )
+        high_water = self.store.event_high_water(session_id=session.id)
+        after_id_page = self.store.list_events_after_id(
+            session_id=session.id, after_id=0, high_water_id=high_water
+        )
+        before_id_page = self.store.list_events_before_id(
+            session_id=session.id, before_id=high_water + 1, limit=10
+        )
+
+        self.assertEqual([event.id for event in ascending], ids)
+        self.assertEqual([event.created_at for event in ascending], stamps)
+        self.assertEqual([event.id for event in descending], ids[::-1])
+        self.assertEqual([event.id for event in oldest_two], ids[:2])
+        self.assertEqual([event.id for event in newest_two], ids[::-1][:2])
+        self.assertEqual(newest_two[0].id, high_water)
+        self.assertEqual(after_id_page, ascending)
+        self.assertEqual(before_id_page, descending)
+
+    def test_list_events_prefix_follows_insertion_order_when_clock_steps_back(
+        self,
+    ) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="clock-step-back-prefix"
+        )
+        entries = (
+            ("run.queued", "2026-10-21T17:16:59.564721+00:00"),
+            ("tool.call", "2026-10-21T17:16:59.580000+00:00"),
+            ("run.running", "2026-10-21T17:16:59.602657+00:00"),
+            ("run.failed", "2026-10-21T17:16:58.715677+00:00"),
+            ("tool.result", "2026-10-21T17:16:58.720000+00:00"),
+        )
+        with patch(EVENT_CLOCK, side_effect=[stamp for _, stamp in entries]):
+            appended = {
+                event_type: self.store.append_event(
+                    session_id=session.id, event_type=event_type
+                )
+                for event_type, _ in entries
+            }
+        run_ids = [
+            appended[event_type].id
+            for event_type in ("run.queued", "run.running", "run.failed")
+        ]
+
+        run_events = self.store.list_events(
+            session_id=session.id, limit=10, event_type_prefix="run."
+        )
+        newest_run = self.store.list_events(
+            session_id=session.id,
+            limit=1,
+            newest_first=True,
+            event_type_prefix="run.",
+        )
+        oldest_runs = self.store.list_events(
+            session_id=session.id, limit=2, event_type_prefix="run."
+        )
+
+        self.assertEqual([event.id for event in run_events], run_ids)
+        self.assertEqual([event.id for event in newest_run], run_ids[-1:])
+        self.assertEqual([event.id for event in oldest_runs], run_ids[:2])
 
     def test_list_sessions_and_count_sessions(self) -> None:
         first = self.store.resolve_session(

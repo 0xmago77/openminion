@@ -1,12 +1,15 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from openminion.modules.storage.runtime.migrations import migrate_database
 from openminion.modules.storage.runtime.session_store import SessionStore
 from openminion.modules.storage.runtime.sqlite import connect_database
 from openminion.services.runtime.run_status import (
     RUN_STATE_COMPLETED,
+    RUN_STATE_FAILED,
+    RUN_STATE_QUEUED,
     RUN_STATE_RUNNING,
     THREAD_STATE_AWAITING,
     THREAD_STATE_RESPONSE_UNDELIVERED,
@@ -22,6 +25,8 @@ from openminion.services.runtime.run_status import (
     THREAD_DECISION_FORK,
     THREAD_DECISION_RESUME,
 )
+
+EVENT_CLOCK = "openminion.modules.storage.runtime.session_store.lifecycle.utc_now_iso"
 
 
 class ConversationLifecycleTests(unittest.TestCase):
@@ -441,3 +446,54 @@ class ConversationLifecycleTests(unittest.TestCase):
         self.assertEqual(projection.thread_state, THREAD_STATE_SETTLED)
         self.assertEqual(projection.qualifier, "internal_error_outbound")
         self.assertEqual(projection.pending_response_id, "")
+
+    def test_projection_follows_insertion_order_when_clock_steps_back(self) -> None:
+        conversation_id = "conv-clock"
+        thread_id = "thread-clock"
+        # The wall clock steps back ~1.3 s before the second invocation starts.
+        stamps = [
+            "2026-10-21T17:17:00.300000+00:00",
+            "2026-10-21T17:17:00.400000+00:00",
+            "2026-10-21T17:16:59.100000+00:00",
+            "2026-10-21T17:16:59.200000+00:00",
+        ]
+        appends = (
+            ("run-1", RUN_STATE_QUEUED, "turn.accepted"),
+            ("run-1", RUN_STATE_FAILED, "turn.failed"),
+            ("run-2", RUN_STATE_QUEUED, "turn.accepted"),
+            ("run-2", RUN_STATE_RUNNING, "agent.generate"),
+        )
+        with patch(EVENT_CLOCK, side_effect=stamps):
+            events = [
+                append_run_state_event(
+                    self.sessions,
+                    session_id=self.session.id,
+                    run_id=run_id,
+                    state=state,
+                    current_step=step,
+                    conversation_id=conversation_id,
+                    thread_id=thread_id,
+                    payload=(
+                        {"invocation_id": f"invocation-{run_id}"}
+                        if state == RUN_STATE_QUEUED
+                        else None
+                    ),
+                )
+                for run_id, state, step in appends
+            ]
+
+        projection = resolve_thread_lifecycle(
+            self.sessions,
+            session_id=self.session.id,
+            conversation_id=conversation_id,
+            thread_id=thread_id,
+        )
+
+        second_start, second_running = events[2], events[3]
+        self.assertEqual(projection.latest_run_id, "run-2")
+        self.assertEqual(projection.latest_run_state, RUN_STATE_RUNNING)
+        self.assertEqual(projection.thread_state, THREAD_STATE_AWAITING)
+        self.assertEqual(projection.invocation_id, "invocation-run-2")
+        self.assertEqual(projection.invocation_source_event_id, second_start.id)
+        self.assertEqual(projection.latest_event_id, second_running.id)
+        self.assertEqual(projection.updated_at, second_running.created_at)
