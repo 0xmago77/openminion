@@ -1133,17 +1133,19 @@ def test_temporary_registration_scope_preserves_cross_thread_isolation() -> None
 
 
 @pytest.mark.parametrize(
-    ("inherited", "acquired", "unwind"),
+    ("inherited", "acquired", "unwind", "marker_failure"),
     [
-        (False, True, None),
-        (False, True, asyncio.CancelledError),
-        (True, True, None),
-        (True, True, RuntimeError),
-        (True, False, None),
+        (False, True, None, None),
+        (False, True, asyncio.CancelledError, None),
+        (True, True, None, None),
+        (True, True, RuntimeError, None),
+        (True, False, None, None),
+        (False, True, None, "set"),
+        (False, True, None, "reset"),
     ],
 )
 def test_temporary_registration_scope_requires_lock_ownership(
-    inherited, acquired, unwind
+    inherited, acquired, unwind, marker_failure, monkeypatch
 ):
     class FiniteLock:
         def __init__(self):
@@ -1164,11 +1166,30 @@ def test_temporary_registration_scope_requires_lock_ownership(
         def __exit__(self, *_args):
             self.release()
 
+    marker_error = KeyboardInterrupt(f"marker {marker_failure} interrupted")
+
+    class FiniteMarker:
+        def get(self):
+            return _TEMPORARY_REGISTRATION_OWNER.get()
+
+        def set(self, owner):
+            if marker_failure == "set":
+                raise marker_error
+            return _TEMPORARY_REGISTRATION_OWNER.set(owner)
+
+        def reset(self, token):
+            if marker_failure == "reset":
+                raise marker_error
+            _TEMPORARY_REGISTRATION_OWNER.reset(token)
+
     registry = ToolRegistry()
     lock = FiniteLock()
     registry._temporary_registration_lock = lock
     previous = id(registry) if inherited else None
     token = _TEMPORARY_REGISTRATION_OWNER.set(previous)
+    monkeypatch.setattr(
+        "openminion.modules.tool.registry._TEMPORARY_REGISTRATION_OWNER", FiniteMarker()
+    )
     entered = []
     try:
 
@@ -1179,7 +1200,11 @@ def test_temporary_registration_scope_requires_lock_ownership(
                 if unwind is not None:
                     raise unwind("scope unwound")
 
-        if not acquired:
+        if marker_failure is not None:
+            with pytest.raises(KeyboardInterrupt) as exc_info:
+                enter_scope()
+            assert exc_info.value is marker_error
+        elif not acquired:
             with pytest.raises(RuntimeError, match="cross-thread.*separate runtime"):
                 enter_scope()
         elif unwind is not None:
@@ -1187,9 +1212,12 @@ def test_temporary_registration_scope_requires_lock_ownership(
                 enter_scope()
         else:
             enter_scope()
-        assert entered == ([True] if acquired else [])
+        assert entered == ([] if not acquired or marker_failure == "set" else [True])
         assert lock.requests == [not inherited]
         assert lock.releases == int(acquired)
-        assert _TEMPORARY_REGISTRATION_OWNER.get() == previous
+        if marker_failure == "set":
+            assert registry._tools == {}, "marker setup failure left registered tools"
+        expected_owner = id(registry) if marker_failure == "reset" else previous
+        assert _TEMPORARY_REGISTRATION_OWNER.get() == expected_owner
     finally:
         _TEMPORARY_REGISTRATION_OWNER.reset(token)

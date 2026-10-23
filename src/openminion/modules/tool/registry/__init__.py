@@ -99,11 +99,13 @@ class ToolRegistry:
                 "Temporary tool registration in a cross-thread shared-runtime "
                 "handoff would deadlock; use a separate runtime for the child agent"
             )
-        token = _TEMPORARY_REGISTRATION_OWNER.set(id(self))
         try:
-            yield
+            token = _TEMPORARY_REGISTRATION_OWNER.set(id(self))
+            try:
+                yield
+            finally:
+                _TEMPORARY_REGISTRATION_OWNER.reset(token)
         finally:
-            _TEMPORARY_REGISTRATION_OWNER.reset(token)
             lock.release()
 
     def registration_read_lock(self) -> Any:
