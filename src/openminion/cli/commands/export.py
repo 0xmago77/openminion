@@ -94,19 +94,21 @@ def run_export(args) -> int:
     return 0
 
 
-def _transcript_key(record: dict[str, Any]) -> tuple[str, str]:
-    return record["created_at"], record["id"]
+def _transcript_key(record: dict[str, Any]) -> str:
+    return str(record["created_at"])
 
 
 def _merge_transcript(
     messages: list[dict[str, Any]], events: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Interleave messages, kept in store order, with events in (created_at, id) order.
+    """Interleave messages and events, both given in store order, by created_at.
 
-    Messages sharing a created_at keep their append order. An event goes before
-    the next message when its (created_at, id) sorts first, so the result equals
-    a (created_at, id) sort of all records whenever the messages are already in
-    that order.
+    Messages sharing a created_at keep their append order, and events sharing
+    one keep their insertion order: the sort is stable, so tied events stay as
+    `list_events` returns them. Nothing stored orders a message against an
+    event, so at an exact created_at tie the messages come first, then the
+    events. This is a presentation rule; it does not say which was written
+    first.
     """
     ordered_events = sorted(events, key=_transcript_key)
     merged: list[dict[str, Any]] = []
