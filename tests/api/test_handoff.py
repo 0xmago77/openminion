@@ -611,6 +611,8 @@ def test_shared_runtime_handoff_registration_is_bounded(tmp_path, threaded, unwi
                 assert registry.policy_for("child_tool").risk == "high"
                 assert registry.get("child_tool").handler({}, None) == "child"
                 child_runs.append(payload["message"])
+                if unwind is not None and parent_open.is_set():
+                    raise unwind("child unwound")
                 return {"body": "child reply"}
 
             parent_open.set()
@@ -639,9 +641,12 @@ def test_shared_runtime_handoff_registration_is_bounded(tmp_path, threaded, unwi
                     assert all(
                         grant.revoked_at is not None for grant in policy.list_grants()
                     ), "rejected child leaked a delegated memory grant"
-                else:
+                elif unwind is None:
                     result = handler({"message": "child"}, None)
                     assert result["content"] == "child reply"
+                else:
+                    with pytest.raises(unwind, match="child unwound"):
+                        handler({"message": "child"}, None)
                 assert set(registry.list()) == {
                     "borrowed_tool",
                     "parent_tool",
