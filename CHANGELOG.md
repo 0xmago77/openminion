@@ -15,6 +15,10 @@ This file tracks package-facing release notes for `openminion`.
   messages sharing one timestamp moves back before that group, so its
   members are replayed into history and summarized again once rather than
   left hidden (#353).
+- Keep runtime session events that share a timestamp in insertion order in
+  `openminion export transcript --include-events`, instead of comparing their
+  ids as strings (event 10 exported before event 2). Where a message and an
+  event share a timestamp, the transcript shows the message first (#365).
 
 ## Current package line - 2026-10-22
 
