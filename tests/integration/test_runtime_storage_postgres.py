@@ -23,8 +23,18 @@ from openminion.modules.storage.runtime.migrations import (
 )
 from openminion.modules.storage.runtime.session_store import SessionStore
 from openminion.modules.task.run import (
+    append_run_state_event,
+    list_session_run_events,
+    list_session_runs,
     resolve_invocation_terminal,
     resolve_thread_lifecycle,
+)
+from tests._run_status_scenarios import (
+    append_runs,
+    append_threads,
+    check_run_readers,
+    check_thread_projection,
+    stepping_clock,
 )
 
 pytestmark = pytest.mark.postgres
@@ -478,3 +488,103 @@ def test_postgres_append_seq_migration_uses_fallback_order_and_moves_tied_bounda
             ]
         finally:
             record_store.close()
+
+
+@pytest.mark.postgres
+def test_postgres_run_status_readers_match_the_event_reduction(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om352_runs") as url:
+        storage = build_runtime_storage(
+            tmp_path / "state" / "openminion.db",
+            env={},
+            record_backend="record.postgres",
+            record_backend_options={"url": url},
+        )
+        try:
+            sessions = storage.sessions
+            runs, threads = (
+                sessions.resolve_session(agent_id="main", channel="console", target=t)
+                for t in ("runs", "threads")
+            )
+            with stepping_clock():
+                append_runs(sessions, runs.id)
+                append_threads(sessions, threads.id)
+
+            check_run_readers(sessions, runs.id)
+            check_thread_projection(sessions, threads.id)
+        finally:
+            storage.close()
+
+
+@pytest.mark.postgres
+def test_postgres_run_status_readers_past_the_default_window(tmp_path: Path) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om352_window") as url:
+        storage = build_runtime_storage(
+            tmp_path / "state" / "openminion.db",
+            env={},
+            record_backend="record.postgres",
+            record_backend_options={"url": url},
+        )
+        try:
+            sessions = storage.sessions
+            session = sessions.resolve_session(
+                agent_id="main", channel="console", target="window"
+            )
+            thread = {"conversation_id": "conv", "thread_id": "thread"}
+            # 1,999 events of an older run, so its first event is below the
+            # default window of 2,000 run events once the new run starts.
+            storage.record_store.insert_many(
+                "events",
+                [
+                    {
+                        "session_id": session.id,
+                        "event_type": f"run.{state}",
+                        "payload_json": json.dumps(
+                            {"run_id": "old", "state": state, "step": "s", **thread}
+                        ),
+                        "created_at": f"2026-10-23T09:{index // 60:02d}:"
+                        f"{index % 60:02d}.000001+00:00",
+                    }
+                    for index, state in enumerate(
+                        ["queued"] + ["running"] * 1997 + ["completed"]
+                    )
+                ],
+            )
+            appended = [
+                append_run_state_event(
+                    sessions,
+                    session_id=session.id,
+                    run_id="new",
+                    state=state,
+                    current_step="step",
+                    payload={"invocation_id": "new-inv"},
+                    **thread,
+                )
+                for state in ("queued", "failed")
+            ]
+            runs = list_session_runs(sessions, session_id=session.id)
+            new_events = list_session_run_events(
+                sessions, session_id=session.id, run_id="new"
+            )
+            projection = resolve_thread_lifecycle(
+                sessions, session_id=session.id, **thread
+            )
+
+            assert [(run.run_id, run.state, run.event_count) for run in runs] == [
+                ("new", "failed", 2),
+                ("old", "completed", 1999),
+            ]
+            assert runs[1].started_at == "2026-10-23T09:00:00.000001+00:00"
+            assert [event.id for event in new_events] == [e.id for e in appended]
+            assert (projection.latest_run_id, projection.invocation_id) == (
+                "new",
+                "new-inv",
+            )
+            assert projection.latest_event_id == sessions.event_high_water(
+                session_id=session.id
+            )
+        finally:
+            storage.close()
