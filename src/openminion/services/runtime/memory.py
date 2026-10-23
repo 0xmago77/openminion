@@ -250,10 +250,8 @@ def build_memory_v2_runtime_assembly(
         db_path=db_path,
         artifactctl=artifactctl,
     )
-    audited_store = AuditedMemoryStore(
-        resolved.store,
-        sink=SQLiteMemoryAuditSink(default_memory_audit_db_path(db_path)),
-    )
+    audit_sink = SQLiteMemoryAuditSink(default_memory_audit_db_path(db_path))
+    audited_store = AuditedMemoryStore(resolved.store, sink=audit_sink, owns_sink=True)
     ranking_config = memory_runtime_configuration.merged_ranking_config(
         memory_config=memory_config,
         retrieve_ctl=retrieve_ctl,

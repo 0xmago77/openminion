@@ -7,6 +7,10 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Declare risk metadata on temporary tools, both the SDK handoff tool and
+  ordinary-named temporary tools, and enforce that a denial prevents
+  handoff child execution.
+
 - Keep runtime session messages that share a timestamp in append order, with a
   per-session append sequence that runtime migration 12 adds on SQLite and
   Postgres. Message readers, compaction positions and transcript export no
@@ -15,6 +19,10 @@ This file tracks package-facing release notes for `openminion`.
   messages sharing one timestamp moves back before that group, so its
   members are replayed into history and summarized again once rather than
   left hidden (#353).
+- Close the memory audit sink that the runtime memory assembly creates when the
+  runtime closes: once, with the memory service, and not while the memory
+  scheduler is still running. `AuditedMemoryStore` still leaves a sink passed
+  without `owns_sink=True` open (#361).
 - Report run status past a session's first 2,000 run events. Run listings
   cover the runs seen among the newest run events and report each run's
   state, step, start and end time, error and event count over all of its
