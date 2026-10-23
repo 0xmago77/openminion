@@ -49,7 +49,9 @@ scope	max_python_files	max_loc
 # #325 (2026-10-21) rejects an explicit agent outside a plain session's bound
 # agent in the existing ingress routing owner, before any gateway call, and
 # carries the caller's explicit agent through the managed turn request.
-services	208	41729
+# Issue 342 (2026-10-22) builds the runtime-owned artifact stores from the
+# runtime-scoped artifact config in the existing memory and brain owners.
+services	208	41754
 services/security	6	187
 services/stats	1	25
 services/tool	3	50
