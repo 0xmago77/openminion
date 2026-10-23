@@ -7,6 +7,10 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Merge the system messages of requests to Gemini's OpenAI-compatible
+  endpoint into one, as for MiniMax, because the endpoint appears to read only
+  the last system message; schema-only control calls such as the closure
+  judge now keep their rendered context there (#347).
 - Raise the existing typed provider error when a recognized provider failure
   interrupts the adaptive tool loop after a tool result, instead of returning
   the error text as a completed answer; the tool is not re-run (#326).
