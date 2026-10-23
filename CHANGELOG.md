@@ -7,6 +7,12 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Keep runtime session messages that share a timestamp in append order, with a
+  per-session append sequence that runtime migration 12 adds on SQLite and
+  Postgres. Message readers, compaction positions and transcript export no
+  longer depend on random message ids; message ids and timestamps are
+  unchanged (#353).
+
 ## Current package line - 2026-10-22
 
 - Keep SDK follow-up turns on the active session, reject conflicting explicit
