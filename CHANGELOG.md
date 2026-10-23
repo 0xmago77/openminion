@@ -7,6 +7,11 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Close the memory audit sink that the runtime memory assembly creates when the
+  runtime closes: once, with the memory service, and not while the memory
+  scheduler is still running. `AuditedMemoryStore` still leaves a sink passed
+  without `owns_sink=True` open (#361).
+
 ## Current package line - 2026-10-22
 
 - Keep SDK follow-up turns on the active session, reject conflicting explicit
