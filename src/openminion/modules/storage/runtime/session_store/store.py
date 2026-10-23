@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from openminion.modules.storage.record_store import RecordStore
 
@@ -35,8 +35,15 @@ from .turn_leases import RuntimeSessionTurnLeases
 
 
 class SessionStore:
-    def __init__(self, store_or_connection: RecordStore | sqlite3.Connection) -> None:
-        self._backend = RuntimeSessionStoreBackend(store_or_connection)
+    def __init__(
+        self,
+        store_or_connection: RecordStore | sqlite3.Connection,
+        *,
+        backend_type: str = "sqlite",
+    ) -> None:
+        self._backend = RuntimeSessionStoreBackend(
+            store_or_connection, backend_type=backend_type
+        )
         self._turn_leases = RuntimeSessionTurnLeases(self._backend)
         self._sessions = RuntimeSessionStoreSessions(
             self._backend,
@@ -471,6 +478,56 @@ class SessionStore:
             session_id=session_id,
             before_id=before_id,
             limit=limit,
+        )
+
+    def list_events_by_id(
+        self, *, session_id: str, event_ids: Sequence[int]
+    ) -> list[EventRecord]:
+        return self._lifecycle.list_events_by_id(
+            session_id=session_id, event_ids=event_ids
+        )
+
+    def list_run_events(
+        self, *, session_id: str, run_id: str, limit: int = 100
+    ) -> list[EventRecord]:
+        return self._lifecycle.list_run_events(
+            session_id=session_id, run_id=run_id, limit=limit
+        )
+
+    def summarize_recent_runs(
+        self,
+        *,
+        session_id: str,
+        scan_limit: int,
+        run_states: Sequence[str],
+        terminal_states: Sequence[str],
+    ) -> list[dict[str, Any]]:
+        return self._lifecycle.summarize_recent_runs(
+            session_id=session_id,
+            scan_limit=scan_limit,
+            run_states=run_states,
+            terminal_states=terminal_states,
+        )
+
+    def summarize_thread_events(
+        self,
+        *,
+        session_id: str,
+        conversation_id: str,
+        thread_id: str,
+        start_event_type: str,
+        attach_event_type: str,
+        writer_role: str,
+        flag_event_types: Sequence[str],
+    ) -> dict[str, Any]:
+        return self._lifecycle.summarize_thread_events(
+            session_id=session_id,
+            conversation_id=conversation_id,
+            thread_id=thread_id,
+            start_event_type=start_event_type,
+            attach_event_type=attach_event_type,
+            writer_role=writer_role,
+            flag_event_types=flag_event_types,
         )
 
     def touch_session_activity(

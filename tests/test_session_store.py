@@ -520,6 +520,178 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual([event.id for event in newest_run], run_ids[-1:])
         self.assertEqual([event.id for event in oldest_runs], run_ids[:2])
 
+    def _append(self, session_id: str, event_type: str, **payload) -> int:
+        return self.store.append_event(
+            session_id=session_id, event_type=event_type, payload=payload
+        ).id
+
+    def test_list_run_events_matches_the_stored_top_level_run_id(self) -> None:
+        session, other = (
+            self.store.resolve_session(agent_id="main", channel="console", target=t)
+            for t in ("run-events", "run-events-other")
+        )
+        special = 'q"u\\o%t_e café'
+        r1 = [self._append(session.id, "run.queued", run_id="r1")]
+        self._append(session.id, "tool.call", run_id="r1")
+        self._append(other.id, "run.queued", run_id="r1")
+        self._append(session.id, "run.queued", run_id="r2", parent={"run_id": "r1"})
+        self._append(session.id, "run.queued", run_id="R1")
+        r1.append(self._append(session.id, "run.running", run_id="r1"))
+        self._append(session.id, "run.queued", run_id="r1x")
+        quoted = self._append(session.id, "run.queued", run_id=special)
+        r1.append(self._append(session.id, "run.completed", run_id="r1"))
+
+        def listed(run_id: str, limit: int = 10) -> list[int]:
+            return [
+                event.id
+                for event in self.store.list_run_events(
+                    session_id=session.id, run_id=run_id, limit=limit
+                )
+            ]
+
+        self.assertEqual(listed("r1"), r1[::-1])
+        self.assertEqual(listed("r1", limit=2), r1[::-1][:2])
+        self.assertEqual(listed(special), [quoted])
+        self.assertEqual(listed("r9"), [])
+        self.assertEqual(listed("r1", limit=0), [])
+
+    def test_summarize_recent_runs_reports_whole_runs_seen_in_the_window(
+        self,
+    ) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="run-summary"
+        )
+        stamps = [f"2026-10-23T10:00:0{second}.000001+00:00" for second in range(9)]
+        with patch(EVENT_CLOCK, side_effect=stamps):
+            ids = [
+                self._append(session.id, event_type, **payload)
+                for event_type, payload in (
+                    ("run.queued", {"run_id": "a", "step": "accepted"}),
+                    ("run.queued", {"run_id": "old", "state": "queued"}),
+                    # The payload state, when it is a run state, decides.
+                    ("run.queued", {"run_id": "a", "state": "failed", "error": 5}),
+                    ("run.failed", {"run_id": "a", "state": " RUNNING ", "step": " "}),
+                    ("run.completed", {"run_id": "b", "state": "bogus"}),
+                    ("run.running", {"run_id": "a", "error": None}),
+                    ("tool.call", {"run_id": "a"}),
+                    ("run.running", {"step": "no run id"}),
+                    ("run.cancel_requested", {"run_id": "b"}),
+                )
+            ]
+
+        def summary(scan_limit: int) -> dict[str, dict]:
+            return {
+                row["run_id"]: row
+                for row in self.store.summarize_recent_runs(
+                    session_id=session.id,
+                    scan_limit=scan_limit,
+                    run_states=["queued", "running", "completed", "failed"],
+                    terminal_states=["completed", "failed"],
+                )
+            }
+
+        # The newest 3 `run.` events are ids[5], ids[7] (no run id) and ids[8].
+        self.assertEqual(sorted(summary(3)), ["a", "b"])
+        self.assertEqual(
+            summary(3)["a"],
+            {
+                "run_id": "a",
+                "event_count": 4,
+                "started_at": stamps[0],
+                "last_id": ids[5],
+                "step_id": ids[0],
+                "error_id": ids[2],
+                "terminal_id": ids[2],
+            },
+        )
+        self.assertEqual(
+            {key: summary(3)["b"][key] for key in ("last_id", "terminal_id")},
+            {"last_id": ids[8], "terminal_id": ids[4]},
+        )
+        self.assertEqual(sorted(summary(100)), ["a", "b", "old"])
+
+    def test_summarize_thread_events_follows_the_thread_rules(self) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="thread-summary"
+        )
+
+        def thread(event_type: str, conversation: str | None, thread_id: str, **p):
+            payload = {"thread_id": thread_id, **p}
+            if conversation is not None:
+                payload["conversation_id"] = conversation
+            return self._append(session.id, event_type, **payload)
+
+        start = thread("run.queued", "c", "t", run_id="r1", invocation_id="i1")
+        thread("run.queued", "c", "t", run_id="r2")
+        writer = thread("client.attach", "c", "t", attach_id="w", attach_role="")
+        thread("client.attach", "c", "t", attach_id="o", attach_role="observer")
+        thread("client.attach", "c", "t", attach_id=" ", attach_role="writer")
+        shared = thread("response.acked", None, "")
+        other = thread("run.running", "c", "u", run_id="r3")
+
+        def facts(conversation_id: str, thread_id: str) -> dict:
+            return self.store.summarize_thread_events(
+                session_id=session.id,
+                conversation_id=conversation_id,
+                thread_id=thread_id,
+                start_event_type="run.queued",
+                attach_event_type="client.attach",
+                writer_role="writer",
+                flag_event_types=["response.acked", "client.detached"],
+            )
+
+        self.assertEqual(
+            facts("c", "t"),
+            {
+                "latest_id": writer + 2,
+                "run_event_id": start + 1,
+                "start_id": start,
+                "attach_id": writer,
+                "present": set(),
+            },
+        )
+        # An event without a conversation is in the thread only when the
+        # conversation is the session itself; without a thread, in every thread.
+        self.assertEqual(facts(session.id, "t")["latest_id"], shared)
+        self.assertEqual(facts(session.id, "t")["present"], {"response.acked"})
+        self.assertEqual(facts("", "u")["latest_id"], other)
+        self.assertEqual(facts("", "u")["run_event_id"], other)
+        self.assertIsNone(facts("missing", "t")["latest_id"])
+
+    def test_list_events_by_id_reads_the_session_rows_in_chunks(self) -> None:
+        session, other = (
+            self.store.resolve_session(agent_id="main", channel="console", target=t)
+            for t in ("by-id", "by-id-other")
+        )
+        ids = [self._append(session.id, "step", index=i) for i in range(1203)]
+        foreign = self._append(other.id, "step")
+
+        events = self.store.list_events_by_id(
+            session_id=session.id, event_ids=[*ids[::-1], foreign, ids[0], 0]
+        )
+
+        self.assertEqual([event.id for event in events], ids)
+        self.assertEqual(
+            self.store.list_events_by_id(session_id=session.id, event_ids=[]), []
+        )
+
+    def test_payload_text_reads_one_fixed_key_per_backend(self) -> None:
+        sqlite_backend = self.store._backend
+        postgres_backend = SessionStore(
+            self.connection, backend_type="postgres"
+        )._backend
+
+        self.assertEqual(
+            sqlite_backend.payload_text("run_id"),
+            "json_extract(payload_json, '$.run_id')",
+        )
+        self.assertEqual(
+            postgres_backend.payload_text("run_id"),
+            "(CAST(payload_json AS json) ->> 'run_id')",
+        )
+        with self.assertRaises(ValueError):
+            sqlite_backend.payload_text("run_id') OR ('1")
+
     def test_list_sessions_and_count_sessions(self) -> None:
         first = self.store.resolve_session(
             agent_id="main", channel="console", target="chat-a"

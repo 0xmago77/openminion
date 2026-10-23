@@ -142,14 +142,15 @@ def build_runtime_storage(
         ),
         telemetry_hook=telemetry_hook,
     )
+    backend_type = "sqlite" if backend_id == "record.sqlite" else "postgres"
     if backend_id == "record.sqlite":
         migration_result = migrate_database(resolved_path)
     else:
         migration_result = migrate_record_store(
             engine.record_store,
-            backend_type="postgres",
+            backend_type=backend_type,
         )
-    sessions = SessionStore(engine.record_store)
+    sessions = SessionStore(engine.record_store, backend_type=backend_type)
     idempotency = IdempotencyStore(engine.record_store)
 
     schema_drift_report: SchemaDriftReport | None = None

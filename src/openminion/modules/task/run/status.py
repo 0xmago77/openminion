@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Mapping, Optional
+from typing import Any, Dict, List, Literal, Mapping, Optional, Set
 
 from openminion.modules.controlplane.runtime.client import RunStatus as RunStatus
 from openminion.modules.storage.runtime.session_store import EventRecord, SessionStore
@@ -42,6 +42,15 @@ DELIVERY_STATE_ACKED = "acked"
 
 ATTACH_ROLE_WRITER = "writer"
 ATTACH_ROLE_OBSERVER = "observer"
+
+# Event types whose presence in a thread the lifecycle projection reads.
+_THREAD_FLAG_EVENT_TYPES = (
+    "response.persisted",
+    "response.delivered",
+    "response.acked",
+    "run.cancel_requested",
+    "client.detached",
+)
 
 THREAD_DECISION_REPLAY = "replay"
 THREAD_DECISION_RESUME = "resume_thread"
@@ -393,63 +402,54 @@ def list_session_runs(
     limit: int = 20,
     scan_limit: int = RUN_STATUS_DEFAULT_SCAN_LIMIT,
 ) -> List[RunSummary]:
+    """List the runs with an event among the newest `scan_limit` run events.
+
+    Each run is summarized over all of its run events by one aggregate query
+    (`summarize_recent_runs`), ordered by `(started_at, run_id)`, newest first;
+    the latest, step, error and terminal events of the first `limit` are then
+    read by id. No other event is read, however long the runs are.
+    """
     safe_limit = max(1, min(int(limit), 500))
-    safe_scan_limit = max(safe_limit, int(scan_limit))
-    events = sessions.list_events(
+    runs = sessions.summarize_recent_runs(
         session_id=session_id,
-        limit=safe_scan_limit,
-        event_type_prefix="run.",
-        newest_first=False,
+        scan_limit=max(safe_limit, int(scan_limit)),
+        run_states=sorted(_RUN_STATES),
+        terminal_states=sorted(_TERMINAL_RUN_STATES),
     )
-
-    summaries: Dict[str, Dict[str, Any]] = {}
-    for event in events:
-        run_event = _to_run_event(event)
-        if run_event is None:
-            continue
-
-        summary = summaries.get(run_event.run_id)
-        if summary is None:
-            summary = {
-                "run_id": run_event.run_id,
-                "session_id": run_event.session_id,
-                "state": run_event.state,
-                "current_step": run_event.current_step,
-                "started_at": run_event.created_at,
-                "ended_at": "",
-                "event_count": 0,
-                "error": "",
-            }
-            summaries[run_event.run_id] = summary
-
-        summary["event_count"] += 1
-        summary["state"] = run_event.state
-        if run_event.current_step:
-            summary["current_step"] = run_event.current_step
-        if run_event.state in _TERMINAL_RUN_STATES:
-            summary["ended_at"] = run_event.created_at
-        run_error = _extract_event_error(run_event.payload)
-        if run_error:
-            summary["error"] = run_error
-
-    ordered = sorted(
-        summaries.values(),
-        key=lambda item: (item["started_at"], item["run_id"]),
-        reverse=True,
-    )
-    return [
-        RunSummary(
-            run_id=str(item["run_id"]),
-            session_id=str(item["session_id"]),
-            state=str(item["state"]),
-            current_step=str(item["current_step"]),
-            started_at=str(item["started_at"]),
-            ended_at=str(item["ended_at"]),
-            event_count=int(item["event_count"]),
-            error=str(item["error"]),
+    runs = sorted(
+        runs, key=lambda run: (str(run["started_at"]), str(run["run_id"])), reverse=True
+    )[:safe_limit]
+    keys = ("last_id", "step_id", "error_id", "terminal_id")
+    events = {
+        int(event.id): event
+        for event in sessions.list_events_by_id(
+            session_id=session_id,
+            event_ids=[run[key] for run in runs for key in keys if run[key]],
         )
-        for item in ordered[:safe_limit]
-    ]
+    }
+
+    def event_of(run: Dict[str, Any], key: str) -> Optional[RunEvent]:
+        event = events.get(int(run[key] or 0))
+        return _to_run_event(event) if event is not None else None
+
+    summaries: List[RunSummary] = []
+    for run in runs:
+        last, step, error, terminal = (event_of(run, key) for key in keys)
+        if last is None:  # deleted with its session between the two reads
+            continue
+        summaries.append(
+            RunSummary(
+                run_id=str(run["run_id"]),
+                session_id=session_id,
+                state=last.state,
+                current_step=step.current_step if step is not None else "",
+                started_at=str(run["started_at"]),
+                ended_at=terminal.created_at if terminal is not None else "",
+                event_count=int(run["event_count"]),
+                error=_extract_event_error(error.payload) if error is not None else "",
+            )
+        )
+    return summaries
 
 
 def list_session_run_events(
@@ -460,24 +460,17 @@ def list_session_run_events(
     limit: int = 200,
     scan_limit: int = RUN_STATUS_DEFAULT_SCAN_LIMIT,
 ) -> List[RunEvent]:
+    """Return the run's newest `limit` events, oldest first; `scan_limit` is unused."""
     normalized_run_id = str(run_id).strip()
     if not normalized_run_id:
         return []
-
-    safe_limit = max(1, min(int(limit), 1000))
-    safe_scan_limit = max(safe_limit, int(scan_limit))
-    events = sessions.list_events(
+    events = sessions.list_run_events(
         session_id=session_id,
-        limit=safe_scan_limit,
-        event_type_prefix="run.",
-        newest_first=False,
+        run_id=normalized_run_id,
+        limit=max(1, min(int(limit), 1000)),
     )
-    run_events = [
-        item
-        for item in (_to_run_event(event) for event in events)
-        if item is not None and item.run_id == normalized_run_id
-    ]
-    return run_events[-safe_limit:]
+    run_events = (_to_run_event(event) for event in reversed(events))
+    return [item for item in run_events if item is not None]
 
 
 def _to_run_event(event: EventRecord) -> Optional[RunEvent]:
@@ -595,6 +588,7 @@ def resolve_thread_lifecycle(
     thread_id: str | None = None,
     scan_limit: int = RUN_STATUS_DEFAULT_SCAN_LIMIT,
 ) -> ThreadLifecycleProjection:
+    """Project a thread from all of its events; `scan_limit` is unused."""
     conversation_value = str(conversation_id or "").strip()
     thread_value = str(thread_id or "").strip()
 
@@ -612,42 +606,36 @@ def resolve_thread_lifecycle(
     if not thread_value:
         thread_value = inferred_thread
 
-    events = sessions.list_events(
-        session_id=session_id,
-        limit=max(100, int(scan_limit)),
-        newest_first=False,
-    )
-    filtered_events = [
-        event
-        for event in events
-        if _event_matches_thread(
-            event,
-            conversation_id=conversation_value,
-            thread_id=thread_value,
-            session_id=session_id,
-        )
-    ]
-
-    run_events = [
-        _to_run_event(event)
-        for event in filtered_events
-        if event.event_type.startswith("run.")
-    ]
-    run_events = [event for event in run_events if event is not None]
-    latest_run_event = run_events[-1] if run_events else None
-    invocation_start = _resolve_invocation_start(
-        sessions,
+    # All of the thread's events, in one aggregate query plus up to 4 rows by id.
+    facts = sessions.summarize_thread_events(
         session_id=session_id,
         conversation_id=conversation_value,
         thread_id=thread_value,
+        start_event_type="run.queued",
+        attach_event_type="client.attach",
+        writer_role=ATTACH_ROLE_WRITER,
+        flag_event_types=_THREAD_FLAG_EVENT_TYPES,
     )
+    keys = ("latest_id", "run_event_id", "start_id", "attach_id")
+    events = {
+        int(event.id): event
+        for event in sessions.list_events_by_id(
+            session_id=session_id,
+            event_ids=[facts[key] for key in keys if facts[key]],
+        )
+    }
+    latest_event, run_event, invocation_start, attach_event = (
+        events.get(int(facts[key] or 0)) for key in keys
+    )
+    latest_run_event = _to_run_event(run_event) if run_event is not None else None
     invocation_id, invocation_source_event_id, invocation_started_at = (
         _invocation_start_fields(invocation_start)
     )
 
-    delivery_state = _resolve_delivery_state(filtered_events)
+    present = facts["present"]
+    delivery_state = _resolve_delivery_state(present)
     attach_id = _resolve_writer_attach_id(
-        filtered_events=filtered_events,
+        attach_event=attach_event,
         messages=recent_messages,
     )
     last_message = recent_messages[-1] if recent_messages else None
@@ -658,13 +646,14 @@ def resolve_thread_lifecycle(
         latest_run_event=latest_run_event,
         delivery_state=delivery_state,
         latest_message=last_message,
-        filtered_events=filtered_events,
+        cancel_requested="run.cancel_requested" in present,
+        detached="client.detached" in present,
     )
 
-    updated_at = _latest_event_time(filtered_events) or (
+    updated_at = (latest_event.created_at if latest_event is not None else "") or (
         last_message.created_at if last_message is not None else ""
     )
-    latest_event_id = int(filtered_events[-1].id) if filtered_events else 0
+    latest_event_id = int(latest_event.id) if latest_event is not None else 0
 
     return ThreadLifecycleProjection(
         conversation_id=conversation_value,
@@ -780,44 +769,6 @@ def _invocation_start_fields(event: EventRecord | None) -> tuple[str, int, str]:
     )
 
 
-def _resolve_invocation_start(
-    sessions: SessionStore,
-    *,
-    session_id: str,
-    conversation_id: str,
-    thread_id: str,
-) -> EventRecord | None:
-    latest = sessions.list_events(
-        session_id=session_id,
-        limit=1,
-        newest_first=True,
-    )
-    if not latest:
-        return None
-    before_id = int(latest[0].id) + 1
-    while True:
-        page = sessions.list_events_before_id(
-            session_id=session_id,
-            before_id=before_id,
-            limit=RUN_STATUS_DEFAULT_SCAN_LIMIT,
-        )
-        if not page:
-            return None
-        for event in page:
-            if event.event_type != "run.queued":
-                continue
-            if not _event_matches_thread(
-                event,
-                conversation_id=conversation_id,
-                thread_id=thread_id,
-                session_id=session_id,
-            ):
-                continue
-            if str(event.payload.get("invocation_id", "")).strip():
-                return event
-        before_id = int(page[-1].id)
-
-
 def _infer_thread_id(
     *,
     messages: List[Any],
@@ -857,22 +808,14 @@ def _event_matches_thread(
     return True
 
 
-def _resolve_delivery_state(events: List[EventRecord]) -> str:
-    delivery_state = DELIVERY_STATE_NONE
-    for event in events:
-        event_type = str(event.event_type)
-        if event_type == "response.acked":
-            delivery_state = DELIVERY_STATE_ACKED
-        elif (
-            event_type == "response.delivered"
-            and delivery_state != DELIVERY_STATE_ACKED
-        ):
-            delivery_state = DELIVERY_STATE_DELIVERED
-        elif (
-            event_type == "response.persisted" and delivery_state == DELIVERY_STATE_NONE
-        ):
-            delivery_state = DELIVERY_STATE_PERSISTED
-    return delivery_state
+def _resolve_delivery_state(present_event_types: Set[str]) -> str:
+    if "response.acked" in present_event_types:
+        return DELIVERY_STATE_ACKED
+    if "response.delivered" in present_event_types:
+        return DELIVERY_STATE_DELIVERED
+    if "response.persisted" in present_event_types:
+        return DELIVERY_STATE_PERSISTED
+    return DELIVERY_STATE_NONE
 
 
 def _message_metadata(message: Any) -> Mapping[str, Any]:
@@ -892,18 +835,11 @@ def _is_internal_error_outbound(message: Any) -> bool:
 
 def _resolve_writer_attach_id(
     *,
-    filtered_events: List[EventRecord],
+    attach_event: EventRecord | None,
     messages: List[Any],
 ) -> str:
-    for event in reversed(filtered_events):
-        if event.event_type == "client.attach":
-            attach_id = str(event.payload.get("attach_id", "")).strip()
-            if not attach_id:
-                continue
-            attach_role = str(event.payload.get("attach_role", "")).strip().lower()
-            if attach_role and attach_role != ATTACH_ROLE_WRITER:
-                continue
-            return attach_id
+    if attach_event is not None:
+        return str(attach_event.payload.get("attach_id", "")).strip()
     if messages:
         meta = getattr(messages[-1], "metadata", {}) or {}
         return str(meta.get("attach_id", "")).strip()
@@ -915,14 +851,11 @@ def _resolve_thread_state(
     latest_run_event: Optional[RunEvent],
     delivery_state: str,
     latest_message: Any,
-    filtered_events: List[EventRecord],
+    cancel_requested: bool,
+    detached: bool,
 ) -> tuple[str, str, str]:
     qualifier = ""
     pending_response_id = ""
-    cancel_requested = any(
-        event.event_type == "run.cancel_requested" for event in filtered_events
-    )
-    detached = any(event.event_type == "client.detached" for event in filtered_events)
     internal_error_outbound = _is_internal_error_outbound(latest_message)
 
     if latest_run_event is not None:
@@ -976,10 +909,6 @@ def _resolve_thread_state(
         return THREAD_STATE_DETACHED, qualifier, pending_response_id
 
     return THREAD_STATE_SETTLED, "no_state_events", pending_response_id
-
-
-def _latest_event_time(events: List[EventRecord]) -> str:
-    return str(events[-1].created_at) if events else ""
 
 
 def _new_thread_id_for_decision(prefix: str) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from contextlib import contextmanager
 from typing import Any, Iterator
@@ -9,9 +10,16 @@ from openminion.modules.storage.record_store import RecordStore
 from .models import MessageRecord
 from .rows import MESSAGE_COLUMNS, row_to_message
 
+_PAYLOAD_KEY = re.compile(r"[a-z_]+")
+
 
 class RuntimeSessionStoreBackend:
-    def __init__(self, store_or_connection: RecordStore | sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        store_or_connection: RecordStore | sqlite3.Connection,
+        *,
+        backend_type: str = "sqlite",
+    ) -> None:
         if isinstance(store_or_connection, sqlite3.Connection):
             self._record_store: RecordStore | None = None
             self._conn: sqlite3.Connection | None = store_or_connection
@@ -19,6 +27,22 @@ class RuntimeSessionStoreBackend:
             self._record_store = store_or_connection
             self._conn = None
         self._raw_tx_depth = 0
+        self._backend_type = str(backend_type or "").strip().lower() or "sqlite"
+
+    def payload_text(self, key: str) -> str:
+        """Return SQL that reads the top-level `key` of `events.payload_json`.
+
+        `backend_type` is the one `build_runtime_storage` gives
+        `migrate_record_store`. SQLite reads the stored JSON with `json_extract`;
+        Postgres casts the text to `json` and reads it with `->>`. A string comes
+        back unquoted, and a missing key or JSON null as NULL. `key` is a fixed
+        payload key from this package; values are bound as parameters.
+        """
+        if not _PAYLOAD_KEY.fullmatch(key):
+            raise ValueError(f"Invalid payload key: {key!r}")
+        if self._backend_type == "postgres":
+            return f"(CAST(payload_json AS json) ->> '{key}')"
+        return f"json_extract(payload_json, '$.{key}')"
 
     @contextmanager
     def transaction(self) -> Iterator[None]:

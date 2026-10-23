@@ -16,6 +16,7 @@ from openminion.services.runtime.run_status import (
     THREAD_STATE_SETTLED,
     THREAD_STATE_DETACHED,
     DELIVERY_STATE_ACKED,
+    DELIVERY_STATE_DELIVERED,
     ATTACH_ROLE_OBSERVER,
     ATTACH_ROLE_WRITER,
     resolve_thread_lifecycle,
@@ -24,6 +25,11 @@ from openminion.services.runtime.run_status import (
     THREAD_DECISION_REPLAY,
     THREAD_DECISION_FORK,
     THREAD_DECISION_RESUME,
+)
+from tests._run_status_scenarios import (
+    append_threads,
+    check_thread_projection,
+    stepping_clock,
 )
 
 EVENT_CLOCK = "openminion.modules.storage.runtime.session_store.lifecycle.utc_now_iso"
@@ -497,3 +503,104 @@ class ConversationLifecycleTests(unittest.TestCase):
         self.assertEqual(projection.invocation_source_event_id, second_start.id)
         self.assertEqual(projection.latest_event_id, second_running.id)
         self.assertEqual(projection.updated_at, second_running.created_at)
+
+    def test_interleaved_threads_project_all_of_their_events(self) -> None:
+        conversation_id = "conv-window"
+
+        def run_event(thread_id: str, run_id: str, state: str, **payload):
+            return append_run_state_event(
+                self.sessions,
+                session_id=self.session.id,
+                run_id=run_id,
+                state=state,
+                current_step=state,
+                conversation_id=conversation_id,
+                thread_id=thread_id,
+                payload=payload or None,
+            )
+
+        def thread_event(thread_id: str, event_type: str, **payload):
+            return self.sessions.append_event(
+                session_id=self.session.id,
+                event_type=event_type,
+                payload={
+                    "conversation_id": conversation_id,
+                    "thread_id": thread_id,
+                    **payload,
+                },
+            )
+
+        a_start = run_event(
+            "thread-a", "run-a", RUN_STATE_QUEUED, invocation_id="invocation-a"
+        )
+        thread_event(
+            "thread-a",
+            "client.attach",
+            attach_id="writer-a",
+            attach_role=ATTACH_ROLE_WRITER,
+        )
+        run_event("thread-a", "run-a", RUN_STATE_RUNNING)
+        run_event("thread-a", "run-a", RUN_STATE_COMPLETED)
+        b_events = [
+            run_event(
+                "thread-b",
+                f"run-b{index}",
+                state,
+                **(
+                    {"invocation_id": f"invocation-b{index}"}
+                    if state == "queued"
+                    else {}
+                ),
+            )
+            for index in range(40)
+            for state in (RUN_STATE_QUEUED, RUN_STATE_RUNNING, RUN_STATE_COMPLETED)
+        ]
+        thread_event("thread-a", "response.persisted", run_id="run-a")
+        a_last = thread_event("thread-a", "response.delivered", run_id="run-a")
+
+        # thread-a's invocation starts at the first of 126 events and only its
+        # last two are among the newest 100; `scan_limit=100` limited dev's
+        # projection to the oldest 100.
+        thread_a, thread_b = (
+            resolve_thread_lifecycle(
+                self.sessions,
+                session_id=self.session.id,
+                conversation_id=conversation_id,
+                thread_id=thread_id,
+                scan_limit=100,
+            )
+            for thread_id in ("thread-a", "thread-b")
+        )
+
+        high_water = self.sessions.event_high_water(session_id=self.session.id)
+        self.assertEqual(
+            (thread_a.latest_run_id, thread_a.latest_run_state),
+            ("run-a", RUN_STATE_COMPLETED),
+        )
+        self.assertEqual(thread_a.delivery_state, DELIVERY_STATE_DELIVERED)
+        self.assertEqual(thread_a.writer_attach_id, "writer-a")
+        self.assertEqual(thread_a.thread_state, THREAD_STATE_SETTLED)
+        self.assertEqual(
+            (thread_a.invocation_id, thread_a.invocation_source_event_id),
+            ("invocation-a", a_start.id),
+        )
+        self.assertEqual(thread_a.latest_event_id, a_last.id)
+        self.assertEqual(thread_a.latest_event_id, high_water)
+        self.assertEqual(thread_a.updated_at, a_last.created_at)
+        b_start, b_last = b_events[-3], b_events[-1]
+        self.assertEqual(
+            (thread_b.latest_run_id, thread_b.latest_run_state),
+            ("run-b39", RUN_STATE_COMPLETED),
+        )
+        self.assertEqual(
+            (thread_b.invocation_id, thread_b.invocation_source_event_id),
+            ("invocation-b39", b_start.id),
+        )
+        self.assertEqual(thread_b.latest_event_id, b_last.id)
+        self.assertEqual(thread_b.updated_at, b_last.created_at)
+
+    def test_thread_projection_matches_the_event_reduction(self) -> None:
+        with stepping_clock():
+            append_threads(self.sessions, self.session.id)
+
+        check_thread_projection(self.sessions, self.session.id)

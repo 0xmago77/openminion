@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 from typing import Any
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 
 from openminion.modules.storage.constants import SESSION_RETENTION_HOLD_VERSION
 
@@ -442,6 +442,194 @@ class RuntimeSessionStoreLifecycle:
             (session_id, max(1, int(before_id)), safe_limit),
         )
         return [row_to_event(row) for row in rows]
+
+    def list_events_by_id(
+        self, *, session_id: str, event_ids: Sequence[int]
+    ) -> list[EventRecord]:
+        """Read the session's events with these ids, by id, 500 ids per query."""
+        ids = sorted({int(event_id) for event_id in event_ids if event_id})
+        events: list[EventRecord] = []
+        for start in range(0, len(ids), 500):
+            chunk = ids[start : start + 500]
+            marks = ", ".join("?" for _ in chunk)
+            rows = self._backend.query_dicts(
+                f"SELECT {EVENT_COLUMNS} FROM events "
+                f"WHERE session_id = ? AND id IN ({marks}) ORDER BY id ASC",
+                (session_id, *chunk),
+            )
+            events.extend(row_to_event(row) for row in rows)
+        return events
+
+    def list_run_events(
+        self, *, session_id: str, run_id: str, limit: int = 100
+    ) -> list[EventRecord]:
+        """List one run's newest `limit` `run.` events, newest id first.
+
+        The run is the payload's top-level `run_id` as stored (`payload_text`).
+        """
+        safe_limit = max(0, min(int(limit), EVENT_PAGE_MAX))
+        if safe_limit == 0:
+            return []
+        rows = self._backend.query_dicts(
+            f"""
+            SELECT {EVENT_COLUMNS}
+            FROM events
+            WHERE session_id = ? AND event_type LIKE ?
+            AND {self._backend.payload_text("run_id")} = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (session_id, "run.%", run_id, safe_limit),
+        )
+        return [row_to_event(row) for row in rows]
+
+    def summarize_recent_runs(
+        self,
+        *,
+        session_id: str,
+        scan_limit: int,
+        run_states: Sequence[str],
+        terminal_states: Sequence[str],
+    ) -> list[dict[str, Any]]:
+        """Aggregate every `run.` event of each run seen in the newest `scan_limit`.
+
+        A run is the payload's top-level `run_id` as stored, and it is reported
+        when one of its events is among the session's newest `scan_limit` `run.`
+        events by id. One row per run, over all of its `run.` events:
+        `event_count`, `started_at` (stored `created_at` of its first event by
+        id), and the ids of its latest event (`last_id`), of its latest event
+        with a non-empty `step` (`step_id`) or `error` (`error_id`), and of its
+        latest event whose state is in `terminal_states` (`terminal_id`). The
+        state is the payload `state` when it is one of `run_states`, otherwise
+        the event type after `run.`. Text is compared trimmed and lowercased
+        where it names a state; a missing key or JSON null counts as empty.
+        """
+        text = self._backend.payload_text
+        run_id = text("run_id")
+        state = f"LOWER(TRIM(COALESCE({text('state')}, '')))"
+        suffix = "LOWER(TRIM(SUBSTR(event_type, 5)))"
+        states = ", ".join("?" for _ in run_states)
+        terminal = ", ".join("?" for _ in terminal_states)
+        rows = self._backend.query_dicts(
+            f"""
+            SELECT runs.run_id, runs.event_count, runs.last_id, runs.step_id,
+                   runs.error_id, runs.terminal_id, head.created_at AS started_at
+            FROM (
+                SELECT {run_id} AS run_id, COUNT(*) AS event_count,
+                       MIN(id) AS first_id, MAX(id) AS last_id,
+                       MAX(CASE WHEN TRIM(COALESCE({text("step")}, '')) <> ''
+                           THEN id END) AS step_id,
+                       MAX(CASE WHEN TRIM(COALESCE({text("error")}, '')) <> ''
+                           THEN id END) AS error_id,
+                       MAX(CASE WHEN {state} IN ({terminal})
+                                  OR ({state} NOT IN ({states})
+                                      AND {suffix} IN ({terminal}))
+                           THEN id END) AS terminal_id
+                FROM events
+                WHERE session_id = ? AND event_type LIKE ? AND {run_id} IN (
+                    SELECT {run_id} FROM events
+                    WHERE session_id = ? AND event_type LIKE ?
+                    AND TRIM(COALESCE({run_id}, '')) <> ''
+                    AND id >= (
+                        SELECT COALESCE(MIN(id), 0) FROM (
+                            SELECT id FROM events
+                            WHERE session_id = ? AND event_type LIKE ?
+                            ORDER BY id DESC
+                            LIMIT ?
+                        ) AS recent
+                    )
+                )
+                GROUP BY {run_id}
+            ) AS runs
+            JOIN events AS head ON head.id = runs.first_id
+            """,
+            (
+                *terminal_states,
+                *run_states,
+                *terminal_states,
+                *(session_id, "run.%") * 3,
+                max(1, int(scan_limit)),
+            ),
+        )
+        return [dict(row) for row in rows]
+
+    def summarize_thread_events(
+        self,
+        *,
+        session_id: str,
+        conversation_id: str,
+        thread_id: str,
+        start_event_type: str,
+        attach_event_type: str,
+        writer_role: str,
+        flag_event_types: Sequence[str],
+    ) -> dict[str, Any]:
+        """Summarize all of a thread's events in one aggregate query.
+
+        An event is in the thread as in `task/run/status.py`: with a
+        `conversation_id`, its payload `conversation_id` equals it, or is empty
+        when the conversation is the session itself; with a `thread_id`, its
+        payload `thread_id` equals it or is empty. Returns the ids of the
+        thread's latest event (`latest_id`), latest `run.` event with a `run_id`
+        (`run_event_id`), latest `start_event_type` event with an
+        `invocation_id` (`start_id`) and latest `attach_event_type` event with
+        an `attach_id` whose `attach_role` is empty or `writer_role`
+        (`attach_id`), and the `flag_event_types` that occur (`present`).
+        Text is compared trimmed; a missing key or JSON null counts as empty.
+        """
+        text = self._backend.payload_text
+
+        def filled(key: str) -> str:
+            return f"TRIM(COALESCE({text(key)}, '')) <> ''"
+
+        role = f"LOWER(TRIM(COALESCE({text('attach_role')}, '')))"
+        select_params: list[object] = [
+            "run.%",
+            start_event_type,
+            attach_event_type,
+            writer_role,
+            *flag_event_types,
+        ]
+        flags = "".join(
+            f", MAX(CASE WHEN event_type = ? THEN 1 ELSE 0 END) AS flag_{index}"
+            for index in range(len(flag_event_types))
+        )
+        clauses, params = ["session_id = ?"], [session_id]
+        if conversation_id:
+            conversation = f"TRIM(COALESCE({text('conversation_id')}, ''))"
+            same_session = conversation_id == session_id
+            clauses.append(f"{conversation} {'IN (?, ?)' if same_session else '= ?'}")
+            params.extend(["", conversation_id] if same_session else [conversation_id])
+        if thread_id:
+            clauses.append(f"TRIM(COALESCE({text('thread_id')}, '')) IN (?, ?)")
+            params.extend(["", thread_id])
+        row = self._backend.query_one(
+            f"""
+            SELECT MAX(id) AS latest_id,
+                   MAX(CASE WHEN event_type LIKE ? AND {filled("run_id")}
+                       THEN id END) AS run_event_id,
+                   MAX(CASE WHEN event_type = ? AND {filled("invocation_id")}
+                       THEN id END) AS start_id,
+                   MAX(CASE WHEN event_type = ? AND {filled("attach_id")}
+                            AND {role} IN ('', ?)
+                       THEN id END) AS attach_id{flags}
+            FROM events
+            WHERE {" AND ".join(clauses)}
+            """,
+            (*select_params, *params),
+        )
+        facts = dict(row or {})
+        return {
+            "latest_id": facts.get("latest_id"),
+            "run_event_id": facts.get("run_event_id"),
+            "start_id": facts.get("start_id"),
+            "attach_id": facts.get("attach_id"),
+            "present": {
+                event_type
+                for index, event_type in enumerate(flag_event_types)
+                if facts.get(f"flag_{index}")
+            },
+        }
 
     def event_high_water(self, *, session_id: str) -> int:
         row = self._backend.query_one(

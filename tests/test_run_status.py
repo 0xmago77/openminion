@@ -1,16 +1,29 @@
+import itertools
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
 from openminion.services.runtime.run_status import (
     RUN_STATE_COMPLETED,
     RUN_STATE_FAILED,
     RUN_STATE_QUEUED,
     RUN_STATE_RESPONDING,
     RUN_STATE_RUNNING,
+    RUN_STATE_WAITING_TOOL,
+    THREAD_STATE_FAILED,
     append_run_state_event,
     list_session_run_events,
     list_session_runs,
+    resolve_thread_lifecycle,
 )
 from openminion.modules.storage.runtime.migrations import migrate_database
 from openminion.modules.storage.runtime.session_store import SessionStore, lifecycle
+from openminion.modules.storage.runtime.session_store.backend import (
+    RuntimeSessionStoreBackend,
+)
+from openminion.modules.storage.runtime.session_store.rows import metadata_json
 from openminion.modules.storage.runtime.sqlite import connect_database
+from tests._run_status_scenarios import append_runs, check_run_readers, stepping_clock
 
 
 def test_service_run_status_surface_is_canonical_task_owner() -> None:
@@ -180,3 +193,417 @@ def test_run_state_follows_insertion_order_when_clock_steps_back(
     assert summary.event_count == 3
     assert summary.started_at == queued_at
     assert summary.ended_at == failed_at
+
+
+def _forward_clock():
+    base = datetime(2026, 10, 23, 10, 0, tzinfo=timezone.utc)
+    return (
+        (base + timedelta(milliseconds=tick)).isoformat() for tick in itertools.count(1)
+    )
+
+
+def _append(sessions, session, run_id, state, step="", **payload):
+    return append_run_state_event(
+        sessions,
+        session_id=session.id,
+        run_id=run_id,
+        state=state,
+        current_step=step,
+        payload=payload or None,
+    )
+
+
+def test_readers_report_the_newest_run_past_the_default_window(tmp_path) -> None:
+    # The probe from #352: 2,000 events of an older completed run, then a new
+    # invocation's queued and failed events, with the real clock.
+    connection, sessions, session = _build_sessions(tmp_path)
+    try:
+        appended = [
+            append_run_state_event(
+                sessions,
+                session_id=session.id,
+                run_id="old" if index < 2000 else "new",
+                state=(
+                    RUN_STATE_QUEUED
+                    if index % 2 == 0
+                    else (RUN_STATE_COMPLETED if index < 2000 else RUN_STATE_FAILED)
+                ),
+                current_step="step",
+                conversation_id="conv",
+                thread_id="thread",
+                payload={"invocation_id": "old-inv" if index < 2000 else "new-inv"},
+            )
+            for index in range(2002)
+        ]
+        runs = list_session_runs(sessions, session_id=session.id)
+        new_events = list_session_run_events(
+            sessions, session_id=session.id, run_id="new"
+        )
+        old_latest = list_session_run_events(
+            sessions, session_id=session.id, run_id="old", limit=3
+        )
+        projection = resolve_thread_lifecycle(
+            sessions, session_id=session.id, conversation_id="conv", thread_id="thread"
+        )
+        high_water = sessions.event_high_water(session_id=session.id)
+    finally:
+        connection.close()
+
+    old_first, old_last = appended[0], appended[1999]
+    new_queued, new_failed = appended[2000], appended[2001]
+    assert [(run.run_id, run.state, run.event_count) for run in runs] == [
+        ("new", RUN_STATE_FAILED, 2),
+        ("old", RUN_STATE_COMPLETED, 2000),
+    ]
+    assert (runs[0].started_at, runs[0].ended_at) == (
+        new_queued.created_at,
+        new_failed.created_at,
+    )
+    assert (runs[1].started_at, runs[1].ended_at) == (
+        old_first.created_at,
+        old_last.created_at,
+    )
+    assert [event.id for event in new_events] == [new_queued.id, new_failed.id]
+    assert [event.id for event in old_latest] == [
+        event.id for event in appended[1997:2000]
+    ]
+    assert (projection.latest_run_id, projection.latest_run_state) == (
+        "new",
+        RUN_STATE_FAILED,
+    )
+    assert projection.thread_state == THREAD_STATE_FAILED
+    assert (projection.invocation_id, projection.invocation_source_event_id) == (
+        "new-inv",
+        new_queued.id,
+    )
+    assert projection.latest_event_id == high_water == new_failed.id
+    assert projection.updated_at == new_failed.created_at
+
+
+@pytest.mark.parametrize("old_events", [1998, 1999])
+def test_default_window_boundary_keeps_both_runs_whole(
+    tmp_path, monkeypatch, old_events
+) -> None:
+    # 2,000 run events fill the default window exactly; with 2,001 the old run's
+    # first event falls below it. The probe above is the 2,002 case.
+    connection, sessions, session = _build_sessions(tmp_path)
+    stamps = _forward_clock()
+    thread = {"conversation_id": "conv", "thread_id": "thread"}
+    old_states = (
+        [RUN_STATE_QUEUED]
+        + [RUN_STATE_RUNNING] * (old_events - 2)
+        + [RUN_STATE_COMPLETED]
+    )
+    try:
+        # The old run's rows as `append_run_state_event` stores them, in bulk.
+        connection.executemany(
+            "INSERT INTO events(session_id, event_type, payload_json, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            [
+                (
+                    session.id,
+                    f"run.{state}",
+                    metadata_json(
+                        {
+                            "run_id": "old",
+                            "state": state,
+                            "step": "step",
+                            "invocation_id": "old-inv",
+                            **thread,
+                        }
+                    ),
+                    next(stamps),
+                )
+                for state in old_states
+            ],
+        )
+        connection.commit()
+        monkeypatch.setattr(lifecycle, "utc_now_iso", lambda: next(stamps))
+        new_queued, new_failed = (
+            append_run_state_event(
+                sessions,
+                session_id=session.id,
+                run_id="new",
+                state=state,
+                current_step="step",
+                payload={"invocation_id": "new-inv"},
+                **thread,
+            )
+            for state in (RUN_STATE_QUEUED, RUN_STATE_FAILED)
+        )
+        runs = list_session_runs(sessions, session_id=session.id)
+        old_read = list_session_run_events(
+            sessions, session_id=session.id, run_id="old", limit=1000
+        )
+        projection = resolve_thread_lifecycle(sessions, session_id=session.id, **thread)
+        high_water = sessions.event_high_water(session_id=session.id)
+        old_first = sessions.list_events(session_id=session.id, limit=1)[0]
+    finally:
+        connection.close()
+
+    assert high_water == old_events + 2 == new_failed.id
+    assert [(run.run_id, run.state, run.event_count) for run in runs] == [
+        ("new", RUN_STATE_FAILED, 2),
+        ("old", RUN_STATE_COMPLETED, old_events),
+    ]
+    assert runs[0].started_at == new_queued.created_at
+    assert runs[1].started_at == old_first.created_at
+    assert [event.id for event in old_read] == list(
+        range(old_events - 999, old_events + 1)
+    )
+    assert (projection.latest_run_id, projection.invocation_id) == ("new", "new-inv")
+    assert projection.latest_event_id == high_water
+
+
+def test_run_started_below_the_window_reports_all_of_its_events(
+    tmp_path, monkeypatch
+) -> None:
+    connection, sessions, session = _build_sessions(tmp_path)
+    stamps = _forward_clock()
+    monkeypatch.setattr(lifecycle, "utc_now_iso", lambda: next(stamps))
+    try:
+        appended = [
+            _append(sessions, session, run_id, state, step, **payload)
+            for run_id, state, step, payload in (
+                ("long", RUN_STATE_QUEUED, "turn.accepted", {}),
+                ("long", RUN_STATE_FAILED, "turn.failed", {"error": "boom"}),
+                ("early", RUN_STATE_QUEUED, "turn.accepted", {}),
+                ("early", RUN_STATE_COMPLETED, "turn.completed", {}),
+                ("late", RUN_STATE_QUEUED, "turn.accepted", {}),
+                ("long", RUN_STATE_RUNNING, "", {}),
+                ("late", RUN_STATE_COMPLETED, "turn.completed", {}),
+                ("long", RUN_STATE_WAITING_TOOL, "", {}),
+            )
+        ]
+        # The newest 4 run events hold "late" and the last two of "long".
+        windowed = list_session_runs(
+            sessions, session_id=session.id, limit=2, scan_limit=4
+        )
+        whole = list_session_runs(sessions, session_id=session.id, limit=10)
+        long_latest = list_session_run_events(
+            sessions, session_id=session.id, run_id="long", limit=3
+        )
+    finally:
+        connection.close()
+
+    assert [run.run_id for run in windowed] == ["late", "long"]
+    long_run = windowed[1]
+    assert (
+        long_run.state,
+        long_run.current_step,
+        long_run.event_count,
+        long_run.error,
+    ) == (RUN_STATE_WAITING_TOOL, "turn.failed", 4, "boom")
+    assert (long_run.started_at, long_run.ended_at) == (
+        appended[0].created_at,
+        appended[1].created_at,
+    )
+    assert [run.run_id for run in whole] == ["late", "early", "long"]
+    assert whole[0] == windowed[0]
+    assert whole[2] == long_run
+    assert [event.id for event in long_latest] == [
+        appended[index].id for index in (1, 5, 7)
+    ]
+
+
+def test_run_order_uses_stored_started_at_when_clock_steps_back_below_window(
+    tmp_path, monkeypatch
+) -> None:
+    connection, sessions, session = _build_sessions(tmp_path)
+    # "stepped" starts at 10:00:09 and the clock then steps back; with a window
+    # of 3 run events, its first event is below the window.
+    stamps = [
+        "2026-10-23T10:00:09.000000+00:00",
+        "2026-10-23T10:00:01.000000+00:00",
+        "2026-10-23T10:00:02.000000+00:00",
+        "2026-10-23T10:00:05.000000+00:00",
+        "2026-10-23T10:00:06.000000+00:00",
+    ]
+    monkeypatch.setattr(lifecycle, "utc_now_iso", iter(stamps).__next__)
+    try:
+        for run_id, state in (
+            ("stepped", RUN_STATE_QUEUED),
+            ("gone", RUN_STATE_QUEUED),
+            ("stepped", RUN_STATE_RUNNING),
+            ("steady", RUN_STATE_QUEUED),
+            ("steady", RUN_STATE_COMPLETED),
+        ):
+            _append(sessions, session, run_id, state)
+        first = list_session_runs(
+            sessions, session_id=session.id, limit=1, scan_limit=3
+        )
+        first_two = list_session_runs(
+            sessions, session_id=session.id, limit=2, scan_limit=3
+        )
+    finally:
+        connection.close()
+
+    assert [(run.run_id, run.started_at, run.event_count) for run in first] == [
+        ("stepped", stamps[0], 2)
+    ]
+    assert [(run.run_id, run.started_at) for run in first_two] == [
+        ("stepped", stamps[0]),
+        ("steady", stamps[3]),
+    ]
+
+
+def test_run_readers_keep_filter_limit_and_id_page_agreement(
+    tmp_path, monkeypatch
+) -> None:
+    connection, sessions, session = _build_sessions(tmp_path)
+    stamps = _forward_clock()
+    monkeypatch.setattr(lifecycle, "utc_now_iso", lambda: next(stamps))
+    try:
+        r1 = [_append(sessions, session, "r1", RUN_STATE_QUEUED, "accepted")]
+        sessions.append_event(
+            session_id=session.id, event_type="tool.call", payload={"run_id": "r1"}
+        )
+        # Run events that name "r1" only in a nested object, or in another case.
+        _append(sessions, session, "r2", RUN_STATE_QUEUED, parent={"run_id": "r1"})
+        _append(sessions, session, "R1", RUN_STATE_QUEUED)
+        r1.append(_append(sessions, session, "r1", RUN_STATE_RUNNING, "generate"))
+        r1x = _append(sessions, session, "r1x", RUN_STATE_QUEUED)
+        r1.append(_append(sessions, session, "r1", RUN_STATE_RESPONDING, "send"))
+        r1.append(_append(sessions, session, "r1", RUN_STATE_COMPLETED, "done"))
+        # The newest 3 run events are "r1x" and the last two of "r1".
+        first = list_session_runs(
+            sessions, session_id=session.id, limit=1, scan_limit=3
+        )
+        first_two = list_session_runs(
+            sessions, session_id=session.id, limit=2, scan_limit=3
+        )
+        r1_events = list_session_run_events(
+            sessions, session_id=session.id, run_id=" r1 ", limit=10
+        )
+        r1_latest = list_session_run_events(
+            sessions, session_id=session.id, run_id="r1", limit=2
+        )
+        unknown = list_session_run_events(sessions, session_id=session.id, run_id="r9")
+        high_water = sessions.event_high_water(session_id=session.id)
+        id_page = sessions.list_events_before_id(
+            session_id=session.id, before_id=high_water + 1, limit=100
+        )
+    finally:
+        connection.close()
+
+    assert [run.run_id for run in first] == ["r1x"]
+    assert [(run.run_id, run.event_count) for run in first_two] == [
+        ("r1x", 1),
+        ("r1", 4),
+    ]
+    assert first_two[0].started_at == r1x.created_at
+    assert (first_two[1].started_at, first_two[1].ended_at) == (
+        r1[0].created_at,
+        r1[-1].created_at,
+    )
+    paged_r1 = [
+        event.id
+        for event in reversed(id_page)
+        if event.event_type.startswith("run.") and event.payload["run_id"] == "r1"
+    ]
+    assert [event.id for event in r1_events] == paged_r1 == [event.id for event in r1]
+    assert [event.id for event in r1_latest] == paged_r1[-2:]
+    assert first_two[1].event_count == len(r1_events)
+    assert unknown == []
+
+
+def test_run_readers_match_the_event_reduction_at_every_window(tmp_path) -> None:
+    # The clock steps back every fifth append, so out-of-order `created_at`
+    # values cross each window boundary the scenario checks.
+    connection, sessions, session = _build_sessions(tmp_path)
+    try:
+        with stepping_clock():
+            append_runs(sessions, session.id)
+        check_run_readers(sessions, session.id)
+    finally:
+        connection.close()
+
+
+def test_run_readers_read_a_bounded_number_of_rows_for_any_history(
+    tmp_path, monkeypatch
+) -> None:
+    # Worst case: "long" runs from the first event to the last, interleaved
+    # with short runs on another thread, and thread-a's invocation starts at
+    # the first event. The rows read do not grow with the history.
+    connection, sessions, session = _build_sessions(tmp_path)
+    reads: list[int] = []
+    real_query = RuntimeSessionStoreBackend.query_dicts
+
+    def counting_query(self, sql, params=None):
+        rows = real_query(self, sql, params)
+        reads.append(len(rows))
+        return rows
+
+    def measured(read):
+        reads.clear()
+        return read(), list(reads)
+
+    def append(run_id, state, thread_id, **payload):
+        return append_run_state_event(
+            sessions,
+            session_id=session.id,
+            run_id=run_id,
+            state=state,
+            current_step=state,
+            conversation_id="conv",
+            thread_id=thread_id,
+            payload=payload or None,
+        )
+
+    turns = itertools.count()
+    measurements = []
+    try:
+        start = append("long", RUN_STATE_QUEUED, "thread-a", invocation_id="inv-long")
+        for added_turns in (60, 340):
+            for _ in range(added_turns):
+                turn = next(turns)
+                last = append("long", RUN_STATE_RUNNING, "thread-a")
+                append(f"short-{turn}", RUN_STATE_QUEUED, "thread-b", invocation_id="i")
+                append(f"short-{turn}", RUN_STATE_COMPLETED, "thread-b")
+            monkeypatch.setattr(
+                RuntimeSessionStoreBackend, "query_dicts", counting_query
+            )
+            runs, runs_reads = measured(
+                lambda: list_session_runs(
+                    sessions, session_id=session.id, limit=5, scan_limit=10
+                )
+            )
+            long_events, long_reads = measured(
+                lambda: list_session_run_events(
+                    sessions, session_id=session.id, run_id="long", limit=5
+                )
+            )
+            projection, thread_reads = measured(
+                lambda: resolve_thread_lifecycle(
+                    sessions,
+                    session_id=session.id,
+                    conversation_id="conv",
+                    thread_id="thread-a",
+                )
+            )
+            monkeypatch.undo()
+            history = sessions.event_high_water(session_id=session.id)
+            measurements.append((runs_reads, long_reads, thread_reads))
+
+            long_run = next(run for run in runs if run.run_id == "long")
+            assert (long_run.event_count, long_run.started_at) == (
+                1 + turn + 1,
+                start.created_at,
+            )
+            assert [event.id for event in long_events][-1] == last.id
+            assert (projection.invocation_id, projection.latest_event_id) == (
+                "inv-long",
+                last.id,
+            )
+            assert history in (181, 1201)
+            # One aggregate (one row per run seen in the window of 10) and one
+            # read by id (at most 4 rows per listed run).
+            assert len(runs_reads) == 2
+            assert runs_reads[0] <= 10 and runs_reads[1] <= 4 * 5
+            assert long_reads == [5]
+            # Recent messages, one aggregate row, and at most 4 rows by id.
+            assert len(thread_reads) == 3 and thread_reads[1:] in ([1, 2], [1, 3])
+    finally:
+        connection.close()
+
+    assert measurements[0] == measurements[1]
