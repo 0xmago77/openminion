@@ -11,7 +11,10 @@ This file tracks package-facing release notes for `openminion`.
   per-session append sequence that runtime migration 12 adds on SQLite and
   Postgres. Message readers, compaction positions and transcript export no
   longer depend on random message ids; message ids and timestamps are
-  unchanged (#353).
+  unchanged. On upgrade, a compaction boundary that falls inside a group of
+  messages sharing one timestamp moves back before that group, so its
+  members are replayed into history and summarized again once rather than
+  left hidden (#353).
 
 ## Current package line - 2026-10-22
 
