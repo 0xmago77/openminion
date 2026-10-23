@@ -2,15 +2,32 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from collections.abc import Sequence
+from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 from openminion.modules.storage.runtime.migrations import (
+    DEFAULT_MIGRATIONS,
     Migration,
     MigrationError,
     migrate_database,
     run_migrations,
 )
+from openminion.modules.storage.runtime.session_store import SessionStore
 from openminion.modules.storage.runtime.sqlite import connect_database
+
+PRE_APPEND_SEQ_MIGRATIONS = tuple(
+    migration for migration in DEFAULT_MIGRATIONS if migration.version < 12
+)
+T0 = "2026-10-22T00:59:00+00:00"
+T1 = "2026-10-22T01:00:00+00:00"
+T2 = "2026-10-22T01:01:00+00:00"
+CONTEXT_COLUMNS = (
+    "session_id, rolling_summary, compacted_until_rowid, "
+    "compacted_until_created_at, compacted_until_message_id, "
+    "compacted_message_count"
+)
 
 
 class StorageMigrationTests(unittest.TestCase):
@@ -19,10 +36,10 @@ class StorageMigrationTests(unittest.TestCase):
             database_path = Path(tmp) / "state" / "openminion.db"
 
             result = migrate_database(database_path)
-            self.assertEqual(result.current_version, 11)
+            self.assertEqual(result.current_version, 12)
             self.assertEqual(
                 result.applied_versions,
-                (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+                (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
             )
 
             with sqlite3.connect(str(database_path)) as conn:
@@ -67,6 +84,11 @@ class StorageMigrationTests(unittest.TestCase):
                     ).fetchall()
                 }
                 self.assertIn("summary_short", session_context_columns)
+                message_columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(messages)").fetchall()
+                }
+                self.assertIn("append_seq", message_columns)
 
                 migration_rows = conn.execute(
                     "SELECT version, name FROM migrations"
@@ -85,6 +107,7 @@ class StorageMigrationTests(unittest.TestCase):
                         (9, "add_room_participants_and_active_agent"),
                         (10, "add_session_turn_leases"),
                         (11, "add_canonical_events_and_capture_holds"),
+                        (12, "add_message_append_seq"),
                     ],
                 )
 
@@ -95,19 +118,19 @@ class StorageMigrationTests(unittest.TestCase):
             first = migrate_database(database_path)
             second = migrate_database(database_path)
 
-            self.assertEqual(first.current_version, 11)
+            self.assertEqual(first.current_version, 12)
             self.assertEqual(
                 first.applied_versions,
-                (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+                (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
             )
-            self.assertEqual(second.current_version, 11)
+            self.assertEqual(second.current_version, 12)
             self.assertEqual(second.applied_versions, ())
 
             with sqlite3.connect(str(database_path)) as conn:
                 migration_count = conn.execute(
                     "SELECT COUNT(*) FROM migrations"
                 ).fetchone()[0]
-                self.assertEqual(migration_count, 11)
+                self.assertEqual(migration_count, 12)
 
     def test_run_migrations_rolls_back_failed_migration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -197,3 +220,201 @@ def test_migrate_openminion_data_into_openminion(tmp_path: Path) -> None:
         home_root=home_root, data_root=data_root, dry_run=False
     )
     assert report_again.items is not None
+
+
+def _legacy_runtime_database(
+    path: Path,
+    *,
+    messages: Sequence[tuple[str, str, str, str]],
+    contexts: Sequence[tuple[str, str, int, str, str, int]] = (),
+) -> None:
+    """Write a pre-append_seq database; messages are (id, session, body, created_at)."""
+    migrate_database(path, migrations=PRE_APPEND_SEQ_MIGRATIONS)
+    session_ids = sorted({row[1] for row in messages} | {row[0] for row in contexts})
+    with closing(sqlite3.connect(str(path))) as conn:
+        conn.executemany(
+            "INSERT INTO sessions(id, session_key, channel, target) "
+            "VALUES (?, ?, 'console', ?)",
+            [(item, f"key-{item}", item) for item in session_ids],
+        )
+        conn.executemany(
+            "INSERT INTO messages(id, session_id, role, body, created_at) "
+            "VALUES (?, ?, 'inbound', ?, ?)",
+            messages,
+        )
+        conn.executemany(
+            f"INSERT INTO session_contexts({CONTEXT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?)",
+            contexts,
+        )
+        conn.commit()
+
+
+def _context_row(path: Path, session_id: str) -> tuple[object, ...]:
+    with closing(sqlite3.connect(str(path))) as conn:
+        return conn.execute(
+            f"SELECT {CONTEXT_COLUMNS}, version, updated_at FROM session_contexts "
+            "WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+
+
+def _visible_bodies(path: Path, session_id: str) -> list[str]:
+    with closing(connect_database(path)) as conn:
+        store = SessionStore(conn)
+        context = store.get_session_context(session_id=session_id)
+        cursor = context.compacted_until_rowid if context else 0
+        return [
+            item.body
+            for item in store.list_messages_after_rowid(
+                session_id=session_id, after_rowid=cursor
+            )
+        ]
+
+
+def test_append_seq_migration_backfills_migration_time_rowid_order(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "openminion.db"
+    # Append order; inside each created_at the ids sort in reverse.
+    messages = [
+        ("f" * 32, "s1", "s1-first", T1),
+        ("e" * 32, "s2", "s2-first", T1),
+        ("c" * 32, "s1", "s1-second", T1),
+        ("8" * 32, "s1", "s1-third", T1),
+        ("5" * 32, "s2", "s2-second", T1),
+        ("0" * 32, "s1", "s1-fourth", T2),
+    ]
+    _legacy_runtime_database(path, messages=messages)
+
+    assert migrate_database(path).applied_versions == (12,)
+
+    with closing(sqlite3.connect(str(path))) as conn:
+        rows = conn.execute(
+            "SELECT id, created_at, rowid, append_seq FROM messages ORDER BY rowid"
+        ).fetchall()
+    assert [(row[0], row[1]) for row in rows] == [
+        (item[0], item[3]) for item in messages
+    ]
+    assert all(row[2] == row[3] for row in rows)
+    with closing(connect_database(path)) as conn:
+        store = SessionStore(conn)
+        assert [item.body for item in store.list_messages(session_id="s1")] == [
+            "s1-first",
+            "s1-second",
+            "s1-third",
+            "s1-fourth",
+        ]
+        assert [item.body for item in store.list_messages(session_id="s2")] == [
+            "s2-first",
+            "s2-second",
+        ]
+        with patch(
+            "openminion.modules.storage.runtime.session_store.messages.utc_now_iso",
+            return_value=T1,
+        ):
+            appended = store.append_message(
+                session_id="s2", role="outbound", body="s2-after-upgrade"
+            )
+        assert appended.rowid == 3
+        assert [item.body for item in store.list_messages(session_id="s2")] == [
+            "s2-first",
+            "s2-second",
+            "s2-after-upgrade",
+        ]
+        assert (
+            conn.execute(
+                "SELECT append_seq FROM messages WHERE id = ?", (appended.id,)
+            ).fetchone()[0]
+            == 6
+        )
+
+
+def test_append_seq_migration_moves_boundary_out_of_tied_anchor_group(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "openminion.db"
+    # g1-g4 share T1 and their ids sort in reverse of append order. Compaction
+    # ran after g3 and stored position 2 in the old (created_at, id) order:
+    # e0, g3. g4 was appended later in the same clock tick.
+    _legacy_runtime_database(
+        path,
+        messages=[
+            ("5" * 32, "s", "e0", T0),
+            ("f" * 32, "s", "g1", T1),
+            ("c" * 32, "s", "g2", T1),
+            ("8" * 32, "s", "g3", T1),
+            ("0" * 32, "s", "g4", T1),
+            ("4" * 32, "s", "l1", T2),
+            ("9" * 32, "fresh", "fresh-1", T1),
+        ],
+        contexts=[
+            ("s", "summary of e0, g3", 2, T1, "8" * 32, 2),
+            ("fresh", "", 0, "", "", 0),
+        ],
+    )
+    with closing(sqlite3.connect(str(path))) as conn:
+        old_order = conn.execute(
+            "SELECT body FROM messages WHERE session_id = 's' ORDER BY created_at, id"
+        ).fetchall()
+    # Before the upgrade position 2 had drifted: it hid the uncompacted g4 and
+    # showed the compacted g3.
+    assert [row[0] for row in old_order[:2]] == ["e0", "g4"]
+    fresh_before = _context_row(path, "fresh")
+    version_before, updated_before = _context_row(path, "s")[-2:]
+
+    migrate_database(path)
+
+    assert _context_row(path, "s") == (
+        "s",
+        "summary of e0, g3",
+        1,
+        T0,
+        "5" * 32,
+        1,
+        version_before,
+        updated_before,
+    )
+    assert _visible_bodies(path, "s") == ["g1", "g2", "g3", "g4", "l1"]
+    assert _context_row(path, "fresh") == fresh_before
+
+
+def test_append_seq_migration_keeps_boundary_when_anchor_has_own_timestamp(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "openminion.db"
+    _legacy_runtime_database(
+        path,
+        messages=[
+            ("f" * 32, "s", "before-1", T0),
+            ("c" * 32, "s", "before-2", T0),
+            ("8" * 32, "s", "anchor", T1),
+            ("5" * 32, "s", "after-1", T2),
+            ("0" * 32, "s", "after-2", T2),
+        ],
+        contexts=[("s", "summary", 3, T1, "8" * 32, 3)],
+    )
+    before = _context_row(path, "s")
+
+    migrate_database(path)
+
+    assert _context_row(path, "s") == before
+    assert _visible_bodies(path, "s") == ["after-1", "after-2"]
+
+
+def test_append_seq_migration_moves_boundary_before_missing_anchor(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "openminion.db"
+    _legacy_runtime_database(
+        path,
+        messages=[
+            ("5" * 32, "s", "e0", T0),
+            ("f" * 32, "s", "g1", T1),
+        ],
+        contexts=[("s", "summary", 2, T1, "9" * 32, 2)],
+    )
+
+    migrate_database(path)
+
+    assert _context_row(path, "s")[:6] == ("s", "summary", 1, T0, "5" * 32, 1)
+    assert _visible_bodies(path, "s") == ["g1"]

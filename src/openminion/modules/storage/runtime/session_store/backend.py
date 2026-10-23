@@ -106,6 +106,14 @@ class RuntimeSessionStoreBackend:
         limit: int,
         after_rowid: int | None = None,
     ) -> list[dict[str, Any]]:
+        """Read messages in their one session order.
+
+        A session's messages are ordered by `created_at`, then by
+        `append_seq`, the per-session sequence `append_message` allocates, so
+        messages stored with the same `created_at` keep append order. The
+        returned `rowid` is the 1-based position in that order across the whole
+        session; conversation and thread filters do not renumber it.
+        """
         outer_where = [where_clause.replace("WHERE ", "", 1)]
         outer_params = list(params)
         if after_rowid is not None:
@@ -119,7 +127,7 @@ class RuntimeSessionStoreBackend:
                 SELECT
                     ROW_NUMBER() OVER (
                         PARTITION BY session_id
-                        ORDER BY created_at ASC, id ASC
+                        ORDER BY created_at ASC, append_seq ASC
                     ) AS rowid,
                     {MESSAGE_COLUMNS}
                 FROM messages
@@ -139,7 +147,7 @@ class RuntimeSessionStoreBackend:
                 SELECT
                     ROW_NUMBER() OVER (
                         PARTITION BY session_id
-                        ORDER BY created_at ASC, id ASC
+                        ORDER BY created_at ASC, append_seq ASC
                     ) AS rowid,
                     {MESSAGE_COLUMNS}
                 FROM messages

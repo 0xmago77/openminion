@@ -7,6 +7,14 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Keep runtime session messages that share a timestamp in append order, with a
+  per-session append sequence that runtime migration 12 adds on SQLite and
+  Postgres. Message readers, compaction positions and transcript export no
+  longer depend on random message ids; message ids and timestamps are
+  unchanged. On upgrade, a compaction boundary that falls inside a group of
+  messages sharing one timestamp moves back before that group, so its
+  members are replayed into history and summarized again once rather than
+  left hidden (#353).
 - Close the memory audit sink that the runtime memory assembly creates when the
   runtime closes: once, with the memory service, and not while the memory
   scheduler is still running. `AuditedMemoryStore` still leaves a sink passed
