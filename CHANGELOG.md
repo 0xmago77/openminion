@@ -7,6 +7,10 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Declare risk metadata on temporary tools, both the SDK handoff tool and
+  ordinary-named temporary tools, and enforce that a denial prevents
+  handoff child execution.
+
 - Keep runtime session messages that share a timestamp in append order, with a
   per-session append sequence that runtime migration 12 adds on SQLite and
   Postgres. Message readers, compaction positions and transcript export no
