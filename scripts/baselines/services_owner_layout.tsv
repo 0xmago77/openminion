@@ -44,7 +44,16 @@ scope	max_python_files	max_loc
 # runtime, agent, brain, and ingress owners without adding a service stack.
 # COLR (2026-10-06) threads commerce runtime and read-only order care through
 # the existing brain, cron, delivery, and routine-context owners.
-services	208	41700
+# Issue 323 (2026-10-21) threads the runtime identity database path through
+# the existing brain context adapter instead of the global identity default.
+# #325 (2026-10-21) rejects an explicit agent outside a plain session's bound
+# agent in the existing ingress routing owner, before any gateway call, and
+# carries the caller's explicit agent through the managed turn request.
+# Issue 342 (2026-10-22) builds the runtime-owned artifact stores from the
+# runtime-scoped artifact config in the existing memory and brain owners.
+# Issue 349 (2026-10-23) records the artifact store the runtime memory assembly
+# obtains on that existing assembly owner, which closes it on shutdown.
+services	208	41757
 services/security	6	187
 services/stats	1	25
 services/tool	3	50

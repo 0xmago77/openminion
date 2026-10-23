@@ -134,14 +134,13 @@ def evaluate_turn_closure(
             )
         return final_judgment
     except Exception as exc:  # noqa: BLE001
-        return _fail_closed_closure_judgment(
-            runner,
+        _emit_closure_failure(
             state=state,
-            action_result=action_result,
             logger=logger,
             context=context,
             exc=exc,
         )
+        raise
 
 
 def _prepare_closure_gate(
@@ -280,11 +279,7 @@ def _run_closure_judge(
             trace_id=state.trace_id,
             status="warning",
         )
-        return ClosureJudgment(
-            satisfied=False,
-            reason="closure_gate_invalid_structured_output",
-            next_action=BRAIN_DISPOSITION_CONTINUE,
-        )
+        raise
     state.llm_calls_used += 1
     if isinstance(raw, dict):
         _runner_delegate("_debit_tokens", runner, state, raw, logger)
@@ -594,21 +589,17 @@ def _emit_closure_completed(
         )
 
 
-def _fail_closed_closure_judgment(
-    runner: "BrainRunner",
+def _emit_closure_failure(
     *,
     state: WorkingState,
-    action_result: ActionResult | None,
     logger: CanonicalEventLogger,
     context: ClosureGateContext,
     exc: Exception,
-) -> ClosureJudgment:
-    del runner, action_result
+) -> None:
     logger.emit(
         "brain.fail_closed.judge_invalid_output",
         {
             "phase": "judge",
-            "fallback_action": BRAIN_DISPOSITION_REPLAN,
             "reason": type(exc).__name__,
             "llm_call_id": context.llm_call_id,
         },
@@ -627,11 +618,6 @@ def _fail_closed_closure_judgment(
             source_event="brain.closure_gate.failed",
             payload={"llm_call_id": context.llm_call_id, "error": str(exc)},
         )
-    return ClosureJudgment(
-        satisfied=False,
-        reason="closure_gate_failed_fallback_replan",
-        next_action=BRAIN_DISPOSITION_REPLAN,
-    )
 
 
 def _active_plan_at_closure(

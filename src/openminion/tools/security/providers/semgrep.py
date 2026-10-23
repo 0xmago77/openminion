@@ -226,11 +226,10 @@ def _semgrep_finding(row: dict[str, Any], target: Path) -> SecurityFinding:
     rule_id = str(row.get("check_id") or "semgrep.unknown")
     path = relative_path(str(row.get("path") or ""), target)
     line = positive_int(start.get("line"))
-    fingerprint = str(extra.get("fingerprint") or "")
-    finding_id = (
-        fingerprint
-        or hashlib.sha256(f"{rule_id}:{path}:{line or 0}".encode()).hexdigest()[:24]
-    )
+    column = positive_int(start.get("col"))
+    finding_id = hashlib.sha256(
+        f"{rule_id}:{path}:{line or 0}:{column or 0}".encode()
+    ).hexdigest()[:24]
     severity = str(extra.get("severity") or "UNKNOWN").upper()
     references = metadata.get("references") or metadata.get("reference") or []
     if isinstance(references, str):
@@ -248,7 +247,7 @@ def _semgrep_finding(row: dict[str, Any], target: Path) -> SecurityFinding:
         location=FindingLocation(
             path=path,
             line=line,
-            column=positive_int(start.get("col")),
+            column=column,
             end_line=positive_int(end.get("line")),
             end_column=positive_int(end.get("col")),
         ),

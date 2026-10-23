@@ -4,7 +4,8 @@ from openminion.modules.tool.exposure import ToolExposureProfile, ToolRiskAnnota
 from openminion.modules.tool.framework import ToolDecl, ToolFamilySpec
 
 from .interfaces import (
-    ALL_SECURITY_TOOLS,
+    READONLY_SECURITY_TOOLS,
+    TOOL_SECURITY_REVIEW_REPORT,
     TOOL_SECURITY_PUBLISH_REPORT,
     TOOL_SECURITY_SCAN_ARTIFACT,
     TOOL_SECURITY_SCAN_CODE,
@@ -18,8 +19,10 @@ from .plugin import (
     _h_scan_dependencies,
     _h_scan_secrets,
     _h_publish_report,
+    _h_review_report,
 )
 from .schemas import LocalScanArgs, SecurityReportPublishArgs
+from .review_schemas import SecurityReviewArgs
 
 SECURITY_FAMILY = ToolFamilySpec(
     module_id="security",
@@ -28,10 +31,19 @@ SECURITY_FAMILY = ToolFamilySpec(
     common_capabilities=("read_only", "security", "evidence"),
     exposure_profiles=(
         ToolExposureProfile(
+            profile_id="security_review",
+            title="Independent security review",
+            summary="Review complete source-security reports without modifying source.",
+            tool_names=frozenset({TOOL_SECURITY_REVIEW_REPORT}),
+            evidence_expectations=("return an immutable canonical review reference",),
+            stop_rules=("stop before remediation or scanner execution",),
+            activation_hint="Activate for a distinct readonly reviewer with complete evidence.",
+        ),
+        ToolExposureProfile(
             profile_id="security_readonly",
             title="Security scanning",
             summary="Bounded local source, dependency, IaC, and secret scans.",
-            tool_names=frozenset(ALL_SECURITY_TOOLS),
+            tool_names=frozenset(READONLY_SECURITY_TOOLS),
             evidence_expectations=(
                 "return scanner identity, version, bounded findings, and evidence refs",
             ),
@@ -55,6 +67,12 @@ SECURITY_FAMILY = ToolFamilySpec(
         ),
     ),
     tools=(
+        ToolDecl(
+            TOOL_SECURITY_REVIEW_REPORT,
+            SecurityReviewArgs,
+            _h_review_report,
+            "Record independent finding decisions or fresh-revision follow-up review.",
+        ),
         ToolDecl(
             TOOL_SECURITY_SCAN_CODE,
             LocalScanArgs,

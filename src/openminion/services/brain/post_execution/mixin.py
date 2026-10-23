@@ -110,6 +110,8 @@ def _runner_turn_kwargs(metadata_source: dict[str, Any]) -> dict[str, Any]:
 
 
 class BrainBridgeTurnMixin:
+    _identity_security_lab_facts: Callable[[], dict[str, Any]]
+
     async def _prepare_turn(
         self,
         *,
@@ -318,6 +320,9 @@ class BrainBridgeTurnMixin:
             ),
             tool_policy_lookup=tool_policy_lookup,
             budget_state=ToolBudgetState(),
+            security_lab_required=self._identity_security_lab_facts().get(
+                "lab_required", False
+            ),
             blast_radius_adapter=build_default_composition_boundary_adapter(
                 seam_id=SEAM_BRAIN_RUNTIME_TOOL_API,
             ),
@@ -338,17 +343,9 @@ class BrainBridgeTurnMixin:
         has_permission_overrides = "permission_overrides" in metadata_source
         permission_overrides = _parse_permission_overrides(metadata_source)
         setattr(runner, "_pending_permission_mode", permission_mode or "default")
-        setattr(
-            runner,
-            "_pending_permission_overrides_supplied",
-            has_permission_overrides,
-        )
+        runner._pending_permission_overrides_supplied = has_permission_overrides
         setattr(runner, "_pending_permission_overrides", permission_overrides)
-        setattr(
-            runner,
-            "_pending_session_action_policy_mode_override",
-            action_policy_mode,
-        )
+        runner._pending_session_action_policy_mode_override = action_policy_mode
 
     def _execute_turn(
         self,

@@ -1,3 +1,9 @@
+import json
+from typing import Any
+
+from ...tools.prompts import build_seeded_original_task_context_message
+
+
 _CODING_PLAN_SYSTEM_INTRO = (
     "Return a JSON CodingPlan with fields goal, phases, current_phase, "
     "scratchpad, completed_steps, open_issues, subtasks, requires_file_change, "
@@ -49,4 +55,19 @@ def build_coding_subtask_prompt(
     return "\n".join(lines)
 
 
-__all__ = ["build_coding_plan_system_prompt", "build_coding_subtask_prompt"]
+def build_coding_project_replay_context(task: str, plan: dict[str, Any]) -> str:
+    return (
+        build_seeded_original_task_context_message(task)
+        + "\n\n[CURRENT PROJECT TASK PLAN]\n"
+        + json.dumps(plan, sort_keys=True)
+        + "\nContinue this current plan using the results below. The "
+        "original task remains context and constraints, not a new invocation "
+        "of its initial steps."
+    )
+
+
+__all__ = [
+    "build_coding_plan_system_prompt",
+    "build_coding_project_replay_context",
+    "build_coding_subtask_prompt",
+]

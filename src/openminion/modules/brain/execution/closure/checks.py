@@ -1,10 +1,16 @@
+import json
 from typing import Any
 
+from openminion.base.redaction import redact_sensitive_text
+
+from ...constants import CLOSURE_TOOL_RESULT_PAYLOAD_MAX_CHARS
 from ...schemas.decisions import FinalizationStatus
 from ...schemas.state import ActionResult, WorkingState
 
 _CLOSURE_TOOL_RESULT_DATA_KEYS = frozenset(
     {
+        "artifact_ref",
+        "artifact_refs",
         "path",
         "mode",
         "bytes_written",
@@ -18,6 +24,21 @@ _CLOSURE_TOOL_RESULT_DATA_KEYS = frozenset(
         "url",
     }
 )
+
+
+def _closure_tool_payload_text(value: Any) -> str:
+    # The tool adapter wraps a non-mapping tool return value as {"data": value}.
+    if value is None or isinstance(value, dict):
+        return ""
+    text: str = (
+        value
+        if isinstance(value, str)
+        else json.dumps(value, ensure_ascii=True, default=str)
+    )
+    text, _ = redact_sensitive_text(text.strip())
+    if len(text) > CLOSURE_TOOL_RESULT_PAYLOAD_MAX_CHARS:
+        return text[:CLOSURE_TOOL_RESULT_PAYLOAD_MAX_CHARS].rstrip() + "...[truncated]"
+    return text
 
 
 def _closure_tool_result_snapshot(item: Any) -> dict[str, Any] | None:
@@ -46,6 +67,10 @@ def _closure_tool_result_snapshot(item: Any) -> dict[str, Any] | None:
             for key, value in data.items()
             if key in _CLOSURE_TOOL_RESULT_DATA_KEYS
         }
+        for key in ("data", "content"):
+            payload_text = _closure_tool_payload_text(data.get(key))
+            if payload_text:
+                filtered_data[key] = payload_text
         if filtered_data:
             normalized["data"] = filtered_data
     return normalized or None

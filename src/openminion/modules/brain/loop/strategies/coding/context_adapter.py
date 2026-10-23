@@ -17,7 +17,7 @@ from openminion.modules.brain.loop.providers.retry import build_provider_retry_p
 from openminion.modules.brain.runner.tick.context import (
     _store_pending_confirmation_metadata,
 )
-from openminion.modules.brain.schemas import ActionResult, ToolCommand
+from openminion.modules.brain.schemas import ActionResult, AskUserCommand, ToolCommand
 from openminion.modules.llm.schemas import Message
 from openminion.modules.tool.contracts.schemas import TOOL_ERROR_CONFIRM_REQUIRED
 
@@ -186,6 +186,15 @@ class _CodingLoopContextAdapter:
     ) -> Any:
         approved_command = outcome.approved_command or original_command
         action_result = outcome.action_result
+        if (
+            isinstance(approved_command, AskUserCommand)
+            and original_command is not None
+        ):
+            self.state.pending_confirmation_command = original_command.model_copy(
+                deep=True
+            )
+            _store_pending_confirmation_metadata(self.state)
+            self.state.post_action_user_message = approved_command.question
         error_code = action_result.error.code if action_result.error is not None else ""
         if (
             action_result is not None

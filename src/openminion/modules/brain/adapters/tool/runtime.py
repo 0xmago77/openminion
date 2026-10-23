@@ -39,6 +39,7 @@ from .command_metadata import (
     _inject_runtime_message_ref,
     _merge_orchestration_context_metadata,
     _orchestration_metadata_from_command,
+    _runtime_permissions_from_command,
     _runtime_workspace_from_command,
 )
 from .policy_authorization import (
@@ -512,8 +513,7 @@ class ToolAdapter:
                 runtime_env=_runtime_env_from_policy(policy_for_run)
             )
             data_root = resolve_data_root(
-                home_root,
-                data_root=env_owner.get("OPENMINION_DATA_ROOT", ""),
+                home_root, data_root=env_owner.get("OPENMINION_DATA_ROOT", "")
             )
             run_root = create_run_root(
                 policy_for_run, run_id, root_override=data_root / "tool-runs"
@@ -529,8 +529,7 @@ class ToolAdapter:
         effective_workspace_root = self._effective_workspace_root(policy_for_run)
         replay_confirmed = bool(replay_confirmation_metadata)
         watch_write_authorization_requested = _watch_write_authorization_requested(
-            tool_name=tool_name,
-            args=args,
+            tool_name=tool_name, args=args
         )
         if (
             watch_write_authorization_requested
@@ -569,7 +568,7 @@ class ToolAdapter:
                 },
             )
         background_write_authorized = _background_write_authorized(inputs)
-        raw_project_task_id = orchestration_metadata.get("task_backed_task_id")
+        raw_project_task_id = orchestration_metadata.get("project_task_id")
         project_task_id = str(raw_project_task_id or "").strip()
         auto_confirm = _resolve_auto_confirm(
             tool_name=tool_name,
@@ -601,6 +600,7 @@ class ToolAdapter:
         )
         context_metadata = _policy_context_metadata(policy_for_run)
         enforce_watch_target_binding(validated_args, context_metadata)
+        builder = self._build_execution_context_builder()
         ctx = RuntimeContext(
             policy=policy_for_run,
             workspace=effective_workspace_root,
@@ -626,7 +626,7 @@ class ToolAdapter:
             agent_query=self.agent_query,
             telemetry_session_id=session_id,
             telemetry_turn_id=trace_id,
-            permission_mode=permission_mode,
+            **_runtime_permissions_from_command(command, permission_mode),
             agent_profile=self.agent_profile,
             tool_registry=self.registry,
             task_manager=self.task_manager,
@@ -634,6 +634,7 @@ class ToolAdapter:
             scheduler_readiness=self.scheduler_readiness,
             sandbox_runner=self.sandbox_runner,
             security_lab_runner=self.security_lab_runner,
+            security_lab_metadata=lambda: builder.security_lab_metadata(session_id),
         )
         ctx.session_id, ctx.trace_id = session_id, trace_id
         ctx.agent_id, ctx.run_id = self.agent_id, run_id

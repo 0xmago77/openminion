@@ -1,6 +1,8 @@
 from collections.abc import Mapping
 from typing import Any
 
+from .permission_mode import canonical_permission_mode, canonical_permission_overrides
+
 _POLICY_REPLAY_SOURCE = "policy_replay"
 _CONFIRMATION_SOURCE_METADATA_KEY = "confirmation_source"
 _CONFIRMATION_GRANT_ID_METADATA_KEY = "confirmation_grant_id"
@@ -110,6 +112,23 @@ def _orchestration_metadata_from_command(command: Mapping[str, Any]) -> dict[str
     }
 
 
+def _runtime_permissions_from_command(
+    command: Mapping[str, Any], permission_mode: str
+) -> dict[str, Any]:
+    meta = command.get("meta")
+    if not isinstance(meta, Mapping):
+        meta = {}
+    return {
+        "permission_mode": permission_mode,
+        "base_permission_mode": canonical_permission_mode(
+            meta.get("base_permission_mode")
+        ),
+        "permission_overrides": canonical_permission_overrides(
+            meta.get("permission_overrides")
+        ),
+    }
+
+
 def _runtime_workspace_from_command(command: Mapping[str, Any]) -> str:
     meta = command.get("meta")
     if not isinstance(meta, Mapping):
@@ -146,5 +165,6 @@ __all__ = [
     "_inject_runtime_message_ref",
     "_merge_orchestration_context_metadata",
     "_orchestration_metadata_from_command",
+    "_runtime_permissions_from_command",
     "_runtime_workspace_from_command",
 ]

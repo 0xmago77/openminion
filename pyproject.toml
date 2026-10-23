@@ -42,6 +42,9 @@ dependencies = [
   "rich>=13.0",
   "send2trash>=1.8.3,<3",
   "typer>=0.12",
+  # Cron schedules resolve IANA zones with zoneinfo, which needs tzdata on
+  # hosts without a system time zone database, such as Windows.
+  "tzdata",
 ]
 
 [project.urls]

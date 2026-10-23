@@ -8,6 +8,10 @@
 Use the Markdown-first examples to author new local skills. They match the
 format emitted by `openminion scaffold skill`.
 
+Ingest takes the skill ID from the `skill_id` item of the `Metadata` section.
+YAML front matter declares it as `id`, which wins when both are present.
+Without either, the ID is derived from the skill name.
+
 The YAML-frontmatter files preserve catalog and CLI-chat compatibility. Most
 use current OpenMinion tool IDs. The three API fixtures use the external-catalog
 placeholder `http_request`, which is not a built-in OpenMinion tool:

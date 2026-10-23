@@ -2266,6 +2266,29 @@ class AdapterInterfaceContractTests(unittest.TestCase):
         ):
             client.render(agent_id="ops-agent", purpose="act", max_tokens=180)
 
+    def test_identity_bridge_opens_runtime_identity_db_path(self) -> None:
+        from openminion.modules.brain.adapters.context.bridges.identity import (
+            BridgeIdentityClient,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            identity_db = Path(tmp) / ".openminion" / "identity" / "identity.db"
+            client = BridgeIdentityClient(
+                backing_store=object(), identity_db_path=identity_db
+            )
+            with (
+                patch("openminion.modules.identity.config.load_config") as load,
+                self.assertLogs(
+                    "openminion.modules.brain.adapters.context.bridges",
+                    level="WARNING",
+                ),
+            ):
+                client.render(agent_id="ops-agent", purpose="act", max_tokens=180)
+            client.close()
+
+            load.assert_not_called()
+            self.assertTrue(identity_db.is_file())
+
     def test_factory_context_adapter_sanitizes_technical_error_turns(self) -> None:
         try:
             from openminion.modules.brain.adapters.factory import create_context_adapter

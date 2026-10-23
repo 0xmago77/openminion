@@ -277,7 +277,7 @@ def _command(tool: str, args: Mapping[str, Any], command_id: str) -> dict[str, A
         "tool_name": tool,
         "args": dict(args),
         "idempotency_key": command_id,
-        "meta": {"orchestration": {"task_backed_task_id": "task-1"}},
+        "meta": {"orchestration": {"project_task_id": "task-1"}},
     }
 
 

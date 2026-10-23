@@ -43,12 +43,20 @@ and publish a candidate JSON report without changing the target.
    `security_readonly` exposure profile is active.
 2. Confirm the target is trusted local source, the worktree is clean, and the
    expected full Git revision is supplied.
-3. Run each requested security scanner with the exact arguments `target`,
+3. Run each requested security scanner exactly once with the arguments `target`,
    `include_evidence_artifact=true`, and the same `expected_target_revision`.
 4. Treat scanner findings as evidence, not validated conclusions. Record only
    candidate or rejected assessments and cite exact scanner finding IDs.
+   For scanner findings, set `evidence_ref` and `scanner_finding_ids` and omit
+   `evidence_summary`; that field is required only for manual findings.
 5. Publish one report with `security.publish_report`. Report partial or blocked
    execution exactly as returned by the publisher.
+   Use JSON arrays for `scope.requested_checks` (for example, `["code"]`),
+   `check_evidence`, `findings`, each finding's `locations`, and
+   `scanner_finding_ids`. Empty arrays are `[]`; never wrap array values in
+   `{"item": ...}` objects.
+   If publication rejects arguments, correct them using the tool's feedback;
+   stop after the first successful publication.
 
 # Checks
 
@@ -64,7 +72,7 @@ and publish a candidate JSON report without changing the target.
 1. Stop if admission fails before a scan starts or canonical evidence is
    missing. If a started scan returns terminal unavailable evidence, publish
    the truthful partial or blocked status.
-2. Do not use shell execution, another scanner, retries, network downloads, or
+2. Do not use shell execution, another scanner, scanner retries, network downloads, or
    a fallback path.
 3. Stop after publication. Do not remediate, test exploits, scan remote or
    untrusted targets, or claim independent validation.

@@ -384,6 +384,7 @@ class CronStore(CronCoordinationStore):
                         ) AS row_number
                     FROM cron_runs AS r
                     WHERE r.state IN ('finished', 'failed', 'cancelled', 'timed_out')
+                  AND r.job_id IS NOT NULL
                       AND NOT (r.state = 'cancelled' AND r.attempts = 0)
                 )
                 SELECT r.*

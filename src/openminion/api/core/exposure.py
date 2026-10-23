@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from openminion.modules.storage import is_room_session_key
+from openminion.base.config import OpenMinionConfig
+from openminion.modules.storage import SessionRecord, is_room_session_key
 from openminion.modules.tool import (
     dependency_probe_context_from_api_runtime,
     evaluate_tool_dependencies,
@@ -19,6 +20,19 @@ from openminion.tools.security.lab_metadata import (
 from openminion.modules.tool.exposure.contracts import ToolExposureSession
 
 ToolExposureError = ToolRuntimeError
+
+
+def _security_lab_session(runtime: Any, session_id: str) -> SessionRecord | None:
+    session = runtime.sessions.get_session(session_id)
+    if session is not None:
+        return session
+    # Focus uses this exact conversation ID for tool execution while its runtime
+    # session retains the root ID (OpenMinionRuntime._turn_session_id).
+    root_id, separator, conversation_id = session_id.partition("::conv:")
+    if not separator or conversation_id != f"focus-{root_id}":
+        return None
+    root = runtime.sessions.get_session(root_id)
+    return root if root is not None and root.target == "focus" else None
 
 
 def _security_lab_activation(
@@ -49,7 +63,7 @@ def _security_lab_activation(
             "INVALID_ARGUMENT", "security lab target does not match configuration"
         )
 
-    session = runtime.sessions.get_session(str(session_id or "").strip())
+    session = _security_lab_session(runtime, str(session_id or "").strip())
     if session is None or is_room_session_key(str(session.session_key or "")):
         raise ToolRuntimeError(
             "INVALID_ARGUMENT", "security lab requires one existing non-room session"
@@ -116,6 +130,8 @@ def _security_lab_activation(
 
 
 class RuntimeToolExposureMixin:
+    config: OpenMinionConfig
+
     def tool_exposure_status(
         self,
         *,
@@ -201,8 +217,7 @@ class RuntimeToolExposureMixin:
                     target_image_id=scope.target_image_id,
                     worker_image_digest=scope.worker_image_digest,
                 )
-        sessions = getattr(self, "sessions")
-        session = sessions.get_session(session_id) if session_id else None
+        session = _security_lab_session(self, session_id) if session_id else None
         if session is None:
             status["reason"] = "existing session required"
             return status
@@ -286,6 +301,9 @@ class RuntimeToolExposureMixin:
         task_id: str = "",
         target_id: str = "",
     ) -> bool:
+        lab_config = self.config.runtime.security_lab
+        if profile_id == "security_lab" and lab_config is not None and not target_id:
+            target_id = lab_config.target_container
         return self.tools.exposure_service.deactivate(
             profile_id,
             session_id=session_id,

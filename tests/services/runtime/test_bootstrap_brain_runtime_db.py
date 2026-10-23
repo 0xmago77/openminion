@@ -102,6 +102,8 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
     ).brain
     session_db_path = tmp_path / "state" / "brain" / "sessions.db"
     expected_runtime_db_path = tmp_path / "state" / "brain" / "brain.db"
+    identity_db_path = tmp_path / "identity" / "identity.db"
+    artifact_config = object()
     turn_input_queue = object()
     sandbox_runner = object()
     security_lab_runner = object()
@@ -124,6 +126,7 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
         _sandbox_runner=sandbox_runner,
         _security_lab_runner=security_lab_runner,
         _identity_security_lab_facts=lambda: {},
+        _resolve_identity_db_path=lambda: str(identity_db_path),
         _runtime_memory_assembly=SimpleNamespace(
             memctl=SimpleNamespace(),
             vector_adapter=SimpleNamespace(),
@@ -132,7 +135,9 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
             home_paths=SimpleNamespace(home_root=tmp_path, data_root=tmp_path),
             workspace_root=str(tmp_path),
         ),
-        _get_manager_config=lambda _name: None,
+        _get_manager_config=lambda name: (
+            artifact_config if name == "artifact" else None
+        ),
         _validate_adapter_contracts=lambda **_kwargs: None,
         _resolve_override_value=lambda _key: "",
         _resolve_brain_config=lambda: brain_config,
@@ -177,7 +182,7 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
                 return_value=SimpleNamespace(),
             )
         )
-        stack.enter_context(
+        session_factory = stack.enter_context(
             mock.patch(
                 "openminion.services.brain.service.create_session_api",
                 return_value=SimpleNamespace(),
@@ -327,9 +332,13 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
     assert runner_factory.call_args.kwargs["task_manager"] is shared_task_manager
     assert runner_factory.call_args.kwargs["turn_input_queue"] is turn_input_queue
     expected_artifactctl = shared_artifactctl if mode == "auto" else None
-    assert artifact_factory.call_count == (1 if mode == "auto" else 0)
+    assert artifact_factory.call_args_list == (
+        [mock.call(artifact_config)] if mode == "auto" else []
+    )
+    assert session_factory.call_args.kwargs["artifact_config"] is artifact_config
     assert context_factory.call_args.kwargs["artifactctl"] is expected_artifactctl
     assert context_factory.call_args.kwargs["owns_artifactctl"] is (mode == "auto")
+    assert context_factory.call_args.kwargs["identity_db_path"] == str(identity_db_path)
     assert retrieve_factory.call_count == 1
     assert context_factory.call_args.kwargs["retrieve_api"] is retrieve_api
     assert tool_api_factory.call_args.kwargs["artifactctl"] is expected_artifactctl

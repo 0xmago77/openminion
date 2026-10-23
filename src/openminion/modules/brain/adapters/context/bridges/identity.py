@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any
 
 from openminion.modules.context.schemas import IdentitySnippet
@@ -12,9 +13,16 @@ from .shared import (
 class BridgeIdentityClient:
     contract_version = BRAIN_ADAPTER_INTERFACE_VERSION
 
-    def __init__(self, *, backing_store: Any, system_prompt: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        backing_store: Any,
+        system_prompt: str | None = None,
+        identity_db_path: str | Path | None = None,
+    ) -> None:
         self._backing_store = backing_store
         self._system_prompt = str(system_prompt or "").strip()
+        self._identity_db_path = identity_db_path
         self._identity_ctl: Any | None = None
         self._skill_client: Any | None = None
 
@@ -37,7 +45,7 @@ class BridgeIdentityClient:
         from openminion.modules.identity.config import load_config
         from .skill import BridgeSkillClient
 
-        identity_db = load_config().storage.db_path
+        identity_db = self._identity_db_path or load_config().storage.db_path
         self._skill_client = BridgeSkillClient(self._backing_store)
         return identity_ctl_cls(
             store=sqlite_identity_store_cls(identity_db),

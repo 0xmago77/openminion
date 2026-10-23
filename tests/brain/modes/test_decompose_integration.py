@@ -1766,6 +1766,7 @@ def test_child_worktree_artifact_reject_leaves_parent_unchanged(tmp_path) -> Non
                 telemetry_turn_id="turn-reject",
             ),
         )
+        rejected_ref = ctl.alias_resolve(record_alias).ref
 
     assert rejected == {
         "ok": True,
@@ -1773,6 +1774,7 @@ def test_child_worktree_artifact_reject_leaves_parent_unchanged(tmp_path) -> Non
         "status": "rejected",
         "target_digest": record["target_digest"],
         "bundle_ref": bundle_ref,
+        "artifact_refs": [rejected_ref],
     }
     assert [event for event, _payload in telemetry.events] == [
         "agent.handoff.started",
@@ -1784,6 +1786,7 @@ def test_child_worktree_artifact_reject_leaves_parent_unchanged(tmp_path) -> Non
     with artifact_ctl(artifact_root) as ctl:
         persisted = load_child_worktree_record(ctl, record_alias)
         assert persisted["integration_status"] == "rejected"
+        assert json.loads(ctl.read_bytes(rejected_ref)) == persisted
         assert ctl.read_bytes(bundle_ref)
         with pytest.raises(ToolRuntimeError) as duplicate:
             _h_task_delegate(

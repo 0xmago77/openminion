@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 import logging
+import subprocess
 import sys
 import threading
 
@@ -165,16 +166,16 @@ def test_daemon_start_forwards_explicit_storage_roots(
         captured.update(kwargs)
         return FakeProcess()
 
-    monkeypatch.setattr(daemon_cmd, "load_config", lambda _path: SimpleNamespace())
     monkeypatch.setattr(
-        daemon_mod,
-        "resolve_daemon_pid_file",
-        lambda _config: tmp_path / "daemon.pid",
-    )
-    monkeypatch.setattr(
-        daemon_mod,
-        "resolve_daemon_log_file",
-        lambda _config: tmp_path / "daemon.log",
+        daemon_cmd,
+        "load_config",
+        lambda _path: SimpleNamespace(
+            runtime=SimpleNamespace(
+                env={},
+                daemon_pid_file="",
+                daemon_log_file="",
+            )
+        ),
     )
     monkeypatch.setattr(daemon_mod, "read_pid", lambda _path: None)
     monkeypatch.setattr(daemon_cmd.subprocess, "Popen", fake_popen)
@@ -191,6 +192,152 @@ def test_daemon_start_forwards_explicit_storage_roots(
     assert isinstance(env, dict)
     assert env["OPENMINION_HOME"] == str(tmp_path / "home")
     assert env["OPENMINION_DATA_ROOT"] == str(tmp_path / "data")
+    command = captured["command"]
+    assert command[command.index("--pid-file") + 1] == str(
+        tmp_path / "data/state/openminiond.pid"
+    )
+    assert (tmp_path / "data/logs/openminiond.log").exists()
+
+
+@pytest.mark.parametrize(
+    ("probe_status", "hung"),
+    [("unreachable", False), ("unreachable", True), ("mismatch", False)],
+)
+def test_failed_daemon_start_reaps_only_spawned_process(
+    tmp_path, monkeypatch, probe_status, hung
+):
+    endpoint = DaemonEndpoint(
+        config_path=str(tmp_path / "config.json"),
+        host="127.0.0.1",
+        port=9999,
+        data_root=str(tmp_path / "data"),
+    )
+    pid_file = tmp_path / "data/state/openminiond.pid"
+    calls = []
+
+    class FakeProcess:
+        pid = 4321
+        stopped = False
+
+        def poll(self):
+            return 0 if self.stopped else None
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def wait(self, timeout):
+            calls.append(("wait", timeout))
+            if hung and not self.stopped:
+                raise subprocess.TimeoutExpired("daemon", timeout)
+            self.stopped = True
+            return 0
+
+        def kill(self):
+            calls.append("kill")
+            self.stopped = True
+
+    process = FakeProcess()
+
+    def spawn(*_args, **_kwargs):
+        # A competing endpoint must not cause deletion of its PID file.
+        pid_file.write_text("9001" if probe_status == "mismatch" else "4321")
+        return process
+
+    monkeypatch.setattr(
+        daemon_cmd,
+        "load_config",
+        lambda _path: SimpleNamespace(
+            runtime=SimpleNamespace(
+                env={},
+                daemon_pid_file="",
+                daemon_log_file="",
+            )
+        ),
+    )
+    monkeypatch.setattr(daemon_cmd.subprocess, "Popen", spawn)
+    monkeypatch.setattr(
+        daemon_cmd,
+        "probe_daemon_endpoint",
+        lambda *_args, **_kwargs: (probe_status, {"daemon": {"config_path": "other"}}),
+    )
+    ticks = iter(range(30))
+    monkeypatch.setattr(daemon_cmd.time, "time", lambda: next(ticks))
+    monkeypatch.setattr(daemon_cmd.time, "sleep", lambda _seconds: None)
+
+    result = daemon_cmd._start_daemon(endpoint)
+
+    assert result["ok"] is False and process.stopped
+    assert calls == (
+        ["terminate", ("wait", 10), "kill", ("wait", 5)]
+        if hung
+        else ["terminate", ("wait", 10)]
+    )
+    if probe_status == "mismatch":
+        assert pid_file.read_text() == "9001"
+    else:
+        assert not pid_file.exists()
+
+
+def test_daemon_cli_lifecycle_uses_explicit_storage_roots(
+    tmp_path, monkeypatch, capsys
+):
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}")
+    home, data = tmp_path / "isolated-home", tmp_path / "isolated-data"
+    pid_file, log_file = data / "state/openminiond.pid", data / "logs/openminiond.log"
+    pid_file.parent.mkdir(parents=True)
+    log_file.parent.mkdir(parents=True)
+    pid_file.write_text("4321")
+    log_file.write_text("isolated daemon log\n")
+    monkeypatch.setenv("OPENMINION_HOME", str(tmp_path / "ambient-home"))
+    monkeypatch.setenv("OPENMINION_DATA_ROOT", str(tmp_path / "ambient-data"))
+    alive = True
+
+    class FakeProcess:
+        def __init__(self, pid):
+            assert pid == 4321
+
+        def terminate(self):
+            nonlocal alive
+            alive = False
+
+    monkeypatch.setattr(daemon_mod, "process_alive", lambda pid: pid == 4321 and alive)
+    monkeypatch.setattr(daemon_cmd.psutil, "Process", FakeProcess)
+    monkeypatch.setattr(
+        daemon_cmd,
+        "probe_daemon_endpoint",
+        lambda *_args, **_kwargs: ("unreachable", {}),
+    )
+    roots = {"home_root": home, "data_root": data}
+    status = daemon_cmd.build_daemon_status_payload(str(config_path), **roots)
+    assert status["pid"] == 4321 and status["pid_alive"]
+    assert status["pid_file"] == str(pid_file)
+    assert status["log_file"] == str(log_file)
+    assert daemon_cmd.daemon_logs(str(config_path), **roots) == 0
+    assert "isolated daemon log" in capsys.readouterr().out
+    assert daemon_cmd.daemon_stop(str(config_path), **roots) == 0
+    assert not alive and not pid_file.exists()
+
+
+@pytest.mark.parametrize("kind", ["pid", "log"])
+def test_explicit_daemon_file_path_keeps_precedence(tmp_path, kind):
+    configured = tmp_path / "configured-file"
+    config = SimpleNamespace(
+        runtime=SimpleNamespace(
+            env={},
+            daemon_pid_file=str(configured),
+            daemon_log_file=str(configured),
+        )
+    )
+    resolver = (
+        daemon_mod.resolve_daemon_pid_file
+        if kind == "pid"
+        else daemon_mod.resolve_daemon_log_file
+    )
+    assert (
+        resolver(config, home_root=tmp_path / "home", data_root=tmp_path / "data")
+        == configured
+    )
 
 
 def test_daemon_stream_request_parses_status_chunks(
@@ -338,7 +485,9 @@ def test_daemon_stop_force_kills_hung_process(
         daemon_cmd, "resolve_daemon_endpoint", lambda _cfg, **_kwargs: endpoint
     )
     monkeypatch.setattr(daemon_cmd, "load_config", lambda _path: SimpleNamespace())
-    monkeypatch.setattr(daemon_mod, "resolve_daemon_pid_file", lambda _cfg: pid_file)
+    monkeypatch.setattr(
+        daemon_mod, "resolve_daemon_pid_file", lambda _cfg, **_roots: pid_file
+    )
     monkeypatch.setattr(daemon_mod, "read_pid", lambda _pid_file: 123)
     monkeypatch.setattr(daemon_mod, "process_alive", _fake_alive)
     monkeypatch.setattr(daemon_cmd.psutil, "Process", FakeProcess)

@@ -1,11 +1,30 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-20
+Last updated: 2026-10-23
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+## Current package line - 2026-10-22
+
+- Keep SDK follow-up turns on the active session, reject conflicting explicit
+  agent selection, and scope identity and artifact stores to configured runtime
+  roots.
+- Preserve typed provider failures after tool execution and retain every Gemini
+  system instruction when translating OpenAI-compatible requests.
+- Require model-authored closure verdicts with rendered tool evidence so
+  completion decisions remain inspectable and provider-owned.
+- Ingest Markdown-first skills under their declared identity, expose pending
+  versions, and resolve scheduled-task time zones on Windows.
+- Add independent security-finding review and repair workflows with deterministic
+  live harnesses and local closeout coverage.
+- Order runtime session events by insertion sequence, validate malformed plan
+  declarations, retire completed project checkpoints, and keep deleted cron
+  history out of active task reconciliation.
+- Close runtime-owned memory artifact stores exactly once while preserving
+  borrowed-store ownership and scheduler shutdown behavior.
 
 ## Current package line - 2026-10-20
 

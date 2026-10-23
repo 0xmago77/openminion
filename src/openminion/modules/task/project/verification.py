@@ -149,6 +149,20 @@ def evaluate_project_turn_verification(
     turn: ProjectTurnResult,
     verification: tuple[TestEvidence, ...],
 ) -> ProjectVerificationClosure:
+    from .progress import AutonomyLoopConditionKind
+
+    if (
+        turn.condition == AutonomyLoopConditionKind.WAITING
+        and turn.pending_confirmation_command_id
+    ):
+        return ProjectVerificationClosure(
+            domain=ProjectVerificationDomain(
+                run.execution_selectors.verification_domain
+            ),
+            status=ProjectDomainVerificationStatus.NEEDS_USER,
+            reason="needs_user:pending_confirmation",
+            evidence_refs=turn.evidence_refs,
+        )
     passed = bool(verification) and all(
         item.status == TestEvidenceStatus.PASSED for item in verification
     )

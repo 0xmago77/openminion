@@ -320,16 +320,23 @@ def _run_skill_list(args, app: Any | None = None) -> int:
                 filters["tool"] = args.tool
 
             skills = ctl.list_skills(filters)
+            pending = ctl.list_pending_skill_versions(filters)
             if args.json:
-                print_json_payload({"ok": True, "skills": skills}, sort_keys=False)
+                payload = {"ok": True, "skills": skills, "pending_versions": pending}
+                print_json_payload(payload, sort_keys=False)
             else:
-                if not skills:
+                if not skills and not pending:
                     print("No skills found.")
-                else:
-                    for skill in skills:
-                        print(
-                            f"{skill['skill_id']} | {skill.get('name', 'N/A')} | {skill.get('status', 'N/A')} | {skill.get('version_hash', 'N/A')[:12]}..."
-                        )
+                for skill in skills:
+                    print(
+                        f"{skill['skill_id']} | {skill.get('name', 'N/A')} | {skill.get('status', 'N/A')} | {skill.get('version_hash', 'N/A')[:12]}..."
+                    )
+                for version in pending:
+                    print(
+                        f"{version['skill_id']} | {version['name']} | pending admission | {version['version_hash']}"
+                    )
+                if pending:
+                    print("Pending versions are inactive; see `skill admit --help`.")
             return 0
         finally:
             ctl.close()
@@ -951,7 +958,9 @@ def _register_skill_reingest_all_subcommand(skill_subcommands) -> None:
 def _register_skill_show_subcommand(skill_subcommands) -> None:
     parser = skill_subcommands.add_parser("show", help="Show skill metadata")
     parser.add_argument("skill_id", help="Skill ID to show")
-    parser.add_argument("--version", default=None, help="Specific version to show")
+    parser.add_argument(
+        "--version", default=None, help="Version to show; required while pending"
+    )
     _add_skill_config_arg(parser)
     parser.set_defaults(handler=_run_skill_show, needs_app=False)
 

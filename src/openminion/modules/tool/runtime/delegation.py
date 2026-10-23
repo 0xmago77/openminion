@@ -93,6 +93,7 @@ class A2ADelegateApi(Protocol):
         timeout_seconds: int,
         mode: str = "sync",
         permission_mode: str = "ask",
+        permission_overrides: Mapping[str, str] | None = None,
         workspace_root: str = "",
         cwd: str = "",
     ) -> A2ADelegateResult: ...
@@ -559,6 +560,7 @@ class A2aRuntimeDelegateAdapter:
         timeout: int,
         mode: str,
         permission_mode: str,
+        permission_overrides: Mapping[str, str] | None,
         workspace_root: str,
         cwd: str,
         idempotency_key: str,
@@ -577,6 +579,8 @@ class A2aRuntimeDelegateAdapter:
             "workspace_root": workspace_root,
             "cwd": cwd,
         }
+        if permission_overrides and permission_mode != "readonly":
+            params["permission_overrides"] = dict(permission_overrides)
         if review_target_digest:
             params["review_target_digest"] = review_target_digest
             params["review_bundle_ref"] = review_bundle_ref
@@ -604,6 +608,7 @@ class A2aRuntimeDelegateAdapter:
         timeout_seconds: int,
         mode: str = "sync",
         permission_mode: str = "ask",
+        permission_overrides: Mapping[str, str] | None = None,
         workspace_root: str = "",
         cwd: str = "",
         review_target_digest: str = "",
@@ -662,6 +667,7 @@ class A2aRuntimeDelegateAdapter:
                 timeout=timeout,
                 mode=normalized_mode,
                 permission_mode=str(permission_mode or "ask").strip().lower() or "ask",
+                permission_overrides=permission_overrides,
                 workspace_root=normalized_workspace_root,
                 cwd=normalized_cwd,
                 idempotency_key=idem,
@@ -703,6 +709,7 @@ class A2aRuntimeDelegateAdapter:
         timeout_seconds: int,
         mode: str = "sync",
         permission_mode: str = "ask",
+        permission_overrides: Mapping[str, str] | None = None,
         workspace_root: str = "",
         cwd: str = "",
     ) -> A2ADelegateResult:
@@ -712,6 +719,7 @@ class A2aRuntimeDelegateAdapter:
             timeout_seconds=timeout_seconds,
             mode=mode,
             permission_mode=permission_mode,
+            permission_overrides=permission_overrides,
             workspace_root=workspace_root,
             cwd=cwd,
         )

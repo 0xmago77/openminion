@@ -120,6 +120,15 @@ class SkillStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def list_pending_skill_versions(
+        self,
+        *,
+        scope: str | None = None,
+        agent_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    @abstractmethod
     def insert_skill_run(
         self,
         *,

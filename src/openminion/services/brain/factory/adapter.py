@@ -19,9 +19,18 @@ from openminion.services.agent.context.history import _resolve_system_prompt
 
 
 def create_session_api(
-    *, mode: str, db_path: str, telemetryctl: Any | None = None
+    *,
+    mode: str,
+    db_path: str,
+    telemetryctl: Any | None = None,
+    artifact_config: Any | None = None,
 ) -> Any:
-    return create_session_adapter(mode=mode, db_path=db_path, telemetryctl=telemetryctl)
+    return create_session_adapter(
+        mode=mode,
+        db_path=db_path,
+        telemetryctl=telemetryctl,
+        artifact_config=artifact_config,
+    )
 
 
 def create_tool_api(
@@ -106,6 +115,7 @@ def create_context_api(
     session_store: Any,
     system_prompt: str,
     identity_budget_config: Any | None = None,
+    identity_db_path: str | Path | None = None,
     runtime_token_budget: int | None = None,
     vector_adapter: Any | None = None,
     telemetryctl: Any | None = None,
@@ -128,6 +138,7 @@ def create_context_api(
         session_store=session_store,
         identity_system_prompt=_resolve_system_prompt(system_prompt),
         identity_budget_config=identity_budget_config,
+        identity_db_path=identity_db_path,
         runtime_token_budget=runtime_token_budget,
         vectorctl=vector_adapter,
         vector_adapter=vector_adapter,

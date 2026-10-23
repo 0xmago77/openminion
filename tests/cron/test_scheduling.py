@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import zoneinfo
+from collections.abc import Iterator
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -80,6 +83,41 @@ def test_normalize_misfire_policy_catch_up_form() -> None:
 def test_invalid_timezone_raises() -> None:
     with pytest.raises(ValueError):
         normalize_schedule({"kind": "cron", "expr": "0 7 * * *", "tz": "Mars/Phobos"})
+
+
+@pytest.fixture
+def no_system_tz_database() -> Iterator[None]:
+    # Like Windows: no system IANA database, so zones resolve only via tzdata.
+    original_tzpath = zoneinfo.TZPATH
+    zoneinfo.reset_tzpath(to=[])
+    ZoneInfo.clear_cache()
+    yield
+    zoneinfo.reset_tzpath(to=original_tzpath)
+    ZoneInfo.clear_cache()
+
+
+def test_cron_timezones_resolve_without_system_tz_database(
+    no_system_tz_database: None,
+) -> None:
+    after = parse_iso_datetime("2026-10-24T12:00:00Z")
+    weekdays = {"kind": "cron", "expr": "0 9 * * 1-5", "stagger_ms": 0}
+
+    default_due = compute_next_due(schedule=weekdays, after=after, job_id="tz-default")
+    utc_due = compute_next_due(
+        schedule={**weekdays, "tz": "UTC"}, after=after, job_id="tz-utc"
+    )
+    rome_due = compute_next_due(
+        schedule={**weekdays, "tz": "Europe/Rome"}, after=after, job_id="tz-rome"
+    )
+    one_shot = normalize_schedule({"kind": "at", "at": "2026-12-31T09:00:00Z"})
+
+    assert default_due is not None
+    assert utc_due == parse_iso_datetime("2026-10-26T09:00:00Z")
+    # Rome leaves summer time on 2026-10-25, so 09:00 local is 08:00 UTC.
+    assert rome_due == parse_iso_datetime("2026-10-26T08:00:00Z")
+    assert one_shot["at"] == "2026-12-31T09:00:00+00:00"
+    with pytest.raises(ValueError, match="unknown timezone: Mars/Phobos"):
+        normalize_schedule({**weekdays, "tz": "Mars/Phobos"})
 
 
 def test_compute_next_due_cron_applies_default_stagger_window() -> None:

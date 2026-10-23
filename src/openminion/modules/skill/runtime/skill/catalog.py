@@ -9,7 +9,7 @@ from typing import Any
 from openminion.modules.context.input_boundaries import (
     emit_boundary_event as _pidf_emit_boundary_event,
 )
-from openminion.modules.skill.constants import RISK_CLASS_LOW
+from openminion.modules.skill.constants import RISK_CLASS_LOW, SKILL_STATUS_DRAFT
 from openminion.modules.skill.errors import SkillError
 from openminion.modules.skill.interfaces import (
     SkillIngestAuthority,
@@ -361,50 +361,29 @@ class SkillCatalogMixin:
         self, filters: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
         filters = filters or {}
-        status_filter = filters.get("status")
-        if isinstance(status_filter, str):
-            status_values = [status_filter]
-        elif isinstance(status_filter, list):
-            status_values = [str(item) for item in status_filter]
-        else:
-            status_values = None
-
         rows = self.store.list_skills(
-            status_filter=[normalize_status(item) for item in status_values]
-            if status_values
-            else None,
+            status_filter=_status_filter_values(filters),
             scope=str(filters.get("scope")) if filters.get("scope") else None,
             agent_id=str(filters.get("agent_id")) if filters.get("agent_id") else None,
         )
+        return _skill_list_entries(rows, filters)
 
-        tag_filter = str(filters.get("tag")) if filters.get("tag") else None
-        tool_filter = str(filters.get("tool")) if filters.get("tool") else None
-
-        out: list[dict[str, Any]] = []
-        for row in rows:
-            package = SkillPackage.from_dict(row["package"])
-            if tag_filter and tag_filter not in package.tags:
-                continue
-            if tool_filter and tool_filter not in package.tools:
-                continue
-            out.append(
-                {
-                    "skill_id": package.skill_id,
-                    "version_hash": package.version_hash,
-                    "name": package.name,
-                    "display_name": package.display_name,
-                    "short_description": package.short_description,
-                    "one_liner": package.to_catalog_summary()["one_liner"],
-                    "status": package.status,
-                    "scope": package.scope,
-                    "agent_id": package.agent_id,
-                    "risk_class": package.risk_class,
-                    "tags": package.tags,
-                    "tools": package.tools,
-                    "updated_at": package.updated_at,
-                }
-            )
-        return out
+    def list_pending_skill_versions(
+        self, filters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Operator view of staged drafts; matching and catalogs never read it."""
+        filters = filters or {}
+        statuses = _status_filter_values(filters)
+        if statuses and SKILL_STATUS_DRAFT not in statuses:
+            return []
+        rows = self.store.list_pending_skill_versions(
+            scope=str(filters.get("scope")) if filters.get("scope") else None,
+            agent_id=str(filters.get("agent_id")) if filters.get("agent_id") else None,
+        )
+        return [
+            {**entry, "admission_state": "pending"}
+            for entry in _skill_list_entries(rows, filters)
+        ]
 
     def delete_skill(
         self,
@@ -711,3 +690,47 @@ def _trim_to_token_budget(text: str, max_tokens: int) -> str:
     if last_break > int(max_chars * 0.6):
         clipped = clipped[:last_break]
     return clipped.rstrip() + "\n\n[truncated]"
+
+
+def _status_filter_values(filters: dict[str, Any]) -> list[str] | None:
+    status_filter = filters.get("status")
+    if isinstance(status_filter, str):
+        status_values = [status_filter]
+    elif isinstance(status_filter, list):
+        status_values = [str(item) for item in status_filter]
+    else:
+        return None
+    return [normalize_status(item) for item in status_values] or None
+
+
+def _skill_list_entries(
+    rows: list[dict[str, Any]], filters: dict[str, Any]
+) -> list[dict[str, Any]]:
+    tag_filter = str(filters.get("tag")) if filters.get("tag") else None
+    tool_filter = str(filters.get("tool")) if filters.get("tool") else None
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        package = SkillPackage.from_dict(row["package"])
+        if tag_filter and tag_filter not in package.tags:
+            continue
+        if tool_filter and tool_filter not in package.tools:
+            continue
+        out.append(
+            {
+                "skill_id": package.skill_id,
+                "version_hash": package.version_hash,
+                "name": package.name,
+                "display_name": package.display_name,
+                "short_description": package.short_description,
+                "one_liner": package.to_catalog_summary()["one_liner"],
+                "status": package.status,
+                "scope": package.scope,
+                "agent_id": package.agent_id,
+                "risk_class": package.risk_class,
+                "tags": package.tags,
+                "tools": package.tools,
+                "updated_at": package.updated_at,
+            }
+        )
+    return out

@@ -154,6 +154,14 @@ def test_renderer_and_animation_dependencies_are_scoped() -> None:
     assert "pyfiglet>=1.0,<2" in extras["dev"]
 
 
+def test_runtime_dependencies_include_timezone_database() -> None:
+    pyproject = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    )
+
+    assert "tzdata" in pyproject["project"]["dependencies"]
+
+
 def test_public_import_does_not_require_blockchain_extra(tmp_path: Path) -> None:
     script = """
 import builtins

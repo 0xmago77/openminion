@@ -125,6 +125,7 @@ def build_runtime_infrastructure(
     disable_security_policy: bool,
     logging_mode: str,
 ) -> dict[str, object]:
+    security_lab_runner = build_security_lab_runner(config=base_config)
     runtime_env = base_config.runtime.env or {}
     filtered_env = {k: v for k, v in runtime_env.items() if k not in _ROOT_ENV_KEYS}
     apply_runtime_environment(filtered_env)
@@ -162,17 +163,13 @@ def build_runtime_infrastructure(
     )
     _bind_channel_supervisor_telemetry(extension_runtime, telemetry_service)
     default_config = build_runtime_config(
-        base_config,
-        overrides=effective_run_profile_overrides,
+        base_config, overrides=effective_run_profile_overrides
     )
     default_agent = default_config.agents[resolve_default_agent_id(default_config)]
     llm_runtime = build_runtime_llm_handle(default_config, logger.getChild("provider"))
     tools = extension_runtime.tools
     action_policy, ops_service = _build_ops_services(
-        base_config,
-        manager,
-        paths.data,
-        tool_registry=tools,
+        base_config, manager, paths.data, tool_registry=tools
     )
     support = _build_runtime_support(
         base_config=base_config,
@@ -193,6 +190,7 @@ def build_runtime_infrastructure(
         "agent_security_policy": agent_security_policy,
         **_extension_runtime_components(extension_runtime),
         "default_config": default_config,
+        "security_lab_runner": security_lab_runner,
         "default_agent": default_agent,
         "llm_runtime": llm_runtime,
         "provider": SimpleNamespace(
@@ -325,7 +323,6 @@ def _build_runtime_support(
     memory_assembly.start()
     knowledge_graphs = build_knowledge_graph_source_service(config=base_config)
     sandbox_runner = build_daytona_runner(config=base_config, config_manager=manager)
-    security_lab_runner = build_security_lab_runner(config=base_config)
     authored_tools = build_tool_authoring_service(
         config=base_config,
         data_root=paths.data,
@@ -341,6 +338,5 @@ def _build_runtime_support(
         "vector_adapter": vector_adapter,
         "knowledge_graphs": knowledge_graphs,
         "sandbox_runner": sandbox_runner,
-        "security_lab_runner": security_lab_runner,
         "authored_tools": authored_tools,
     }

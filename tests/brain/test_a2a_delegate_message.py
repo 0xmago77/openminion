@@ -89,7 +89,11 @@ def test_configured_agent_handler_forwards_child_turn_controls() -> None:
 
     payload = handler(
         SimpleNamespace(
-            params={"goal": "write a file", "permission_mode": "ask"},
+            params={
+                "goal": "write a file",
+                "permission_mode": "ask",
+                "permission_overrides": {"file.write": "bypass"},
+            },
             meta={"session_id": "parent-session"},
             msg_id="msg-1",
             trace_id="trace-1",
@@ -98,6 +102,8 @@ def test_configured_agent_handler_forwards_child_turn_controls() -> None:
         )
     )
 
+    metadata = calls[0]["payload"]["inbound_metadata"]
+    assert json.loads(metadata["permission_overrides"]) == {"file.write": "bypass"}
     assert payload["body"] == "child completed"
     assert len(calls) == 1
     assert calls[0]["approval_callback"] is approval_callback
@@ -219,7 +225,11 @@ def test_configured_agent_handler_omits_approval_callback_for_readonly_child() -
 
     payload = handler(
         SimpleNamespace(
-            params={"goal": "research", "permission_mode": "readonly"},
+            params={
+                "goal": "research",
+                "permission_mode": "readonly",
+                "permission_overrides": {"file.write": "bypass"},
+            },
             meta={"session_id": "parent-session"},
             msg_id="msg-readonly",
             trace_id="trace-readonly",
@@ -229,6 +239,7 @@ def test_configured_agent_handler_omits_approval_callback_for_readonly_child() -
     )
 
     assert payload["body"] == "candidate contract"
+    assert "permission_overrides" not in calls[0]["payload"]["inbound_metadata"]
     assert "approval_callback" not in calls[0]
     assert calls[0]["payload"]["inbound_metadata"]["permission_mode"] == "readonly"
 
@@ -349,3 +360,73 @@ def test_configured_agent_handler_projects_typed_review_result() -> None:
     assert payload["verifier_refs"] == verifier_refs
     assert payload["passed"] is True
     assert payload["findings"] == []
+
+
+@pytest.mark.parametrize("readonly", [False, True])
+def test_delegated_inbound_preserves_only_authorized_file_write_policy(
+    tmp_path, readonly
+):
+    from openminion.base.config import ActionPolicyConfig
+    from openminion.modules.brain.adapters.a2a.runtime import (
+        _delegated_inbound_metadata,
+    )
+    from openminion.modules.policy.adapters.brain import PolicyCtlBrainAdapter
+    from openminion.modules.policy.models import policy_config_from_action_policy
+    from openminion.modules.policy.runtime.action_policy import derive_tool_risk_spec
+    from openminion.modules.policy.runtime.service import PolicyCtl
+    from openminion.modules.task.autonomy import autonomy_permission_metadata
+    from openminion.modules.tool import build_default_tool_registry
+    from openminion.services.brain.post_execution.mixin import (
+        _parse_permission_overrides,
+    )
+
+    grants = json.loads(
+        autonomy_permission_metadata("local-safe")["permission_overrides"]
+    )
+    metadata = _delegated_inbound_metadata(
+        envelope=SimpleNamespace(
+            meta={},
+            from_agent="parent",
+            trace_id="trace",
+            params={
+                "permission_mode": "readonly" if readonly else "ask",
+                "permission_overrides": grants,
+                "workspace_root": str(tmp_path / "child"),
+            },
+        ),
+        target_agent_id="child",
+    )
+    assert metadata["workspace_root"] == str(tmp_path / "child")
+    overrides = _parse_permission_overrides(metadata)
+    assert overrides == ({} if readonly else grants)
+    state = SimpleNamespace(
+        permission_mode=metadata["permission_mode"], permission_overrides=overrides
+    )
+    config = PolicyCtlBrainAdapter._with_permission_rules(
+        policy_config_from_action_policy(ActionPolicyConfig()),
+        state,
+    )
+    registry = build_default_tool_registry()
+    ctl = PolicyCtl.with_sqlite(tmp_path / "policy.db", config=config)
+    try:
+        decisions = {}
+        for name in ("file.write", "file.edit", "code.patch"):
+            ctl.register_risk(
+                name, derive_tool_risk_spec(tool_name=name, tool=registry.list()[name])
+            )
+            tool, method = name.split(".")
+            decisions[name] = ctl.check(
+                {"tool": tool, "method": method, "args": {"path": "app.py"}},
+                {"subject_id": "local", "session_id": "child", "mode_name": "act"},
+            ).decision
+        assert decisions == (
+            {name: "DENY" for name in decisions}
+            if readonly
+            else {
+                "file.write": "ALLOW",
+                "file.edit": "REQUIRE_CONFIRM",
+                "code.patch": "REQUIRE_CONFIRM",
+            }
+        )
+    finally:
+        ctl.close()

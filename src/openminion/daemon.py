@@ -322,7 +322,12 @@ def build_daemon_supervision_policy(
 
 
 def _resolve_daemon_file(
-    config: OpenMinionConfig, configured_path: str | None, default_relative: str
+    config: OpenMinionConfig,
+    configured_path: str | None,
+    default_relative: str,
+    *,
+    home_root: str | Path | None = None,
+    data_root: str | Path | None = None,
 ) -> Path:
     configured = str(configured_path or "").strip()
     if configured:
@@ -331,24 +336,48 @@ def _resolve_daemon_file(
         runtime_env=config.runtime.env,
     )
     env_values = env_config.snapshot()
-    home_root = resolve_home_root(env=env_values)
-    data_root = resolve_data_root(
-        home_root,
-        data_root=env_config.openminion_data_root or None,
+    resolved_home = (
+        Path(home_root).expanduser().resolve()
+        if home_root
+        else resolve_home_root(env=env_values)
+    )
+    resolved_data = resolve_data_root(
+        resolved_home,
+        data_root=data_root or env_config.openminion_data_root or None,
         env=env_values,
     )
-    return (data_root / default_relative).resolve()
+    return (resolved_data / default_relative).resolve()
 
 
-def resolve_daemon_pid_file(config: OpenMinionConfig) -> Path:
+def resolve_daemon_pid_file(
+    config: OpenMinionConfig,
+    *,
+    home_root: str | Path | None = None,
+    data_root: str | Path | None = None,
+) -> Path:
     return _resolve_daemon_file(
-        config, config.runtime.daemon_pid_file, "state/openminiond.pid"
+        config,
+        config.runtime.daemon_pid_file,
+        "state/openminiond.pid",
+        home_root=home_root,
+        data_root=data_root,
     )
 
 
-def resolve_daemon_log_file(config: OpenMinionConfig) -> Path:
+def resolve_daemon_log_file(
+    config: OpenMinionConfig,
+    *,
+    home_root: str | Path | None = None,
+    data_root: str | Path | None = None,
+) -> Path:
     configured = getattr(getattr(config, "runtime", object()), "daemon_log_file", "")
-    return _resolve_daemon_file(config, configured, "logs/openminiond.log")
+    return _resolve_daemon_file(
+        config,
+        configured,
+        "logs/openminiond.log",
+        home_root=home_root,
+        data_root=data_root,
+    )
 
 
 def resolve_ipc_bind(config: OpenMinionConfig) -> tuple[str, int]:

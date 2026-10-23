@@ -14,6 +14,9 @@ from uuid import uuid4
 from pydantic import BaseModel, ValidationError
 
 from openminion.api.runtime import APIRuntime
+from openminion.modules.controlplane.constants import (
+    CALLER_HANDLES_DELIVERY_METADATA_KEY,
+)
 from openminion.modules.tool.registry import ToolRegistry
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -158,6 +161,7 @@ class Agent(Generic[InputT, OutputT]):
             "message": message,
             "session_id": (session_id or "").strip() or self.session_id,
             "deliver": False,
+            "inbound_metadata": {CALLER_HANDLES_DELIVERY_METADATA_KEY: "true"},
         }
         if self.agent_id:
             payload["agent_id"] = self.agent_id

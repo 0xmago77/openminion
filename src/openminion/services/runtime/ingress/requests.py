@@ -112,6 +112,7 @@ def runtime_turn_request_from_payload(
         ),
         run_profile_overrides=run_profile_overrides,
         trusted_subagent_context=trusted_subagent_context,
+        explicit_agent=bool(requested_agent_id),
     )
 
 
@@ -121,7 +122,7 @@ def build_manager_turn_request(
     default_agent_id: str,
 ) -> TurnRequest:
     trace_id = _optional_text(payload.get("trace_id")) or ""
-    agent_id = _optional_text(payload.get("agent_id")) or default_agent_id
+    requested_agent_id = _optional_text(payload.get("agent_id"))
     session_id = _optional_text(payload.get("session_id")) or ""
     input_text_raw = payload.get("input_text")
     if not isinstance(input_text_raw, str):
@@ -141,13 +142,14 @@ def build_manager_turn_request(
     mode = _optional_text(payload.get("mode")) or "oneshot"
     return TurnRequest(
         trace_id=trace_id,
-        agent_id=agent_id,
+        agent_id=requested_agent_id or default_agent_id,
         session_id=session_id,
         input_text=input_text,
         attachments=attachments,
         mode=mode,
         stream=bool(payload.get("stream")),
         meta=_manager_meta_from_payload(payload),
+        explicit_agent=requested_agent_id is not None,
     )
 
 
@@ -200,6 +202,7 @@ def runtime_turn_request_from_manager_request(
             explicit_category=meta.get("capability_category"),
         ),
         run_profile_overrides=run_profile_overrides,
+        explicit_agent=request.explicit_agent,
     )
 
 

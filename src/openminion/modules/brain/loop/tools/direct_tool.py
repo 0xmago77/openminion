@@ -7,6 +7,7 @@ from typing import Any
 
 from openminion.modules.brain.tools.parser import normalize_tool_name_for_brain
 from openminion.modules.brain.loop.constants import EMPTY_FINALIZATION_RETRY_PROMPT
+from openminion.modules.brain.loop.failures import _raise_provider_failure
 from openminion.modules.llm import ProviderError
 from openminion.modules.llm.schemas import Message
 
@@ -429,7 +430,8 @@ def _direct_tool_closure_failure(
     public_mode_tag: str,
     detail_text: str,
     termination_reason: str,
-    error_message: str,
+    error_message: str = "",
+    error: Exception | None = None,
 ) -> AdaptiveToolLoopOutcome:
     loop_state.termination_reason = termination_reason
     mode_state = (
@@ -445,6 +447,9 @@ def _direct_tool_closure_failure(
         mode_state=mode_state,
         termination_reason=termination_reason,
     )
+    if error is not None:
+        _raise_provider_failure(error)
+        error_message = str(error)
     return AdaptiveToolLoopOutcome(
         profile_name=profile.profile_name,
         mode_name=profile.mode_name,
@@ -748,7 +753,7 @@ def _force_direct_tool_answer_only_closure(
                     else "answer-only closure failed"
                 ),
                 termination_reason=ADAPTIVE_TERM_LLM_ERROR,
-                error_message=str(exc),
+                error=exc,
             )
             duration_ms = (
                 int((time.monotonic() - closure_start) * 1000) if attempt else 0

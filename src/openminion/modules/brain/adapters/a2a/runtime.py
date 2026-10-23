@@ -756,6 +756,8 @@ def _delegated_inbound_metadata(
         "workspace_root": str(params.get("workspace_root", "") or "").strip(),
         "cwd": str(params.get("cwd") or params.get("workspace_root") or "").strip(),
     }
+    if params.get("permission_overrides") and payload["permission_mode"] != "readonly":
+        payload["permission_overrides"] = json.dumps(params["permission_overrides"])
     parent_context = _delegation_context_from_payload(params)
     if parent_context is not None:
         payload.update(

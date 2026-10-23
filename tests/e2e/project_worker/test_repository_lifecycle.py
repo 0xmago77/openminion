@@ -199,7 +199,7 @@ def _project_command(
         "tool_name": tool_name,
         "args": args,
         "idempotency_key": command_id,
-        "meta": {"orchestration": {"task_backed_task_id": task_id}},
+        "meta": {"orchestration": {"project_task_id": task_id}},
     }
 
 

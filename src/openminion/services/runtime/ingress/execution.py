@@ -11,7 +11,7 @@ from openminion.modules.controlplane.constants import (
 )
 from openminion.modules.telemetry.usage import RunStats
 from openminion.modules.runtime.sync import await_with_cancel
-from openminion.modules.storage import is_room_session_key
+from openminion.modules.storage import is_room_session_key, normalize_identity
 from openminion.services.runtime.turn_router import TurnRouter
 
 from .gateway_call import _run_coro_sync
@@ -139,6 +139,9 @@ def _routed_agents(
         session = runtime.sessions.get_session(request.session_id)
         if session is not None:
             participants = runtime.sessions.list_participants(request.session_id)
+            _reject_explicit_agent_outside_session(
+                request=request, session=session, participants=participants
+            )
     decision = TurnRouter().route(
         session=session,
         message=request.message,
@@ -148,6 +151,26 @@ def _routed_agents(
     )
     routed_agents = tuple(agent_id for agent_id in decision.agent_ids if agent_id)
     return routed_agents or (request.profile_agent_id,), decision.mode
+
+
+def _reject_explicit_agent_outside_session(
+    *, request: RuntimeTurnRequest, session: Any, participants: list[Any]
+) -> None:
+    session_agents = [
+        item.participant_id for item in participants if item.participant_type == "agent"
+    ]
+    # Rooms keep routing a non-participant requester by their room policy.
+    if (
+        not request.explicit_agent
+        or not session_agents
+        or normalize_identity(request.profile_agent_id) in session_agents
+        or is_room_session_key(str(session.session_key or ""))
+    ):
+        return
+    raise TurnRequestError(
+        f"Session {request.session_id!r} belongs to agent {session_agents[0]!r}, "
+        f"not {request.agent_id!r}; use a new session_id for {request.agent_id!r}."
+    )
 
 
 def _execute_routed_turns(

@@ -13,12 +13,16 @@ from openminion.modules.brain.adapters.policy import LocalPolicyAdapter
 from openminion.modules.brain.adapters.session import LocalSessionStore
 from openminion.modules.brain.adapters.tool import LocalToolAdapter
 from openminion.modules.brain.diagnostics.events import CanonicalEventLogger
+from openminion.modules.brain.execution.closure.checks import _closure_action_outputs
 from openminion.modules.brain.execution.mission import (
     allocate_mission_turn_budget,
     build_mission_state,
     set_mission_status,
 )
-from openminion.modules.brain.constants import MissionStatus
+from openminion.modules.brain.constants import (
+    CLOSURE_TOOL_RESULT_PAYLOAD_MAX_CHARS,
+    MissionStatus,
+)
 from openminion.modules.brain.runner import BrainRunner
 from openminion.modules.brain.runner.lifecycle import run_until_idle
 from openminion.modules.brain.schemas import (
@@ -839,6 +843,47 @@ def test_turn_closure_hints_include_execution_facts_for_partial_scaffolds() -> N
         assert "progress note" in contract
 
 
+@pytest.mark.parametrize("payload_key", ["data", "content"])
+def test_closure_action_outputs_keep_bounded_redacted_tool_payload(
+    payload_key: str,
+) -> None:
+    long_payload = "order A-104: pickup code ZEBRA-42; api_key=abc123secret " + (
+        "x" * 600
+    )
+    outputs = _closure_action_outputs(
+        ActionResult(
+            command_id="cmd-lookup-order",
+            status="success",
+            summary="Tool executed successfully",
+            outputs={
+                "tool_results": [
+                    {
+                        "tool_name": "lookup_order",
+                        "ok": True,
+                        "verified": True,
+                        "data": {payload_key: long_payload},
+                    },
+                    {
+                        "tool_name": "browser",
+                        "ok": True,
+                        "data": {"url": "https://example.test", "data": {"html": "x"}},
+                    },
+                ]
+            },
+        )
+    )
+
+    lookup_data = outputs["tool_results"][0]["data"][payload_key]
+    assert lookup_data.startswith("order A-104: pickup code ZEBRA-42")
+    assert "abc123secret" not in lookup_data
+    assert "api_key=[REDACTED]" in lookup_data
+    assert lookup_data.endswith("...[truncated]")
+    assert len(lookup_data) <= CLOSURE_TOOL_RESULT_PAYLOAD_MAX_CHARS + len(
+        "...[truncated]"
+    )
+    assert outputs["tool_results"][1]["data"] == {"url": "https://example.test"}
+
+
 def test_turn_closure_repairs_missing_final_answer_before_close() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         context_api = _ContextAPI()
@@ -1087,7 +1132,7 @@ def test_turn_closure_records_finalization_status_conflict_without_forcing_close
     assert "finalization_status_conflict" in judgment.reason
 
 
-def test_turn_closure_continues_when_closure_schema_is_invalid() -> None:
+def test_turn_closure_raises_when_closure_schema_is_invalid() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         context_api = _ContextAPI()
         llm_api = _MissionJudgeLLM(mission_payload={"outcome": "complete"})
@@ -1105,11 +1150,14 @@ def test_turn_closure_continues_when_closure_schema_is_invalid() -> None:
             agent_id=runner.profile.agent_id,
         )
 
-        with patch(
-            "openminion.modules.brain.execution.closure.call_structured_with_retry",
-            side_effect=RuntimeError("LLM did not return structured output"),
+        with (
+            patch(
+                "openminion.modules.brain.execution.closure.call_structured_with_retry",
+                side_effect=RuntimeError("LLM did not return structured output"),
+            ),
+            pytest.raises(RuntimeError, match="LLM did not return structured output"),
         ):
-            judgment = runner._evaluate_turn_closure(
+            runner._evaluate_turn_closure(
                 state=state,
                 action_result=ActionResult(
                     command_id="cmd-invalid-closure-schema",
@@ -1119,10 +1167,6 @@ def test_turn_closure_continues_when_closure_schema_is_invalid() -> None:
                 logger=logger,
                 completion_reason="coding_final_text",
             )
-
-        assert judgment.satisfied is False
-        assert judgment.next_action == "continue"
-        assert judgment.reason == "closure_gate_invalid_structured_output"
 
 
 def test_turn_closure_does_not_infer_success_after_judge_failure() -> None:
@@ -1158,11 +1202,14 @@ def test_turn_closure_does_not_infer_success_after_judge_failure() -> None:
             agent_id=runner.profile.agent_id,
         )
 
-        with patch(
-            "openminion.modules.brain.execution.runtime.closure.evaluator._apply_closure_guards",
-            side_effect=ValueError("guard failed"),
+        with (
+            patch(
+                "openminion.modules.brain.execution.runtime.closure.evaluator._apply_closure_guards",
+                side_effect=ValueError("guard failed"),
+            ),
+            pytest.raises(ValueError, match="guard failed"),
         ):
-            judgment = runner._evaluate_turn_closure(
+            runner._evaluate_turn_closure(
                 state=state,
                 action_result=ActionResult(
                     command_id="cmd-explicit",
@@ -1172,11 +1219,6 @@ def test_turn_closure_does_not_infer_success_after_judge_failure() -> None:
                 logger=logger,
                 completion_reason="explicit_command_completed",
             )
-
-        assert judgment.satisfied is False
-        assert judgment.next_action == "replan"
-        assert judgment.final_answer is None
-        assert judgment.reason == "closure_gate_failed_fallback_replan"
 
 
 def test_turn_closure_continues_when_freshness_evidence_missing_but_budget_remains() -> (

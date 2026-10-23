@@ -28,6 +28,7 @@ class RuntimeMemoryAssembly:
     vector_adapter: Any | None = None
     scheduler: RuntimeMemoryScheduler | None = None
     delegated_store: Any | None = None
+    artifactctl: Any | None = None
     _started: bool = field(default=False, init=False, repr=False)
     _close_result: RuntimeMemoryCloseResult | None = field(
         default=None,
@@ -60,6 +61,8 @@ class RuntimeMemoryAssembly:
             closed=True,
             reason_code="closed",
         )
+        if self.artifactctl is not None:
+            self.artifactctl.close()
         return self._close_result
 
     def recover_pending_captures(

@@ -23,6 +23,7 @@ ScanStatus = Literal[
     "timed_out",
 ]
 SecurityAuditCheck = Literal["code", "dependencies", "iac", "secrets"]
+_FINDING_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"
 _CANONICAL_REF_PATTERN = r"^artifact://sha256/[0-9a-f]{64}$"
 
 
@@ -108,6 +109,17 @@ class SecurityScanResult(BaseModel):
 
     def as_tool_result(self) -> dict[str, Any]:
         payload = self.model_dump(mode="json", exclude_none=True)
+        # Keep evidence and completeness visible when tool messages are compacted.
+        payload = {
+            "findings": payload["findings"],
+            "evidence_refs": payload["evidence_refs"],
+            "status": payload["status"],
+            "total_findings": payload["total_findings"],
+            "returned_findings": payload["returned_findings"],
+            "truncated": payload["truncated"],
+            "partial_reason": payload["partial_reason"],
+            **payload,
+        }
         payload["artifact_refs"] = list(self.evidence_refs)
         payload["verified"] = self.status in {"completed", "partial"}
         evidence = f" evidence={self.evidence_refs[0]}" if self.evidence_refs else ""
@@ -169,7 +181,7 @@ class SecurityAuditFindingLocation(BaseModel):
 class SecurityAuditFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    finding_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+    finding_id: str = Field(pattern=_FINDING_ID_PATTERN)
     basis: Literal["scanner", "manual"]
     disposition: Literal["candidate", "rejected"]
     title: str = Field(min_length=1, max_length=300)
@@ -183,7 +195,11 @@ class SecurityAuditFinding(BaseModel):
     locations: list[SecurityAuditFindingLocation] = Field(min_length=1, max_length=20)
     evidence_ref: str | None = Field(default=None, pattern=_CANONICAL_REF_PATTERN)
     scanner_finding_ids: list[str] = Field(default_factory=list, max_length=100)
-    evidence_summary: str = Field(default="", max_length=3000)
+    evidence_summary: str = Field(
+        default="",
+        max_length=3000,
+        description="Required for manual findings. Omit for scanner findings; use evidence_ref and scanner_finding_ids instead.",
+    )
 
     @model_validator(mode="after")
     def _basis_evidence(self) -> "SecurityAuditFinding":
@@ -292,7 +308,7 @@ class SecurityLabFindingLocation(BaseModel):
 class SecurityLabFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    finding_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+    finding_id: str = Field(pattern=_FINDING_ID_PATTERN)
     disposition: Literal["candidate", "rejected"]
     title: str = Field(min_length=1, max_length=300)
     category: str = Field(min_length=1, max_length=120)

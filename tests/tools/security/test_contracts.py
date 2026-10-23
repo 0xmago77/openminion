@@ -21,6 +21,7 @@ from openminion.tools.security.dependencies import (
     TRIVY_DEPENDENCY,
 )
 from openminion.tools.security.schemas import LocalScanArgs
+from openminion.tools.security.interfaces import READONLY_SECURITY_TOOLS
 
 
 def test_security_family_contract_and_hidden_profile() -> None:
@@ -50,7 +51,8 @@ def test_security_family_contract_and_hidden_profile() -> None:
         approved=True,
     )
     visible = get_model_exposure_specs(registry, metadata={"session_id": "s1"})
-    assert set(ALL_SECURITY_TOOLS).issubset({spec.name for spec in visible})
+    assert set(READONLY_SECURITY_TOOLS).issubset({spec.name for spec in visible})
+    assert "security.review_report" not in {spec.name for spec in visible}
 
     registry.exposure_service.deactivate("security_readonly", session_id="s1")
     registry.exposure_service.activate(
@@ -62,7 +64,7 @@ def test_security_family_contract_and_hidden_profile() -> None:
     visible_with_legacy_tokens = get_model_exposure_specs(
         registry, metadata={"session_id": "s1"}
     )
-    assert set(ALL_SECURITY_TOOLS).issubset(
+    assert set(READONLY_SECURITY_TOOLS).issubset(
         {spec.name for spec in visible_with_legacy_tokens}
     )
 
@@ -127,3 +129,16 @@ def test_missing_scanner_dependency_stops_before_security_handler(
     assert result.data["error_code"] == "DEPENDENCY_MISSING"
     assert "artifact_refs" not in result.data
     assert "artifacts" not in result.data
+
+
+def test_review_schema_is_one_discriminated_tool(record_property):
+    import json
+
+    from openminion.tools.security.review_schemas import SecurityReviewArgs
+
+    schema = SecurityReviewArgs.model_json_schema()
+    assert schema["discriminator"]["propertyName"] == "review_kind"
+    assert set(schema["discriminator"]["mapping"]) == {"initial", "follow_up"}
+    record_property(
+        "security_review_schema_bytes", len(json.dumps(schema, sort_keys=True).encode())
+    )

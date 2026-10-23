@@ -232,6 +232,54 @@ class CanonicalEventLoggerTests(unittest.TestCase):
         self.assertGreater(len(tool_events), 0)
         self.assertEqual(tool_events[-1].get("actor_type"), "tool")
 
+    def test_structural_tool_failure_omits_input_but_preserves_live_error(self) -> None:
+        from openminion.modules.brain.diagnostics.events import CanonicalEventLogger
+        from openminion.modules.brain.schemas import ActionError, ActionResult
+
+        sensitive_input = "fixture source body and private finding description"
+        result = ActionResult(
+            command_id="fixture-publish",
+            status="failed",
+            summary=sensitive_input,
+            error=ActionError(
+                code="INVALID_ARGUMENT",
+                message=f"findings expected list; input_value={sensitive_input!r}",
+                details={"input": sensitive_input},
+            ),
+        )
+        original = result.model_dump(mode="json")
+        for structural in (False, True):
+            with self.subTest(structural=structural):
+                logger = CanonicalEventLogger(
+                    session_api=self._store,
+                    session_id=self._sid,
+                    agent_id="agent.main",
+                    structural_tool_results=structural,
+                )
+                logger.emit(
+                    "tool.completed",
+                    {"tool_name": "security.publish_report", "summary": result.summary},
+                    error=result.error.model_dump(mode="json"),
+                    status="error",
+                )
+                event = self._store.get_events(
+                    self._sid, after_seq=-1, types=["tool.completed"]
+                )[-1]
+                if structural:
+                    self.assertNotIn(sensitive_input, str(event))
+                    self.assertEqual(
+                        event["payload"]["error"],
+                        {
+                            "code": "INVALID_ARGUMENT",
+                            "message": "security tool did not complete",
+                            "details": {},
+                        },
+                    )
+                else:
+                    self.assertEqual(event["payload"]["error"], original["error"])
+                    self.assertEqual(event["payload"]["summary"], sensitive_input)
+                self.assertEqual(result.model_dump(mode="json"), original)
+
     def test_emit_preserves_trace_id(self) -> None:
         try:
             logger = self._make_logger()

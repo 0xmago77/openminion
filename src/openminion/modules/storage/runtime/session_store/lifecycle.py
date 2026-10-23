@@ -376,6 +376,13 @@ class RuntimeSessionStoreLifecycle:
         newest_first: bool = False,
         event_type_prefix: str | None = None,
     ) -> list[EventRecord]:
+        """List a session's events by insertion order (`events.id`).
+
+        `id` is the same key `list_events_before_id`, `list_events_after_id` and
+        `event_high_water` page by, so run-state reduction and id-based paging
+        agree. `created_at` stays the stored wall-clock fact and does not order
+        events, because the clock can step back between two appends.
+        """
         from .rows import normalize_optional_text
 
         safe_limit = max(0, int(limit))
@@ -392,7 +399,7 @@ class RuntimeSessionStoreLifecycle:
         if prefix:
             query += "\nAND event_type LIKE ?"
             params.append(f"{prefix}%")
-        query += f"\nORDER BY created_at {direction}, id {direction}\nLIMIT ?"
+        query += f"\nORDER BY id {direction}\nLIMIT ?"
         params.append(safe_limit)
         rows = self._backend.query_dicts(query, params)
         return [row_to_event(row) for row in rows]
