@@ -13,6 +13,14 @@ This file tracks package-facing release notes for `openminion`.
   exposed in the args schema are evaluated (return, `self`/`cls` and
   `*args`/`**kwargs` annotations are left alone), and decoration fails with a
   clear `TypeError` when an exposed argument annotation cannot be resolved.
+- Close the memory store, audit sink and artifact store that the bootstrap
+  memory fallback creates. When `build_gateway_service` builds the agent memory
+  itself, `GatewayService.close()` now closes it once, and the adapter that
+  `build_agent_memory_service` returns gets a `close()` that closes the runtime
+  memory assembly behind it once, keeping the scheduler boundary. Before, the
+  assembly was dropped and nothing could close them. An `agent_memory` passed
+  to the gateway service stays borrowed, and the SDK runtime's memory gateway
+  still closes nothing itself (#389).
 
 ## Current package line - 2026-10-24
 
