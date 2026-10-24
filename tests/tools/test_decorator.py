@@ -208,3 +208,133 @@ def test_functional_decorator_preserves_options_and_identity(named) -> None:
     if named:
         assert spec.name == "custom.lookup"
         assert spec.description == "Lookup value."
+
+
+def test_decorator_resolves_postponed_annotated_field_metadata() -> None:
+    from tests.tools._postponed_annotation_tools import lookback
+
+    schema = lookback.tool_args_model.model_json_schema()
+    days = schema["properties"]["days"]
+    assert days["description"] == "Look-back days"
+    assert days["minimum"] == 1
+    assert days["default"] == 2
+    assert lookback.tool_args_model(days=3).days == 3
+    with pytest.raises(ValidationError):
+        lookback.tool_args_model(days=0)
+    with pytest.raises(ValidationError):
+        lookback.tool_args_model(days=3, unexpected=1)
+
+
+def test_decorator_resolves_postponed_module_level_custom_types() -> None:
+    from tests.tools._postponed_annotation_tools import Range, Window, summarize
+
+    args_model = summarize.tool_args_model
+    schema = args_model.model_json_schema()
+    assert set(schema["required"]) == {"window", "span", "label"}
+    assert schema["properties"]["limit"]["default"] == 5
+    args = args_model(window="week", span={"start": 1, "end": 4}, label=object())
+    assert args.window is Window.WEEK
+    assert args.span == Range(start=1, end=4)
+    with pytest.raises(ValidationError):
+        args_model(window="month", span={"start": 1, "end": 4}, label="x")
+
+
+def test_decorator_rejects_unresolvable_postponed_annotation(
+    tmp_path, monkeypatch
+) -> None:
+    import importlib
+
+    (tmp_path / "unresolved_tool_module.py").write_text(
+        "from __future__ import annotations\n"
+        "from openminion.tools import tool\n"
+        "@tool\n"
+        "def broken(value: MissingType) -> int:\n"
+        "    return 1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    with pytest.raises(TypeError, match="MissingType"):
+        importlib.import_module("unresolved_tool_module")
+
+
+def _import_postponed_module(tmp_path, monkeypatch, name: str, body: str):
+    import importlib
+
+    (tmp_path / f"{name}.py").write_text(
+        "from __future__ import annotations\n"
+        "from openminion.tools import tool\n" + body,
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    return importlib.import_module(name)
+
+
+def _assert_value_only_schema(decorated) -> None:
+    args_model = decorated.tool_args_model
+    schema = args_model.model_json_schema()
+    assert set(schema["properties"]) == {"value"}
+    assert args_model().value == 2
+    with pytest.raises(ValidationError):
+        args_model(value=2, unexpected=1)
+
+
+def test_decorator_ignores_unresolved_postponed_return_annotation(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_postponed_module(
+        tmp_path,
+        monkeypatch,
+        "postponed_return_only_module",
+        "@tool\ndef lookup(value: int = 2) -> ResultOnlyForTyping:\n    return value\n",
+    )
+    _assert_value_only_schema(module.lookup)
+
+
+def test_decorator_ignores_unresolved_postponed_variadic_annotations(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_postponed_module(
+        tmp_path,
+        monkeypatch,
+        "postponed_variadic_module",
+        "@tool\n"
+        "def lookup(\n"
+        "    value: int = 2, *args: ArgsOnlyForTyping, **kwargs: ExtraOnlyForTyping\n"
+        ") -> int:\n"
+        "    return value\n",
+    )
+    _assert_value_only_schema(module.lookup)
+
+
+def test_decorator_ignores_postponed_self_and_cls_annotations(
+    tmp_path, monkeypatch
+) -> None:
+    module = _import_postponed_module(
+        tmp_path,
+        monkeypatch,
+        "postponed_self_cls_module",
+        "class Client:\n"
+        "    @tool\n"
+        "    def lookup(self: Client, value: int = 2) -> int:\n"
+        "        return value\n"
+        "\n"
+        "    @tool\n"
+        "    def lookup_cls(cls: type[Client], value: int = 2) -> int:\n"
+        "        return value\n",
+    )
+    _assert_value_only_schema(module.Client.lookup)
+    _assert_value_only_schema(module.Client.lookup_cls)
+
+
+def test_decorator_still_rejects_unresolved_exposed_argument_with_valid_return(
+    tmp_path, monkeypatch
+) -> None:
+    with pytest.raises(TypeError, match="MissingArgType"):
+        _import_postponed_module(
+            tmp_path,
+            monkeypatch,
+            "postponed_missing_arg_module",
+            "@tool\n"
+            "def lookup(value: MissingArgType, **kwargs: int) -> int:\n"
+            "    return 1\n",
+        )
