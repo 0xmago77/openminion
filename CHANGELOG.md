@@ -7,6 +7,11 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Close the target SQLite connection that `import_omx()` opens as soon as the
+  tables are imported, keeping commit on success and rollback on error. It used
+  to stay open until a garbage collection and, on Windows, blocked renaming or
+  deleting the imported database right after the import (#378).
+
 - Close the SQLite connections that the shared migration runner opens to
   detect a module database, verify it and update its metadata as soon as each
   step finishes, keeping commit on success and rollback on error. They used to
