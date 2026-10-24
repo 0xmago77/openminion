@@ -8,6 +8,7 @@ from openminion.base.config import OpenMinionConfig
 from openminion.modules.brain.adapters.memory.runtime import MemctlAdapter
 from openminion.modules.memory.smoke import EphemeralMemorySmokeProvider
 from openminion.modules.memory.storage import SQLiteMemoryAuditSink
+from openminion.modules.memory.storage import factory as store_factory
 from openminion.services.agent.memory.gateway_adapter import (
     DisabledMemoryGatewayAdapter,
 )
@@ -449,3 +450,101 @@ def test_audit_sink_stays_open_while_scheduler_is_live(tmp_path, audit_sinks) ->
     assert assembly.close().closed is True
     assert sink.close_calls == 1
     assert sink._conn is None
+
+
+@pytest.fixture
+def store_closes(monkeypatch):
+    events: list[str] = []
+
+    def counting(store_type):
+        class CountingStore(store_type):
+            def close(self) -> None:
+                events.append("store.close")
+                super().close()
+
+        return CountingStore
+
+    for name in ("SQLiteMemoryStore", "InMemoryMemoryStore", "RemoteMemoryStore"):
+        monkeypatch.setattr(store_factory, name, counting(getattr(store_factory, name)))
+    return events
+
+
+@pytest.mark.parametrize(
+    "memory_config",
+    [
+        None,
+        {"store": {"backend": "mock"}},
+        {"store": {"backend": "remote", "remote": {"endpoint": "http://127.0.0.1:9"}}},
+    ],
+    ids=["sqlite", "mock", "remote"],
+)
+def test_assembly_closes_the_memory_store_it_creates_once(
+    tmp_path, store_closes, memory_config
+) -> None:
+    overrides: dict[str, object] = {
+        "artifactctl_factory": lambda: _ArtifactStore(store_closes)
+    }
+    if memory_config is not None:
+        overrides["resolve_runtime_memory_config_fn"] = lambda **kwargs: memory_config
+    assembly = _memory_v2_assembly(tmp_path, **overrides)
+    assert assembly.delegated_store.store is assembly.service._store
+
+    first = assembly.close()
+    second = assembly.close()
+
+    assert first is second
+    assert first.closed is True
+    assert store_closes == ["store.close", "artifactctl.close"]
+
+
+class _ReferencedArtifactStore(_ArtifactStore):
+    def ref_add(self, owner_type: str, owner_id: str, target: str) -> None:
+        self.events.append("artifactctl.ref_add")
+
+
+def test_assembly_closes_the_artifact_store_its_sqlite_store_creates_once(
+    tmp_path, monkeypatch
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        "openminion.modules.memory.storage.sqlite.store.create_default_artifactctl",
+        lambda config=None: _ReferencedArtifactStore(events),
+    )
+    assembly = _memory_v2_assembly(
+        tmp_path, artifactctl_factory=_unavailable_artifact_store
+    )
+    assembly.service.write_record(
+        scope="agent:alpha",
+        record_type="fact",
+        title="Referenced",
+        content="Referenced content",
+        evidence_refs=["a" * 64],
+    )
+
+    first = assembly.close()
+    second = assembly.close()
+
+    assert first is second
+    assert first.closed is True
+    assert events == ["artifactctl.ref_add", "artifactctl.close"]
+
+
+def test_memory_store_stays_open_while_scheduler_is_live(
+    tmp_path, store_closes
+) -> None:
+    scheduler = _Scheduler([], live_after_stop=True)
+    assembly = _memory_v2_assembly(
+        tmp_path,
+        scheduler=scheduler,
+        artifactctl_factory=lambda: _ArtifactStore(store_closes),
+    )
+
+    blocked = assembly.close()
+
+    assert blocked.reason_code == "scheduler_still_running"
+    assert store_closes == []
+
+    scheduler.live = False
+    assert assembly.close().closed is True
+    assert assembly.close().closed is True
+    assert store_closes == ["store.close", "artifactctl.close"]
