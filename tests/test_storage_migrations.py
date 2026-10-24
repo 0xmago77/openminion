@@ -36,10 +36,10 @@ class StorageMigrationTests(unittest.TestCase):
             database_path = Path(tmp) / "state" / "openminion.db"
 
             result = migrate_database(database_path)
-            self.assertEqual(result.current_version, 12)
+            self.assertEqual(result.current_version, 13)
             self.assertEqual(
                 result.applied_versions,
-                (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
+                (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13),
             )
 
             with sqlite3.connect(str(database_path)) as conn:
@@ -63,6 +63,15 @@ class StorageMigrationTests(unittest.TestCase):
                 self.assertIn("memory_vectors", tables)
                 self.assertIn("room_participants", tables)
                 self.assertIn("session_turn_leases", tables)
+                self.assertIn("event_run_facts", tables)
+                indexes = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index'"
+                    ).fetchall()
+                }
+                self.assertIn("idx_event_run_facts_session", indexes)
+                self.assertIn("idx_event_run_facts_run", indexes)
 
                 session_columns = {
                     row[1]
@@ -108,6 +117,7 @@ class StorageMigrationTests(unittest.TestCase):
                         (10, "add_session_turn_leases"),
                         (11, "add_canonical_events_and_capture_holds"),
                         (12, "add_message_append_seq"),
+                        (13, "add_event_run_facts"),
                     ],
                 )
 
@@ -118,19 +128,19 @@ class StorageMigrationTests(unittest.TestCase):
             first = migrate_database(database_path)
             second = migrate_database(database_path)
 
-            self.assertEqual(first.current_version, 12)
+            self.assertEqual(first.current_version, 13)
             self.assertEqual(
                 first.applied_versions,
-                (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
+                (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13),
             )
-            self.assertEqual(second.current_version, 12)
+            self.assertEqual(second.current_version, 13)
             self.assertEqual(second.applied_versions, ())
 
             with sqlite3.connect(str(database_path)) as conn:
                 migration_count = conn.execute(
                     "SELECT COUNT(*) FROM migrations"
                 ).fetchone()[0]
-                self.assertEqual(migration_count, 12)
+                self.assertEqual(migration_count, 13)
 
     def test_run_migrations_rolls_back_failed_migration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -286,7 +296,8 @@ def test_append_seq_migration_backfills_migration_time_rowid_order(
     ]
     _legacy_runtime_database(path, messages=messages)
 
-    assert migrate_database(path).applied_versions == (12,)
+    # Migration 13 (run facts) runs after it; the append-order checks below are migration 12's.
+    assert migrate_database(path).applied_versions == (12, 13)
 
     with closing(sqlite3.connect(str(path))) as conn:
         rows = conn.execute(
