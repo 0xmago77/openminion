@@ -11,7 +11,12 @@ from .rows import MESSAGE_COLUMNS, row_to_message
 
 
 class RuntimeSessionStoreBackend:
-    def __init__(self, store_or_connection: RecordStore | sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        store_or_connection: RecordStore | sqlite3.Connection,
+        *,
+        backend_type: str = "sqlite",
+    ) -> None:
         if isinstance(store_or_connection, sqlite3.Connection):
             self._record_store: RecordStore | None = None
             self._conn: sqlite3.Connection | None = store_or_connection
@@ -19,6 +24,45 @@ class RuntimeSessionStoreBackend:
             self._record_store = store_or_connection
             self._conn = None
         self._raw_tx_depth = 0
+        self._backend_type = str(backend_type or "").strip().lower() or "sqlite"
+
+    def session_metadata_match(self, key: str, value: str) -> tuple[str, list[str]]:
+        """Return SQL and parameters for one session metadata filter condition.
+
+        `list_sessions(metadata_filter=...)` selects the sessions whose
+        `metadata_json` holds `value` at `key`; both are bound as parameters.
+        SQLite compares `json_extract(metadata_json, '$.<key>')` with `value`,
+        as it always has. PostgreSQL compares JSON values instead of text:
+        `CAST(metadata_json AS jsonb) -> key` must equal the JSON string
+        `value`, so a number, a boolean or JSON null is never read as its text.
+        On both, a JSON string equal to `value` matches, and a missing key,
+        JSON null, a number or a boolean does not.
+
+        The backends differ where SQLite reads more than a top-level string.
+        `json_extract` returns an object or array as its minified JSON text,
+        which `value` can equal, and reads `key` as a JSON path: `a.b` is `b`
+        inside `a`, `[` starts an array index and a leading `"` quotes the key.
+        PostgreSQL reads `key` as one top-level key and matches strings only.
+        It also raises where SQLite does not: for a stored document that
+        `jsonb` cannot hold (NaN or Infinity, which `json.dumps` writes, an
+        escaped NUL or an unpaired surrogate), for a NUL in `value`, and for a
+        `value` that is not a string, which it does not convert to text.
+
+        `backend_type` is the one `build_runtime_storage` gives
+        `migrate_record_store`.
+        """
+        if self._backend_type == "postgres":
+            if not isinstance(value, str):
+                raise TypeError(
+                    "session metadata filter values must be strings, "
+                    f"not {type(value).__name__}"
+                )
+            return (
+                "(CAST(metadata_json AS jsonb) -> CAST(? AS text))"
+                " = to_jsonb(CAST(? AS text))",
+                [key, value],
+            )
+        return "json_extract(metadata_json, ?) = ?", [f"$.{key}", value]
 
     @contextmanager
     def transaction(self) -> Iterator[None]:

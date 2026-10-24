@@ -35,8 +35,15 @@ from .turn_leases import RuntimeSessionTurnLeases
 
 
 class SessionStore:
-    def __init__(self, store_or_connection: RecordStore | sqlite3.Connection) -> None:
-        self._backend = RuntimeSessionStoreBackend(store_or_connection)
+    def __init__(
+        self,
+        store_or_connection: RecordStore | sqlite3.Connection,
+        *,
+        backend_type: str = "sqlite",
+    ) -> None:
+        self._backend = RuntimeSessionStoreBackend(
+            store_or_connection, backend_type=backend_type
+        )
         self._turn_leases = RuntimeSessionTurnLeases(self._backend)
         self._sessions = RuntimeSessionStoreSessions(
             self._backend,

@@ -301,8 +301,11 @@ class RuntimeSessionStoreSessions:
                 normalized_key = str(key or "").strip()
                 if not normalized_key:
                     continue
-                clauses.append("json_extract(metadata_json, ?) = ?")
-                params.extend((f"$.{normalized_key}", value or ""))
+                clause, clause_params = self._backend.session_metadata_match(
+                    normalized_key, value or ""
+                )
+                clauses.append(clause)
+                params.extend(clause_params)
         where_clause = ""
         if clauses:
             where_clause = "WHERE " + " AND ".join(clauses)
