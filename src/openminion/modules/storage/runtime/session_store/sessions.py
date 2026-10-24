@@ -328,6 +328,10 @@ class RuntimeSessionStoreSessions:
                 (normalized_session_id,),
             )
             self._backend.execute_count(
+                "DELETE FROM event_run_facts WHERE session_id = ?",
+                (normalized_session_id,),
+            )
+            self._backend.execute_count(
                 "DELETE FROM events WHERE session_id = ?",
                 (normalized_session_id,),
             )

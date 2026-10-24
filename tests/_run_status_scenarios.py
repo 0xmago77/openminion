@@ -5,19 +5,44 @@ readers in `openminion.modules.task.run` with a plain event-by-event
 reduction over all of the session's events, which is their contract. The
 reduction reads each event with the readers' own Python normalization
 (`_to_run_event`, `_extract_event_error`, `_event_matches_thread`), so the
-SQL that selects events must agree with it on every payload.
+event facts the SQL selects by must agree with it on every payload.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
-from collections.abc import Callable, Iterator
+import json
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
+from openminion.modules.storage.runtime.migrations import (
+    DEFAULT_MIGRATIONS,
+    Migration,
+    MigrationRows,
+)
 from openminion.modules.storage.runtime.session_store import EventRecord, SessionStore
+from openminion.modules.storage.runtime.session_store.backend import (
+    RuntimeSessionStoreBackend,
+)
+from openminion.modules.storage.runtime.session_store.models import (
+    RuntimeSessionStoreIntegrityError,
+)
+from openminion.modules.storage.runtime.session_store.rows import (
+    EVENT_COLUMNS,
+    metadata_json,
+    row_to_event,
+)
+from openminion.modules.storage.runtime.session_store.run_facts import (
+    backfill_event_run_facts,
+    event_run_facts,
+    key_digest,
+)
 from openminion.modules.task.run import (
     ATTACH_ROLE_WRITER,
     DELIVERY_STATE_ACKED,
@@ -57,6 +82,13 @@ TERMINAL_STATES = {RUN_STATE_COMPLETED, RUN_STATE_FAILED, RUN_STATE_CANCELLED}
 SPECIAL_RUN_IDS = ('q"uote', "back\\slash", "café", "per%cent", "under_score")
 # Every character `str.strip()` removes; SQL `TRIM` without a set removes spaces only.
 PADDING = "".join(chr(code) for code in range(0x3001) if chr(code).isspace())
+# `metadata_json` stores NaN and Infinity as bare tokens and NUL as its JSON
+# escape; Postgres and SQLite JSON functions do not read them as `json.loads`.
+NUL = chr(0)
+NAN, INF = float("nan"), float("inf")
+EVENT_FACTS = (
+    "openminion.modules.storage.runtime.session_store.lifecycle.event_run_facts"
+)
 
 
 @contextmanager
@@ -514,3 +546,629 @@ def check_thread_projection(sessions: SessionStore, session_id: str) -> None:
             conversation_id,
             thread_id,
         )
+
+
+def facts_rows(sessions: SessionStore, session_id: str) -> list[dict[str, Any]]:
+    """The session's `event_run_facts` rows, by event id."""
+    return sessions._backend.query_dicts(
+        "SELECT * FROM event_run_facts WHERE session_id = ? ORDER BY event_id",
+        (session_id,),
+    )
+
+
+# Payload values the facts read: text the readers strip, a zero-width space
+# they keep, JSON token text, every JSON type, and NaN, Infinity and NUL.
+FACT_KEYS = (
+    "run_id",
+    "state",
+    "step",
+    "error",
+    "conversation_id",
+    "thread_id",
+    "invocation_id",
+    "attach_id",
+    "attach_role",
+)
+FACT_VALUES: tuple[Any, ...] = (
+    f"{PADDING}x{PADDING}",
+    chr(0x200B) + "x",
+    "trace: NaN",
+    "a" + chr(92) + "u0000b",
+    f"nul{NUL}id",
+    NUL,
+    PADDING,
+    "",
+    None,
+    True,
+    False,
+    0,
+    7,
+    1e16,
+    -0.0,
+    "7",
+    " RUNNING ",
+    "Cancelled",
+    " WRITER ",
+    "observer",
+    {},
+    [],
+    {"run_id": "r"},
+    ["r", 1],
+    NAN,
+    INF,
+    -INF,
+)
+
+
+def _dev_run_state(payload: dict[str, Any], event_type: str) -> str:
+    """`_normalize_run_state` as `dev` wrote it, copied as the oracle."""
+    candidate = str(payload.get("state") or "").strip().lower()
+    if candidate in RUN_STATES:
+        return candidate
+    if event_type.startswith("run."):
+        suffix = event_type.split(".", 1)[1].strip().lower()
+        if suffix in RUN_STATES:
+            return suffix
+    return RUN_STATE_RUNNING
+
+
+def check_event_facts(sessions: SessionStore, session_id: str) -> None:
+    """Each event's facts are the values the readers read from its payload.
+
+    The expected values apply `dev`'s expressions, copied here rather than
+    imported, to the payload as the readers read it back (`list_events`), for
+    every key and value above, in a run event and in a tool event.
+    """
+    for key in FACT_KEYS:
+        for value in FACT_VALUES:
+            for event_type in ("run.failed", "tool.call"):
+                sessions.append_event(
+                    session_id=session_id,
+                    event_type=event_type,
+                    payload={"run_id": "r", key: value},
+                )
+    events = {event.id: event for event in _all_events(sessions, session_id)}
+    rows = facts_rows(sessions, session_id)
+    assert [row["event_id"] for row in rows] == sorted(events)
+    for row in rows:
+        event = events[row["event_id"]]
+        payload = event.payload
+        run_id = str(payload.get("run_id", "")).strip()
+        error = payload.get("error")
+
+        def decoded(column: str) -> str:
+            return json.loads(row[column]) if row[column] else ""
+
+        actual = {
+            "run_id": decoded("run_key"),
+            "run_state": row["run_state"],
+            "has_step": row["has_step"],
+            "has_error": row["has_error"],
+            "conversation_id": decoded("conversation_key"),
+            "thread_id": decoded("thread_key"),
+            "has_invocation": row["has_invocation"],
+            "has_attach": row["has_attach"],
+            "attach_role": decoded("attach_role"),
+        }
+        expected = {
+            "run_id": run_id,
+            "run_state": _dev_run_state(payload, event.event_type) if run_id else "",
+            "has_step": int(bool(run_id and str(payload.get("step", "")).strip())),
+            "has_error": int(bool(run_id and error is not None and str(error).strip())),
+            "conversation_id": str(payload.get("conversation_id", "") or "").strip(),
+            "thread_id": str(payload.get("thread_id", "") or "").strip(),
+            "has_invocation": int(bool(str(payload.get("invocation_id", "")).strip())),
+            "has_attach": int(bool(str(payload.get("attach_id", "")).strip())),
+            "attach_role": str(payload.get("attach_role", "")).strip().lower(),
+        }
+        assert actual == expected, (row["event_id"], event.event_type, payload)
+        assert row["session_id"] == session_id
+        assert row["run_key_digest"] == key_digest(row["run_key"])
+        for column in ("run_key", "conversation_key", "thread_key", "attach_role"):
+            assert row[column].isascii() and NUL not in row[column], column
+
+
+def append_nonstandard_values(sessions: SessionStore, session_id: str) -> None:
+    """Run and tool events with NaN, Infinity and NUL values, as stored."""
+
+    def event(event_type: str, **payload: Any) -> None:
+        sessions.append_event(
+            session_id=session_id,
+            event_type=event_type,
+            payload={"conversation_id": "conv", "thread_id": "t", **payload},
+        )
+
+    event("run.queued", run_id="r", error="earlier", step="s", invocation_id="inv")
+    event("run.running", run_id="r", error=NAN)
+    event("run.running", run_id="r", step=INF, latency=-INF)
+    # Tool and attach events of the thread, which only the projection reads.
+    event("tool.result", run_id="r", output=f"bin{NUL}ary", metrics=[NAN, INF])
+    event("client.attach", attach_id=f"w{NUL}1", attach_role="writer")
+    event("client.attach", attach_id="o1", attach_role=NAN)
+    event("run.failed", run_id="r", error=f"bad{NUL}byte", state=NAN)
+    event("run.queued", run_id=f"nul{NUL}id", invocation_id=INF)
+    event("run.queued", run_id=NAN, state="queued")
+    event("run.completed", run_id=-INF)
+    nul_thread = {"conversation_id": f"c{NUL}", "thread_id": f"t{NUL}"}
+    event("response.persisted", **nul_thread, run_id="x", note=NAN)
+    event("run.queued", **nul_thread, run_id="x", error=-INF)
+
+
+def check_nonstandard_values(
+    sessions: SessionStore, session_id: str, *, nul_requests: bool = True
+) -> None:
+    """The readers agree with the event reduction on `append_nonstandard_values`.
+
+    With `nul_requests`, the thread projection is also asked for the thread
+    whose stored ids hold a NUL. Postgres takes no NUL in a text parameter, so
+    on that backend the message read of `resolve_thread_lifecycle` rejects such
+    a request on `dev` too; stored NUL values are read on both backends.
+    """
+    check_run_readers(sessions, session_id)
+    requests = [("conv", "t"), (session_id, "t"), ("", "t")]
+    if nul_requests:
+        requests.append((f"c{NUL}", f"t{NUL}"))
+    for conversation_id, thread_id in requests:
+        projection = resolve_thread_lifecycle(
+            sessions,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            thread_id=thread_id,
+        )
+        expected = expected_thread(
+            sessions,
+            session_id,
+            conversation_id=conversation_id,
+            thread_id=thread_id,
+        )
+        assert {key: getattr(projection, key) for key in expected} == expected, (
+            conversation_id,
+            thread_id,
+        )
+    runs = {
+        run.run_id: run for run in list_session_runs(sessions, session_id=session_id)
+    }
+    assert sorted(runs) == sorted(["r", f"nul{NUL}id", "nan", "-inf", "x"])
+    r = runs["r"]
+    assert (r.state, r.current_step, r.error, r.event_count) == (
+        RUN_STATE_FAILED,
+        "inf",
+        f"bad{NUL}byte",
+        4,
+    )
+
+
+def check_nonstandard_probe_cases(
+    sessions: SessionStore, new_session: Callable[[str], str]
+) -> None:
+    """The cases of the third #372 review (`probe_372_nonstandard.py`).
+
+    An earlier error, then a later run event with the value; `dev` reports
+    these results on both backends.
+    """
+    cases = {
+        "error NaN": ({"error": NAN}, "s", "nan"),
+        "step Infinity": ({"step": INF}, "inf", "earlier"),
+        "other key -Infinity": ({"latency": -INF}, "s", "earlier"),
+        "error with NUL": ({"error": f"bad{NUL}byte"}, "s", f"bad{NUL}byte"),
+        "other key with NUL": ({"output": f"bin{NUL}ary"}, "s", "earlier"),
+    }
+    for name, (payload, step, error) in cases.items():
+        session_id = new_session(name)
+        common: dict[str, Any] = {
+            "session_id": session_id,
+            "run_id": "r",
+            "current_step": "s",
+            "conversation_id": "conv",
+            "thread_id": "t",
+        }
+        append_run_state_event(
+            sessions, **common, state="queued", payload={"error": "earlier"}
+        )
+        last = append_run_state_event(
+            sessions, **common, state="running", payload=payload
+        )
+        runs = list_session_runs(sessions, session_id=session_id)
+        assert [
+            (run.run_id, run.state, run.current_step, run.error, run.event_count)
+            for run in runs
+        ] == [("r", RUN_STATE_RUNNING, step, error, 2)], name
+        listed = list_session_run_events(sessions, session_id=session_id, run_id="r")
+        assert len(listed) == 2, name
+        projection = resolve_thread_lifecycle(
+            sessions, session_id=session_id, conversation_id="conv", thread_id="t"
+        )
+        assert (
+            projection.latest_run_id,
+            projection.latest_run_state,
+            projection.latest_event_id,
+        ) == ("r", RUN_STATE_RUNNING, last.id), name
+
+
+def recorded_backfill_migrations(batches: list[int]) -> tuple[Migration, ...]:
+    """`DEFAULT_MIGRATIONS` whose migration 13 backfill records each batch it reads."""
+
+    class Recorder:
+        def __init__(self, rows: MigrationRows) -> None:
+            self._rows = rows
+
+        def query_dicts(self, sql: str, params: Sequence[Any]) -> list[dict[str, Any]]:
+            found = self._rows.query_dicts(sql, params)
+            batches.append(len(found))
+            return found
+
+        def insert_many(self, table: str, rows: list[dict[str, Any]]) -> int:
+            return self._rows.insert_many(table, rows)
+
+    def backfill(rows: MigrationRows) -> None:
+        backfill_event_run_facts(Recorder(rows))
+
+    return tuple(
+        dataclasses.replace(item, backfill=backfill) if item.version == 13 else item
+        for item in DEFAULT_MIGRATIONS
+    )
+
+
+def legacy_event_rows(session_ids: Sequence[str], count: int) -> list[dict[str, Any]]:
+    """`count` events as the store wrote them before runtime migration 13.
+
+    Interleaved runs and threads over `session_ids`, with tool events, padded
+    and JSON-token text, and NaN, Infinity and NUL values; `payload_json` is
+    `metadata_json` of the payload, as `append_event` writes it.
+    """
+    base = datetime(2026, 10, 23, 9, 0, tzinfo=timezone.utc)
+    templates: tuple[tuple[str, dict[str, Any]], ...] = (
+        ("run.queued", {"state": "queued", "step": "accepted", "invocation_id": "i"}),
+        ("run.running", {"step": PADDING, "error": NAN}),
+        ("tool.result", {"output": f"bin{NUL}ary", "metrics": [NAN, -INF]}),
+        ("client.attach", {"attach_id": "w", "attach_role": " Writer "}),
+        ("run.waiting_tool", {"step": INF, "error": f"bad{NUL}byte"}),
+        ("RUN.failed", {"state": "bogus"}),
+        ("run.completed", {"state": f"{PADDING}completed", "error": "trace: NaN"}),
+        ("response.delivered", {}),
+    )
+    rows = []
+    for index in range(count):
+        event_type, extra = templates[index % len(templates)]
+        turn = index // len(templates)
+        payload = {
+            "run_id": f"run-{turn % 7}" if index % 11 else f"nul{NUL}{turn % 3}",
+            "conversation_id": "conv",
+            "thread_id": f"t{turn % 3}",
+            **extra,
+        }
+        stamp = base + timedelta(seconds=index - 8 * (index // 5))
+        rows.append(
+            {
+                "session_id": session_ids[index % len(session_ids)],
+                "event_type": event_type,
+                "payload_json": metadata_json(payload),
+                "created_at": stamp.isoformat(),
+            }
+        )
+    return rows
+
+
+def stored_events(sessions: SessionStore) -> list[dict[str, Any]]:
+    """Every stored event row as the database returns it, by id."""
+    return sessions._backend.query_dicts(
+        f"SELECT {EVENT_COLUMNS} FROM events ORDER BY id"
+    )
+
+
+def check_upgraded_history(
+    sessions: SessionStore,
+    new_session: Callable[[str], str],
+    *,
+    session_ids: Sequence[str],
+    stored: list[dict[str, Any]],
+) -> None:
+    """Check the events `stored` before runtime migration 13, once it has run.
+
+    The rows are unchanged, each has the facts the write path gives the same
+    payload, and the readers agree with the event reduction.
+    """
+    assert stored_events(sessions) == stored
+    facts = sessions._backend.query_dicts(
+        "SELECT * FROM event_run_facts ORDER BY event_id"
+    )
+    assert facts == [event_run_facts(row_to_event(row)) for row in stored]
+
+    # The same payloads, appended through the store, get the same facts.
+    fresh = new_session("written-after-upgrade")
+    appended = [
+        sessions.append_event(
+            session_id=fresh,
+            event_type=row["event_type"],
+            payload=row_to_event(row).payload,
+        )
+        for row in stored[:40]
+    ]
+    rows_by_id = {row["id"]: row for row in stored_events(sessions)}
+    assert [rows_by_id[event.id]["payload_json"] for event in appended] == [
+        row["payload_json"] for row in stored[:40]
+    ]
+
+    def without_ids(row: dict[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in row.items() if k not in ("event_id", "session_id")}
+
+    assert [without_ids(row) for row in facts_rows(sessions, fresh)] == [
+        without_ids(row) for row in facts[:40]
+    ]
+
+    for session_id in session_ids:
+        check_run_readers(sessions, session_id)
+        for conversation_id, thread_id in (
+            ("conv", "t0"),
+            ("conv", "t2"),
+            (session_id, "t1"),
+        ):
+            projection = resolve_thread_lifecycle(
+                sessions,
+                session_id=session_id,
+                conversation_id=conversation_id,
+                thread_id=thread_id,
+            )
+            expected = expected_thread(
+                sessions,
+                session_id,
+                conversation_id=conversation_id,
+                thread_id=thread_id,
+            )
+            assert {key: getattr(projection, key) for key in expected} == expected
+
+
+def check_fact_writes(
+    sessions: SessionStore, new_session: Callable[[str], str]
+) -> None:
+    """Facts are written and removed with their events, in the same transaction."""
+    session_id = new_session("fact-writes")
+
+    def facts() -> list[tuple[int, str]]:
+        return [
+            (row["event_id"], row["run_key"])
+            for row in facts_rows(sessions, session_id)
+        ]
+
+    # A canonical replay returns the stored event and keeps its facts; a replay
+    # with another payload conflicts and writes nothing.
+    first = sessions.append_event(
+        session_id=session_id,
+        event_type="run.queued",
+        canonical_event_id="facts.v1:first",
+        payload={"run_id": "first"},
+    )
+    replay = sessions.append_event(
+        session_id=session_id,
+        event_type="run.queued",
+        canonical_event_id="facts.v1:first",
+        payload={"run_id": "first"},
+    )
+    assert replay == first
+    with pytest.raises(RuntimeSessionStoreIntegrityError):
+        sessions.append_event(
+            session_id=session_id,
+            event_type="run.queued",
+            canonical_event_id="facts.v1:first",
+            payload={"run_id": "second"},
+        )
+    assert facts() == [(first.id, json.dumps("first"))]
+
+    # The terminal outcome and its retention hold, then the capture result
+    # that releases the hold: each is written once, with its facts.
+    outcome_payload = {"capture_id": "cap", "capture_state": "pending", "run_id": "o"}
+    outcome = sessions.commit_terminal_capture_intent(
+        session_id=session_id,
+        canonical_event_id="turn.outcome.v1:facts",
+        capture_id="cap",
+        payload=outcome_payload,
+        payload_hash="h",
+    )
+    assert (
+        sessions.commit_terminal_capture_intent(
+            session_id=session_id,
+            canonical_event_id="turn.outcome.v1:facts",
+            capture_id="cap",
+            payload=outcome_payload,
+            payload_hash="h",
+        )
+        == outcome
+    )
+    with pytest.raises(RuntimeSessionStoreIntegrityError):
+        sessions.commit_terminal_capture_intent(
+            session_id=session_id,
+            canonical_event_id="turn.outcome.v1:facts",
+            capture_id="cap",
+            payload={**outcome_payload, "run_id": "other"},
+            payload_hash="h2",
+        )
+    result_payload = {"capture_id": "cap", "capture_state": "processed", "run_id": "c"}
+    result = sessions.commit_capture_result_and_release_hold(
+        session_id=session_id,
+        canonical_event_id="memory.capture.result.v1:cap",
+        capture_id="cap",
+        payload=result_payload,
+    )
+    replayed = sessions.commit_capture_result_and_release_hold(
+        session_id=session_id,
+        canonical_event_id="memory.capture.result.v1:cap",
+        capture_id="cap",
+        payload=result_payload,
+    )
+    assert (result.replayed, replayed.replayed, replayed.event) == (
+        False,
+        True,
+        result.event,
+    )
+    written = [
+        (first.id, json.dumps("first")),
+        (outcome.id, json.dumps("o")),
+        (result.event.id, json.dumps("c")),
+    ]
+    assert facts() == written
+    for row, event in zip(
+        facts_rows(sessions, session_id), (first, outcome, result.event)
+    ):
+        assert row == event_run_facts(event)
+
+    # A capture result without a hold fails after its insert: the event and
+    # its facts roll back together.
+    with pytest.raises(RuntimeSessionStoreIntegrityError):
+        sessions.commit_capture_result_and_release_hold(
+            session_id=session_id,
+            canonical_event_id="memory.capture.result.v1:no-hold",
+            capture_id="no-hold",
+            payload={"capture_id": "no-hold", "run_id": "orphan"},
+        )
+    assert (
+        sessions.get_event_by_canonical_id("memory.capture.result.v1:no-hold") is None
+    )
+
+    # A failure while writing the facts rolls the event back.
+    high_water = sessions.event_high_water(session_id=session_id)
+    with patch(EVENT_FACTS, side_effect=RuntimeError("facts failed")):
+        with pytest.raises(RuntimeError, match="facts failed"):
+            sessions.append_event(
+                session_id=session_id, event_type="run.queued", payload={"run_id": "x"}
+            )
+    assert sessions.event_high_water(session_id=session_id) == high_water
+    assert facts() == written
+    assert [
+        run.run_id for run in list_session_runs(sessions, session_id=session_id)
+    ] == ["first"]
+
+    # Deleting a session deletes its facts and no other session's.
+    other = new_session("fact-writes-other")
+    kept = sessions.append_event(
+        session_id=other, event_type="run.queued", payload={"run_id": "first"}
+    )
+    assert sessions.delete_session(session_id)
+    assert facts() == []
+    assert [row["event_id"] for row in facts_rows(sessions, other)] == [kept.id]
+
+
+def check_long_ids(sessions: SessionStore, new_session: Callable[[str], str]) -> None:
+    """Long ids, also as JSON escapes, are written and read like short ones.
+
+    The run key is indexed through a fixed-length digest, so its length adds no
+    limit; Postgres B-tree entries are limited to about 2.7 kB. The run id also
+    holds a NUL, which the store keeps escaped in the key.
+    """
+    session_id = new_session("long-ids")
+    long_text = "".join(chr(0x4E00 + (index * 7919) % 20000) for index in range(4000))
+    run_id = f"{long_text}{NUL}run"
+    conversation_id, thread_id = f"{long_text}conv", f"{long_text}thread"
+    appended = [
+        append_run_state_event(
+            sessions,
+            session_id=session_id,
+            run_id=run_id,
+            state=state,
+            current_step="",
+            conversation_id=conversation_id,
+            thread_id=thread_id,
+        )
+        for state in (RUN_STATE_QUEUED, RUN_STATE_FAILED)
+    ]
+    assert len(json.dumps(run_id)) > 20_000
+    runs = list_session_runs(sessions, session_id=session_id)
+    assert [(run.run_id, run.state, run.event_count) for run in runs] == [
+        (run_id, RUN_STATE_FAILED, 2)
+    ]
+    listed = list_session_run_events(sessions, session_id=session_id, run_id=run_id)
+    assert [event.id for event in listed] == [event.id for event in appended]
+    projection = resolve_thread_lifecycle(
+        sessions,
+        session_id=session_id,
+        conversation_id=conversation_id,
+        thread_id=thread_id,
+    )
+    assert (projection.latest_run_id, projection.latest_event_id) == (
+        run_id,
+        appended[-1].id,
+    )
+
+
+def check_bounded_reads(sessions: SessionStore, session_id: str) -> None:
+    """The rows the readers read do not grow with the history.
+
+    Worst case: "long" runs from the first event to the last, interleaved with
+    short runs on another thread, and thread-a's invocation starts at the
+    first event. Rows are counted at the `RuntimeSessionStoreBackend` boundary.
+    """
+    reads: list[int] = []
+    real_query = RuntimeSessionStoreBackend.query_dicts
+
+    def counting_query(self: Any, sql: str, params: Any = None) -> Any:
+        rows = real_query(self, sql, params)
+        reads.append(len(rows))
+        return rows
+
+    def measured(read: Callable[[], Any]) -> tuple[Any, list[int]]:
+        reads.clear()
+        with patch.object(RuntimeSessionStoreBackend, "query_dicts", counting_query):
+            result = read()
+        return result, list(reads)
+
+    def append(run_id: str, state: str, thread_id: str, **payload: Any) -> EventRecord:
+        return append_run_state_event(
+            sessions,
+            session_id=session_id,
+            run_id=run_id,
+            state=state,
+            current_step=state,
+            conversation_id="conv",
+            thread_id=thread_id,
+            payload=payload or None,
+        )
+
+    turns = itertools.count()
+    measurements = []
+    start = append("long", RUN_STATE_QUEUED, "thread-a", invocation_id="inv-long")
+    for added_turns in (60, 340):
+        for _ in range(added_turns):
+            turn = next(turns)
+            last = append("long", RUN_STATE_RUNNING, "thread-a")
+            append(f"short-{turn}", RUN_STATE_QUEUED, "thread-b", invocation_id="i")
+            append(f"short-{turn}", RUN_STATE_COMPLETED, "thread-b")
+        runs, runs_reads = measured(
+            lambda: list_session_runs(
+                sessions, session_id=session_id, limit=5, scan_limit=10
+            )
+        )
+        long_events, long_reads = measured(
+            lambda: list_session_run_events(
+                sessions, session_id=session_id, run_id="long", limit=5
+            )
+        )
+        projection, thread_reads = measured(
+            lambda: resolve_thread_lifecycle(
+                sessions,
+                session_id=session_id,
+                conversation_id="conv",
+                thread_id="thread-a",
+            )
+        )
+        history = sessions.event_high_water(session_id=session_id)
+        measurements.append((runs_reads, long_reads, thread_reads))
+
+        long_run = next(run for run in runs if run.run_id == "long")
+        assert (long_run.event_count, long_run.started_at) == (
+            1 + turn + 1,
+            start.created_at,
+        )
+        assert [event.id for event in long_events][-1] == last.id
+        assert (projection.invocation_id, projection.latest_event_id) == (
+            "inv-long",
+            last.id,
+        )
+        assert history - start.id + 1 in (181, 1201)
+        # One aggregate (one row per run seen in the window of 10) and one
+        # read by id (at most 4 rows per listed run).
+        assert len(runs_reads) == 2
+        assert runs_reads[0] <= 10 and runs_reads[1] <= 4 * 5
+        assert long_reads == [5]
+        # Recent messages, one aggregate row, and at most 4 rows by id.
+        assert len(thread_reads) == 3 and thread_reads[1:] in ([1, 2], [1, 3])
+
+    assert measurements[0] == measurements[1]

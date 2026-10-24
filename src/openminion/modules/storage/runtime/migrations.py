@@ -3,11 +3,20 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence, Tuple
+from typing import Any, Callable, Iterable, Protocol, Sequence, Tuple
 
 from openminion.modules.storage.record_store import RecordStore
 
+from .session_store.run_facts import backfill_event_run_facts
 from .sqlite import connect_database, resolve_database_path
+
+
+class MigrationRows(Protocol):
+    """The rows of the open migration transaction, as a `backfill` reads them."""
+
+    def query_dicts(self, sql: str, params: Sequence[Any]) -> list[dict[str, Any]]: ...
+
+    def insert_many(self, table: str, rows: list[dict[str, Any]]) -> int: ...
 
 
 @dataclass(frozen=True)
@@ -15,6 +24,9 @@ class Migration:
     version: int
     name: str
     statements: Tuple[str, ...]
+    # Python step run after `statements`, in the same transaction, before the
+    # ledger entry: a failure rolls back the whole migration.
+    backfill: Callable[[MigrationRows], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -505,6 +517,37 @@ DEFAULT_MIGRATIONS: Tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        version=13,
+        name="add_event_run_facts",
+        statements=(
+            """
+            CREATE TABLE event_run_facts (
+                event_id INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL,
+                run_key TEXT NOT NULL,
+                run_key_digest TEXT NOT NULL,
+                run_state TEXT NOT NULL,
+                has_step INTEGER NOT NULL,
+                has_error INTEGER NOT NULL,
+                conversation_key TEXT NOT NULL,
+                thread_key TEXT NOT NULL,
+                has_invocation INTEGER NOT NULL,
+                has_attach INTEGER NOT NULL,
+                attach_role TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX idx_event_run_facts_session
+            ON event_run_facts(session_id, event_id)
+            """,
+            """
+            CREATE INDEX idx_event_run_facts_run
+            ON event_run_facts(session_id, run_key_digest, event_id)
+            """,
+        ),
+        backfill=backfill_event_run_facts,
+    ),
 )
 
 
@@ -546,6 +589,8 @@ def run_migrations(
             connection.execute("BEGIN")
             for statement in migration.statements:
                 connection.execute(statement)
+            if migration.backfill is not None:
+                migration.backfill(_SqliteMigrationRows(connection))
             connection.execute(
                 "INSERT INTO migrations(version, name, applied_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
                 (migration.version, migration.name),
@@ -553,16 +598,42 @@ def run_migrations(
             connection.commit()
             applied_versions.add(migration.version)
             newly_applied.append(migration.version)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ValueError) as exc:
+            # ValueError: a backfill that cannot read a stored row.
             connection.rollback()
             raise MigrationError(
                 f"Migration v{migration.version} ({migration.name}) failed: {exc}"
             ) from exc
+        finally:
+            # Any other error from a backfill rolls the migration back too.
+            if connection.in_transaction:
+                connection.rollback()
 
     current_version = max(applied_versions) if applied_versions else 0
     return MigrationResult(
         applied_versions=tuple(newly_applied), current_version=current_version
     )
+
+
+class _SqliteMigrationRows:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def query_dicts(self, sql: str, params: Sequence[Any]) -> list[dict[str, Any]]:
+        cursor = self._connection.execute(sql, tuple(params))
+        columns = [column[0] for column in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def insert_many(self, table: str, rows: list[dict[str, Any]]) -> int:
+        if not rows:
+            return 0
+        columns = list(rows[0])
+        self._connection.executemany(
+            f"INSERT INTO {table} ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            [tuple(row[column] for column in columns) for row in rows],
+        )
+        return len(rows)
 
 
 def _normalize_migrations(migrations: Iterable[Migration]) -> list[Migration]:
@@ -626,6 +697,8 @@ def migrate_record_store(
             with record_store.transaction():
                 for statement in statements:
                     record_store.execute_count(statement)
+                if migration.backfill is not None:
+                    migration.backfill(record_store)
                 record_store.execute_count(
                     "INSERT INTO migrations(version, name, applied_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
                     (migration.version, migration.name),
@@ -670,6 +743,7 @@ def _adapt_migration_statements(
                 "id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY",
             )
             .replace("embedding BLOB NOT NULL", "embedding BYTEA NOT NULL")
+            .replace("event_id INTEGER PRIMARY KEY", "event_id BIGINT PRIMARY KEY")
             .replace(
                 _MESSAGE_APPEND_SEQ_BACKFILL, _POSTGRES_MESSAGE_APPEND_SEQ_BACKFILL
             )

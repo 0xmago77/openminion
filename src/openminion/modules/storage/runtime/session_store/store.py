@@ -35,15 +35,8 @@ from .turn_leases import RuntimeSessionTurnLeases
 
 
 class SessionStore:
-    def __init__(
-        self,
-        store_or_connection: RecordStore | sqlite3.Connection,
-        *,
-        backend_type: str = "sqlite",
-    ) -> None:
-        self._backend = RuntimeSessionStoreBackend(
-            store_or_connection, backend_type=backend_type
-        )
+    def __init__(self, store_or_connection: RecordStore | sqlite3.Connection) -> None:
+        self._backend = RuntimeSessionStoreBackend(store_or_connection)
         self._turn_leases = RuntimeSessionTurnLeases(self._backend)
         self._sessions = RuntimeSessionStoreSessions(
             self._backend,
@@ -499,13 +492,11 @@ class SessionStore:
         *,
         session_id: str,
         scan_limit: int,
-        run_states: Sequence[str],
         terminal_states: Sequence[str],
     ) -> list[dict[str, Any]]:
         return self._lifecycle.summarize_recent_runs(
             session_id=session_id,
             scan_limit=scan_limit,
-            run_states=run_states,
             terminal_states=terminal_states,
         )
 

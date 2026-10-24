@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from openminion.services.runtime.run_status import (
+    RUN_STATE_CANCELLED,
     RUN_STATE_COMPLETED,
     RUN_STATE_FAILED,
     RUN_STATE_QUEUED,
@@ -16,16 +17,25 @@ from openminion.services.runtime.run_status import (
     list_session_runs,
     resolve_thread_lifecycle,
 )
-from openminion.modules.storage.runtime.migrations import migrate_database
-from openminion.modules.storage.runtime.session_store import SessionStore, lifecycle
-from openminion.modules.storage.runtime.session_store.backend import (
-    RuntimeSessionStoreBackend,
+from openminion.modules.storage.runtime.migrations import (
+    DEFAULT_MIGRATIONS,
+    migrate_database,
+)
+from openminion.modules.storage.runtime.session_store import (
+    SessionStore,
+    lifecycle,
+    run_facts,
 )
 from openminion.modules.storage.runtime.session_store.rows import metadata_json
 from openminion.modules.storage.runtime.sqlite import connect_database
 from tests._run_status_scenarios import (
+    append_nonstandard_values,
     append_payload_variants,
     append_runs,
+    check_bounded_reads,
+    check_long_ids,
+    check_nonstandard_probe_cases,
+    check_nonstandard_values,
     check_review_cases,
     check_run_readers,
     check_token_text_ids,
@@ -38,6 +48,19 @@ def test_service_run_status_surface_is_canonical_task_owner() -> None:
     from openminion.services.runtime.run_status import Run as compatibility
 
     assert compatibility is canonical
+
+
+def test_run_states_are_the_states_the_store_normalizes_to() -> None:
+    assert run_facts.RUN_STATES == {
+        RUN_STATE_QUEUED,
+        RUN_STATE_RUNNING,
+        RUN_STATE_WAITING_TOOL,
+        RUN_STATE_RESPONDING,
+        RUN_STATE_COMPLETED,
+        RUN_STATE_FAILED,
+        RUN_STATE_CANCELLED,
+    }
+    assert run_facts.DEFAULT_RUN_STATE == RUN_STATE_RUNNING
 
 
 def _build_sessions(tmp_path):
@@ -292,8 +315,18 @@ def test_default_window_boundary_keeps_both_runs_whole(
     tmp_path, monkeypatch, old_events
 ) -> None:
     # 2,000 run events fill the default window exactly; with 2,001 the old run's
-    # first event falls below it. The probe above is the 2,002 case.
-    connection, sessions, session = _build_sessions(tmp_path)
+    # first event falls below it. The probe above is the 2,002 case. The old
+    # run was stored before runtime migration 13, which backfills its facts.
+    database_path = tmp_path / "state" / "openminion.db"
+    migrate_database(
+        database_path,
+        migrations=tuple(item for item in DEFAULT_MIGRATIONS if item.version < 13),
+    )
+    connection = connect_database(database_path)
+    sessions = SessionStore(connection)
+    session = sessions.resolve_session(
+        agent_id="main", channel="console", target="run-status"
+    )
     stamps = _forward_clock()
     thread = {"conversation_id": "conv", "thread_id": "thread"}
     old_states = (
@@ -325,6 +358,7 @@ def test_default_window_boundary_keeps_both_runs_whole(
             ],
         )
         connection.commit()
+        assert migrate_database(database_path).applied_versions == (13,)
         monkeypatch.setattr(lifecycle, "utc_now_iso", lambda: next(stamps))
         new_queued, new_failed = (
             append_run_state_event(
@@ -544,90 +578,43 @@ def test_run_readers_normalize_payload_values_as_the_python_readers(tmp_path) ->
 
 
 def test_run_readers_read_a_bounded_number_of_rows_for_any_history(
-    tmp_path, monkeypatch
+    tmp_path,
 ) -> None:
-    # Worst case: "long" runs from the first event to the last, interleaved
-    # with short runs on another thread, and thread-a's invocation starts at
-    # the first event. The rows read do not grow with the history.
     connection, sessions, session = _build_sessions(tmp_path)
-    reads: list[int] = []
-    real_query = RuntimeSessionStoreBackend.query_dicts
-
-    def counting_query(self, sql, params=None):
-        rows = real_query(self, sql, params)
-        reads.append(len(rows))
-        return rows
-
-    def measured(read):
-        reads.clear()
-        return read(), list(reads)
-
-    def append(run_id, state, thread_id, **payload):
-        return append_run_state_event(
-            sessions,
-            session_id=session.id,
-            run_id=run_id,
-            state=state,
-            current_step=state,
-            conversation_id="conv",
-            thread_id=thread_id,
-            payload=payload or None,
-        )
-
-    turns = itertools.count()
-    measurements = []
     try:
-        start = append("long", RUN_STATE_QUEUED, "thread-a", invocation_id="inv-long")
-        for added_turns in (60, 340):
-            for _ in range(added_turns):
-                turn = next(turns)
-                last = append("long", RUN_STATE_RUNNING, "thread-a")
-                append(f"short-{turn}", RUN_STATE_QUEUED, "thread-b", invocation_id="i")
-                append(f"short-{turn}", RUN_STATE_COMPLETED, "thread-b")
-            monkeypatch.setattr(
-                RuntimeSessionStoreBackend, "query_dicts", counting_query
-            )
-            runs, runs_reads = measured(
-                lambda: list_session_runs(
-                    sessions, session_id=session.id, limit=5, scan_limit=10
-                )
-            )
-            long_events, long_reads = measured(
-                lambda: list_session_run_events(
-                    sessions, session_id=session.id, run_id="long", limit=5
-                )
-            )
-            projection, thread_reads = measured(
-                lambda: resolve_thread_lifecycle(
-                    sessions,
-                    session_id=session.id,
-                    conversation_id="conv",
-                    thread_id="thread-a",
-                )
-            )
-            monkeypatch.undo()
-            history = sessions.event_high_water(session_id=session.id)
-            measurements.append((runs_reads, long_reads, thread_reads))
-
-            long_run = next(run for run in runs if run.run_id == "long")
-            assert (long_run.event_count, long_run.started_at) == (
-                1 + turn + 1,
-                start.created_at,
-            )
-            assert [event.id for event in long_events][-1] == last.id
-            assert (projection.invocation_id, projection.latest_event_id) == (
-                "inv-long",
-                last.id,
-            )
-            assert history in (181, 1201)
-            # One aggregate (one row per run seen in the window of 10) and one
-            # read by id (at most 4 rows per listed run).
-            assert len(runs_reads) == 2
-            assert runs_reads[0] <= 10 and runs_reads[1] <= 4 * 5
-            assert long_reads == [5]
-            # Recent messages, one aggregate row, and at most 4 rows by id.
-            assert len(thread_reads) == 3 and thread_reads[1:] in ([1, 2], [1, 3])
+        check_bounded_reads(sessions, session.id)
     finally:
         connection.close()
 
-    assert measurements[0] == measurements[1]
+
+def test_run_readers_read_nonstandard_payload_values_as_stored(tmp_path) -> None:
+    # NaN, Infinity and NUL in run events and in unrelated tool events of the
+    # thread: the readers report what the event reduction reports.
+    connection, sessions, session = _build_sessions(tmp_path)
+    try:
+        append_nonstandard_values(sessions, session.id)
+        check_nonstandard_values(sessions, session.id)
+
+        def new_session(target: str) -> str:
+            return sessions.resolve_session(
+                agent_id="main", channel="console", target=target
+            ).id
+
+        check_nonstandard_probe_cases(sessions, new_session)
+    finally:
+        connection.close()
+
+
+def test_run_readers_accept_ids_of_any_length(tmp_path) -> None:
+    connection, sessions, _session = _build_sessions(tmp_path)
+    try:
+        check_long_ids(
+            sessions,
+            lambda target: (
+                sessions.resolve_session(
+                    agent_id="main", channel="console", target=target
+                ).id
+            ),
+        )
+    finally:
+        connection.close()

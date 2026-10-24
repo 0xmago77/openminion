@@ -20,15 +20,6 @@ RUN_STATE_COMPLETED = "completed"
 RUN_STATE_FAILED = "failed"
 RUN_STATE_CANCELLED = "cancelled"
 
-_RUN_STATES = {
-    RUN_STATE_QUEUED,
-    RUN_STATE_RUNNING,
-    RUN_STATE_WAITING_TOOL,
-    RUN_STATE_RESPONDING,
-    RUN_STATE_COMPLETED,
-    RUN_STATE_FAILED,
-    RUN_STATE_CANCELLED,
-}
 _TERMINAL_RUN_STATES = {
     RUN_STATE_COMPLETED,
     RUN_STATE_FAILED,
@@ -420,7 +411,6 @@ def list_session_runs(
     runs = sessions.summarize_recent_runs(
         session_id=session_id,
         scan_limit=max(safe_limit, int(scan_limit)),
-        run_states=sorted(_RUN_STATES),
         terminal_states=sorted(_TERMINAL_RUN_STATES),
     )
     runs = sorted(

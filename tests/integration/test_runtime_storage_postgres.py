@@ -446,7 +446,7 @@ def test_postgres_append_seq_migration_uses_fallback_order_and_moves_tied_bounda
             )
 
             result = migrate_record_store(record_store, backend_type="postgres")
-            assert result.applied_versions == (12,)
+            assert result.applied_versions == (12, 13)
 
             seq_rows = record_store.query_dicts(
                 "SELECT body, append_seq FROM messages ORDER BY append_seq"
@@ -553,29 +553,55 @@ def test_postgres_run_status_normalizes_payload_values(tmp_path: Path) -> None:
             storage.close()
 
 
+@contextmanager
+def _legacy_postgres_store(url: str) -> Iterator[Any]:
+    """A Postgres record store at runtime migration 12 (before the event facts)."""
+    from openminion.modules.storage.backends.postgres import RecordStorePostgres
+
+    record_store = RecordStorePostgres(url)
+    try:
+        migrate_record_store(
+            record_store,
+            backend_type="postgres",
+            migrations=tuple(item for item in DEFAULT_MIGRATIONS if item.version < 13),
+        )
+        yield record_store
+    finally:
+        record_store.close()
+
+
+@contextmanager
+def _postgres_sessions(tmp_path: Path, url: str) -> Iterator[SessionStore]:
+    storage = build_runtime_storage(
+        tmp_path / "state" / "openminion.db",
+        env={},
+        record_backend="record.postgres",
+        record_backend_options={"url": url},
+    )
+    try:
+        yield storage.sessions
+    finally:
+        storage.close()
+
+
 @pytest.mark.postgres
 def test_postgres_run_status_readers_past_the_default_window(tmp_path: Path) -> None:
     pytest.importorskip("sqlalchemy")
     with _postgres_schema("om352_window") as url:
-        storage = build_runtime_storage(
-            tmp_path / "state" / "openminion.db",
-            env={},
-            record_backend="record.postgres",
-            record_backend_options={"url": url},
-        )
-        try:
-            sessions = storage.sessions
-            session = sessions.resolve_session(
-                agent_id="main", channel="console", target="window"
+        thread = {"conversation_id": "conv", "thread_id": "thread"}
+        # 1,999 events of an older run, stored before runtime migration 13, so
+        # its first event is below the default window of 2,000 run events once
+        # the new run starts. The migration backfills their facts.
+        with _legacy_postgres_store(url) as record_store:
+            record_store.execute_count(
+                "INSERT INTO sessions(id, session_key, channel, target) "
+                "VALUES ('window', 'key-window', 'console', 'window')"
             )
-            thread = {"conversation_id": "conv", "thread_id": "thread"}
-            # 1,999 events of an older run, so its first event is below the
-            # default window of 2,000 run events once the new run starts.
-            storage.record_store.insert_many(
+            record_store.insert_many(
                 "events",
                 [
                     {
-                        "session_id": session.id,
+                        "session_id": "window",
                         "event_type": f"run.{state}",
                         "payload_json": json.dumps(
                             {"run_id": "old", "state": state, "step": "s", **thread}
@@ -588,10 +614,11 @@ def test_postgres_run_status_readers_past_the_default_window(tmp_path: Path) -> 
                     )
                 ],
             )
+        with _postgres_sessions(tmp_path, url) as sessions:
             appended = [
                 append_run_state_event(
                     sessions,
-                    session_id=session.id,
+                    session_id="window",
                     run_id="new",
                     state=state,
                     current_step="step",
@@ -600,12 +627,12 @@ def test_postgres_run_status_readers_past_the_default_window(tmp_path: Path) -> 
                 )
                 for state in ("queued", "failed")
             ]
-            runs = list_session_runs(sessions, session_id=session.id)
+            runs = list_session_runs(sessions, session_id="window")
             new_events = list_session_run_events(
-                sessions, session_id=session.id, run_id="new"
+                sessions, session_id="window", run_id="new"
             )
             projection = resolve_thread_lifecycle(
-                sessions, session_id=session.id, **thread
+                sessions, session_id="window", **thread
             )
 
             assert [(run.run_id, run.state, run.event_count) for run in runs] == [
@@ -619,7 +646,5 @@ def test_postgres_run_status_readers_past_the_default_window(tmp_path: Path) -> 
                 "new-inv",
             )
             assert projection.latest_event_id == sessions.event_high_water(
-                session_id=session.id
+                session_id="window"
             )
-        finally:
-            storage.close()

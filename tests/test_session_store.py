@@ -1,15 +1,19 @@
-import json
 import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from openminion.modules.storage.runtime import SessionStore as RuntimeSessionStore
 from openminion.modules.storage.runtime.context import build_runtime_storage
-from openminion.modules.storage.runtime.migrations import migrate_database
+from openminion.modules.storage.runtime.migrations import (
+    DEFAULT_MIGRATIONS,
+    MigrationError,
+    migrate_database,
+)
 from openminion.modules.storage.runtime.pinned_context import (
     PinnedContextEntry,
     PinnedContextPolicy,
@@ -23,7 +27,16 @@ from openminion.modules.storage.runtime.session_store import (
     SessionStore,
     build_session_key,
 )
+from openminion.modules.storage.runtime.session_store import run_facts
 from openminion.modules.storage.runtime.sqlite import connect_database
+from tests._run_status_scenarios import (
+    check_event_facts,
+    check_fact_writes,
+    check_upgraded_history,
+    legacy_event_rows,
+    recorded_backfill_migrations,
+    stored_events,
+)
 from openminion.modules.storage.runtime.session_store.models import (
     RuntimeSessionStoreIntegrityError,
 )
@@ -586,7 +599,6 @@ class SessionStoreTests(unittest.TestCase):
                 for row in self.store.summarize_recent_runs(
                     session_id=session.id,
                     scan_limit=scan_limit,
-                    run_states=["queued", "running", "completed", "failed"],
                     terminal_states=["completed", "failed"],
                 )
             }
@@ -676,65 +688,122 @@ class SessionStoreTests(unittest.TestCase):
             self.store.list_events_by_id(session_id=session.id, event_ids=[]), []
         )
 
-    def test_payload_text_reads_values_as_python_str_strip(self) -> None:
-        backend = self.store._backend
-        padding = "".join(chr(code) for code in range(0x3001) if chr(code).isspace())
-        backslash, zero_width = chr(92), chr(0x200B)
-        values = [
-            f"{padding}x{padding}",
-            f"{zero_width}x",
-            f"a{backslash}u0000b",
-            f"{backslash}{backslash}",
-            "NaN",
-            None,
-            True,
-            False,
-            0,
-            7,
-            "7",
-            "",
-            padding,
-            {},
-            [],
-        ]
+    def _new_session(self, target: str) -> str:
+        return self.store.resolve_session(
+            agent_id="main", channel="console", target=target
+        ).id
 
-        def read(payload: dict, **options) -> str:
-            sql = backend.payload_text("value", **options)
-            row = self.connection.execute(
-                f"SELECT {sql} FROM (SELECT ? AS payload_json)",
-                (json.dumps(payload, sort_keys=True),),
-            ).fetchone()
-            return row[0]
+    def test_event_facts_read_payload_values_as_the_run_status_readers(self) -> None:
+        check_event_facts(self.store, self._new_session("event-facts"))
 
-        for value in values:
-            payload = {"value": value}
-            self.assertEqual(read(payload), str(value).strip(), value)
-            self.assertEqual(
-                read(payload, null=""),
-                "" if value is None else str(value).strip(),
-                value,
+    def test_event_facts_follow_the_event_transaction(self) -> None:
+        check_fact_writes(self.store, self._new_session)
+
+    def _legacy_database(self, count: int) -> tuple[Path, list[str]]:
+        """A database at runtime migration 12 with `count` stored events."""
+        legacy_path = Path(self._tmp.name) / "legacy" / "openminion.db"
+        migrate_database(
+            legacy_path,
+            migrations=tuple(item for item in DEFAULT_MIGRATIONS if item.version < 13),
+        )
+        session_ids = ["legacy-a", "legacy-b"]
+        with closing(connect_database(legacy_path)) as conn:
+            conn.executemany(
+                "INSERT INTO sessions(id, session_key, channel, target) "
+                "VALUES (?, ?, 'console', ?)",
+                [(sid, f"key-{sid}", sid) for sid in session_ids],
             )
-            self.assertEqual(
-                read(payload, falsy_empty=True), str(value or "").strip(), value
+            conn.executemany(
+                "INSERT INTO events(session_id, event_type, payload_json, created_at) "
+                "VALUES (:session_id, :event_type, :payload_json, :created_at)",
+                legacy_event_rows(session_ids, count),
             )
-        self.assertEqual(read({}), "")
-        # Text that looks like a JSON token is read exactly, whatever else the
-        # payload holds.
-        for value in ("trace: NaN", "trace, Infinity", "[NaN]", "a: -Infinity b"):
-            payload = {"value": value, "other": [value, {"nested": value}]}
-            self.assertEqual(read(payload), value)
+            conn.commit()
+        return legacy_path, session_ids
 
-    def test_payload_text_accepts_fixed_keys_only(self) -> None:
-        postgres_backend = SessionStore(
-            self.connection, backend_type="postgres"
-        )._backend
+    def test_event_facts_migration_backfills_existing_history(self) -> None:
+        # 2,345 events: three backfill batches of up to 1,000.
+        legacy_path, session_ids = self._legacy_database(2345)
+        with closing(connect_database(legacy_path)) as conn:
+            stored = stored_events(SessionStore(conn))
 
-        self.assertIn("json_typeof(", postgres_backend.payload_text("run_id"))
-        for backend in (self.store._backend, postgres_backend):
-            with self.assertRaises(ValueError):
-                backend.payload_text("run_id') OR ('1")
-            with self.assertRaises(ValueError):
-                backend.payload_text("run_id", null="none")
+        batches: list[int] = []
+        result = migrate_database(
+            legacy_path, migrations=recorded_backfill_migrations(batches)
+        )
+
+        self.assertEqual(result.applied_versions, (13,))
+        self.assertEqual(batches, [1000, 1000, 345, 0])
+        with closing(connect_database(legacy_path)) as conn:
+            store = SessionStore(conn)
+            check_upgraded_history(
+                store,
+                lambda target: (
+                    store.resolve_session(
+                        agent_id="main", channel="console", target=target
+                    ).id
+                ),
+                session_ids=session_ids,
+                stored=stored,
+            )
+
+    def test_event_facts_migration_rolls_back_when_the_backfill_fails(self) -> None:
+        legacy_path, _session_ids = self._legacy_database(1500)
+        with closing(connect_database(legacy_path)) as conn:
+            # A payload `json.loads` cannot read, after the first batch of 1,000.
+            conn.execute(
+                "UPDATE events SET payload_json = ? WHERE id = 1400", ('{"run_id": ',)
+            )
+            conn.commit()
+            stored = stored_events(SessionStore(conn))
+
+        def assert_not_applied() -> None:
+            with closing(connect_database(legacy_path)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT MAX(version) FROM migrations").fetchone()[0],
+                    12,
+                )
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT name FROM sqlite_master WHERE name = 'event_run_facts'"
+                    ).fetchone()
+                )
+                self.assertEqual(stored_events(SessionStore(conn)), stored)
+
+        # Any error in the backfill, here after its first batch of facts, rolls
+        # the whole migration back.
+        real_facts = run_facts.event_run_facts
+        derived: list[int] = []
+
+        def interrupted(event):
+            derived.append(event.id)
+            if len(derived) > 1000:
+                raise RuntimeError("backfill interrupted")
+            return real_facts(event)
+
+        with patch.object(run_facts, "event_run_facts", side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError, "backfill interrupted"):
+                migrate_database(legacy_path)
+        assert_not_applied()
+
+        with self.assertRaises(MigrationError) as raised:
+            migrate_database(legacy_path)
+        self.assertIn(
+            "v13 (add_event_run_facts) failed: event 1400 has a payload_json that is "
+            "not JSON",
+            str(raised.exception),
+        )
+        assert_not_applied()
+
+        # Rerunning the migration after the fix applies it whole.
+        with closing(connect_database(legacy_path)) as conn:
+            conn.execute("UPDATE events SET payload_json = '{}' WHERE id = 1400")
+            conn.commit()
+        self.assertEqual(migrate_database(legacy_path).applied_versions, (13,))
+        with closing(connect_database(legacy_path)) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM event_run_facts").fetchone()[0], 1500
+            )
 
     def test_list_sessions_and_count_sessions(self) -> None:
         first = self.store.resolve_session(
