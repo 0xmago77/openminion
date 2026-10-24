@@ -13,6 +13,17 @@ This file tracks package-facing release notes for `openminion`.
   exposed in the args schema are evaluated (return, `self`/`cls` and
   `*args`/`**kwargs` annotations are left alone), and decoration fails with a
   clear `TypeError` when an exposed argument annotation cannot be resolved.
+- Session metadata filters work on PostgreSQL.
+  `list_sessions(metadata_filter=...)`, which ACP `session/list` and Focus
+  directory sessions use, emitted SQLite's `json_extract` and failed there.
+  PostgreSQL now compares JSON values: a filter value matches a JSON string
+  equal to it, never a number, boolean or null read as text, and a non-string
+  filter value raises `TypeError`. The SQLite query is unchanged. The backends
+  still differ where SQLite reads more than a top-level string: it matches an
+  object or array by its minified JSON text and reads a key as a JSON path
+  (`a.b`, `a[0]`, a leading `"`), while PostgreSQL reads one top-level key.
+  PostgreSQL also raises when the filter reads stored metadata that `jsonb`
+  cannot hold, such as NaN or Infinity written by `json.dumps` (#369).
 
 ## Current package line - 2026-10-24
 
