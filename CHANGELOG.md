@@ -13,6 +13,15 @@ This file tracks package-facing release notes for `openminion`.
   exposed in the args schema are evaluated (return, `self`/`cls` and
   `*args`/`**kwargs` annotations are left alone), and decoration fails with a
   clear `TypeError` when an exposed argument annotation cannot be resolved.
+- Close the runtime memory assembly with the `external` memory backend
+  provider: the memory service closes the external backend it owns once,
+  through a new `BackendMemoryStoreAdapter.close()` that does nothing for a
+  backend without `close()` or one it does not own, and the assembly then
+  closes its artifact store. Before, the close raised `AttributeError` and left
+  the artifact store open. With this provider the assembly also no longer
+  creates the memory store and audit sink that only the built-in backend uses,
+  so a PostgreSQL `memory.store` setting opens no engine and an unusable
+  `memory.store` setting no longer fails the build (#388).
 
 ## Current package line - 2026-10-24
 
