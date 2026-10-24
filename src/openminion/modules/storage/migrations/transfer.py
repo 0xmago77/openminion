@@ -4,6 +4,7 @@ from collections.abc import Callable
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
@@ -515,7 +516,7 @@ def _import_omx_tables_sqlite(
 ) -> int:
     imported_rows = 0
     target.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(target)) as conn:
+    with closing(sqlite3.connect(str(target))) as conn, conn:
         schema_map = manifest.blobs.get("schemas", {}) if manifest.blobs else {}
         for table in manifest.tables:
             _ensure_table_schema_sqlite(conn, schema_map, table.name)
