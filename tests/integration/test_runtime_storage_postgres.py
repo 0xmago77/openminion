@@ -458,7 +458,7 @@ def test_postgres_append_seq_migration_uses_fallback_order_and_moves_tied_bounda
             )
 
             result = migrate_record_store(record_store, backend_type="postgres")
-            assert result.applied_versions == (12, 13)
+            assert result.applied_versions == (12, 13, 14)
 
             seq_rows = record_store.query_dicts(
                 "SELECT body, append_seq FROM messages ORDER BY append_seq"
@@ -745,7 +745,7 @@ def test_postgres_event_facts_migration_backfills_existing_history(
                 backend_type="postgres",
                 migrations=recorded_backfill_migrations(batches),
             )
-            assert result.applied_versions == (13,)
+            assert result.applied_versions == (13, 14)
             assert batches == [1000, 1000, 345, 0]
         with _postgres_sessions(tmp_path, url) as sessions:
             check_upgraded_history(
@@ -789,7 +789,7 @@ def test_postgres_event_facts_migration_rolls_back_when_the_backfill_fails(
                 "UPDATE events SET payload_json = '{}' WHERE id = 1400"
             )
             result = migrate_record_store(record_store, backend_type="postgres")
-            assert result.applied_versions == (13,)
+            assert result.applied_versions == (13, 14)
             assert record_store.query_dicts(
                 "SELECT COUNT(*) AS facts FROM event_run_facts"
             ) == [{"facts": 1500}]
