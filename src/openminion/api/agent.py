@@ -297,16 +297,6 @@ class Agent(Generic[InputT, OutputT]):
                 "Agent decorated tools and handoffs require APIRuntime.tools "
                 "to be a ToolRegistry"
             )
-        if self.subagent_context is not None:
-            from openminion.api.handoff import materialize_subagent_run_context
-
-            run_context = materialize_subagent_run_context(
-                self.subagent_context,
-                self.delegated_memory_request,
-                action_policy=getattr(runtime, "action_policy", None),
-            )
-            self.subagent_context = run_context
-            delegated_grant_id = run_context.memory_grant_id
         registration_scope = (
             registry.temporary_registration_scope()
             if registry is not None
@@ -314,6 +304,16 @@ class Agent(Generic[InputT, OutputT]):
         )
         with registration_scope, ExitStack() as risk_scope:
             try:
+                if self.subagent_context is not None:
+                    from openminion.api.handoff import materialize_subagent_run_context
+
+                    run_context = materialize_subagent_run_context(
+                        self.subagent_context,
+                        self.delegated_memory_request,
+                        action_policy=getattr(runtime, "action_policy", None),
+                    )
+                    self.subagent_context = run_context
+                    delegated_grant_id = run_context.memory_grant_id
                 registered_tools, registered_profiles = (
                     self._register_tools_for_run(registry, risk_scope)
                     if registry is not None

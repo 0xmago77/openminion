@@ -7,6 +7,15 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Close the SQLite connections that the shared migration runner opens to
+  detect a module database, verify it and update its metadata as soon as each
+  step finishes, keeping commit on success and rollback on error. They used to
+  stay open until a garbage collection and, on Windows, blocked renaming or
+  deleting the database file after `runtime.close()` (#373).
+
+- Fail fast with a separate-runtime error when an SDK handoff tries to register
+  child tools from another thread while its parent holds the shared registry.
+
 - Declare risk metadata on temporary tools, both the SDK handoff tool and
   ordinary-named temporary tools, and enforce that a denial prevents
   handoff child execution.
