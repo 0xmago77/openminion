@@ -109,7 +109,7 @@ def run_verification(
             if verifier_hook is not None:
                 findings.extend(verifier_hook(conn))
     else:
-        with closing(sqlite3.connect(str(db_path))) as conn, conn:
+        with closing(sqlite3.connect(str(db_path))) as sqlite_conn, sqlite_conn as conn:
             quick_result = _run_pragma(conn, "quick_check")
 
             if quick_result != "ok":
