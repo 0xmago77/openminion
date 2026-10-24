@@ -43,10 +43,11 @@ class RuntimeSessionStoreBackend:
         which `value` can equal, and reads `key` as a JSON path: `a.b` is `b`
         inside `a`, `[` starts an array index and a leading `"` quotes the key.
         PostgreSQL reads `key` as one top-level key and matches strings only.
-        It also raises where SQLite does not: for a stored document that
-        `jsonb` cannot hold (NaN or Infinity, which `json.dumps` writes, an
-        escaped NUL or an unpaired surrogate), for a NUL in `value`, and for a
-        `value` that is not a string, which it does not convert to text.
+        PostgreSQL raises for a stored document that `jsonb` cannot hold: NaN
+        or Infinity, which `json.dumps` writes and SQLite before 3.42 also
+        rejects, an escaped NUL or an unpaired surrogate. It also raises for a
+        NUL in `value` and for a `value` that is not a string, which it does
+        not convert to text.
 
         `backend_type` is the one `build_runtime_storage` gives
         `migrate_record_store`.
