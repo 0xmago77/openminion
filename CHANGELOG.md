@@ -13,6 +13,12 @@ This file tracks package-facing release notes for `openminion`.
   exposed in the args schema are evaluated (return, `self`/`cls` and
   `*args`/`**kwargs` annotations are left alone), and decoration fails with a
   clear `TypeError` when an exposed argument annotation cannot be resolved.
+- Report an internal brain runtime failure (the state machine's `fatal_error`
+  path, such as a tool returning a value that cannot be JSON-serialized) as
+  `run_state="failed"` on `AgentRunResult` and in the persisted run, instead of
+  `"completed"`. The existing structured `error_code`, `error_message` and
+  `error_details` stay in the result metadata. Recoverable tool errors that the
+  brain answers without a fatal transition still complete (Refs #384).
 
 ## Current package line - 2026-10-24
 

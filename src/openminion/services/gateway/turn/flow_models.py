@@ -2,6 +2,8 @@ from dataclasses import dataclass, field as _dc_field
 from typing import Any
 
 from openminion.base.types import Message
+from openminion.modules.brain.constants import BRAIN_STATE_ERROR
+from openminion.modules.task.run import RUN_STATE_COMPLETED, RUN_STATE_FAILED
 from openminion.modules.telemetry.usage import RunStats
 
 
@@ -89,3 +91,14 @@ def _response_is_pae_idle_tick_noop(response: Any) -> bool:
     if not isinstance(metadata, dict):
         return False
     return str(metadata.get("pae_idle_tick_noop", "")).strip().lower() == "true"
+
+
+def _response_run_state(response: Any) -> str:
+    # Only the brain's `fatal_error` transition leaves its working state ERROR;
+    # a recoverable tool-failure reply keeps it ACTIVE, so that turn completes.
+    metadata = getattr(response, "metadata", None) or {}
+    states = {metadata.get("brain_status"), metadata.get("brain_working_status")}
+    run_state: str = (
+        RUN_STATE_FAILED if states == {BRAIN_STATE_ERROR} else RUN_STATE_COMPLETED
+    )
+    return run_state
