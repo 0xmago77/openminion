@@ -7,6 +7,12 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Resolve postponed (`from __future__ import annotations`) and quoted
+  annotations on `@openminion.tool` functions in their own module, keeping
+  `Annotated` field descriptions and constraints. Only argument annotations
+  exposed in the args schema are evaluated (return, `self`/`cls` and
+  `*args`/`**kwargs` annotations are left alone), and decoration fails with a
+  clear `TypeError` when an exposed argument annotation cannot be resolved.
 - Keep room participants that join with the same timestamp in join order, with
   a per-session join sequence that runtime migration 14 adds on SQLite and
   Postgres. `list_participants`, and the agent selected when the active agent
