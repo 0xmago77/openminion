@@ -55,6 +55,8 @@ class MemoryServiceGatewayAdapter(
 ):
     """Gateway-facing V2 memory adapter."""
 
+    close_owner: Any = None
+
     def __init__(
         self,
         service: Any,
@@ -527,6 +529,10 @@ class MemoryServiceGatewayAdapter(
             session_id,
             agent_id=self._agent_id,
         )
+
+    def close(self) -> None:
+        if self.close_owner is not None:
+            self.close_owner.close()
 
     def __del__(self) -> None:
         self._close_trace_file()

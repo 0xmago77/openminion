@@ -53,7 +53,10 @@ scope	max_python_files	max_loc
 # runtime-scoped artifact config in the existing memory and brain owners.
 # Issue 349 (2026-10-23) records the artifact store the runtime memory assembly
 # obtains on that existing assembly owner, which closes it on shutdown.
-services	208	41757
+# Issue 389 (2026-10-24) keeps the bootstrap memory fallback's assembly as the
+# close owner of the gateway adapter it returns, closed once by the gateway
+# service or direct caller that built it.
+services	208	41768
 services/security	6	187
 services/stats	1	25
 services/tool	3	50

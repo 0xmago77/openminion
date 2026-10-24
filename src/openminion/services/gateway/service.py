@@ -116,6 +116,7 @@ class GatewayService:
         history_limit: int = 20,
         session_context: SessionContextService | None = None,
         agent_memory: object | None = None,
+        owns_agent_memory: bool = False,
         knowledge_graphs: object | None = None,
         brain_integration_mode: str = _BRAIN_INTEGRATION_MODE_AUTHORITATIVE,
         retrieval_service: RetrievalService | None = None,
@@ -137,12 +138,10 @@ class GatewayService:
             logger=logger.getChild("session_context"),
             keep_recent_messages=self._history_limit,
         )
-        self._agent_memory: Any = cast(
-            Any, agent_memory
-        ) or DisabledMemoryGatewayAdapter(
-            agent_id=self._agent_id,
-            logger=logger.getChild("agent_memory"),
+        self._agent_memory: Any = agent_memory or DisabledMemoryGatewayAdapter(
+            agent_id=self._agent_id, logger=logger.getChild("agent_memory")
         )
+        self._owns_agent_memory = owns_agent_memory
         self._knowledge_graphs = knowledge_graphs
         self._retrieval_service = retrieval_service
         if contextctl_adapter is None:
@@ -223,6 +222,9 @@ class GatewayService:
         self.flush_memory_followups()
         self._memory_capsule_cache.clear()
         self._contextctl_adapter.close()
+        close_memory = getattr(self._agent_memory, "close", None)
+        if self._owns_agent_memory and callable(close_memory):
+            close_memory()
 
     def repair_invocation_lifecycle(self, *, session_id: str) -> dict[str, object]:
         report = InvocationLifecycleReconciler.for_runtime(
