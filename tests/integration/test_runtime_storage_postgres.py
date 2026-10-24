@@ -53,6 +53,12 @@ from tests._run_status_scenarios import (
     stepping_clock,
     stored_events,
 )
+from tests._session_metadata_filter_scenarios import (
+    check_acp_session_list,
+    check_backend_reading_differences,
+    check_focus_directory_sessions,
+    check_metadata_filters,
+)
 
 pytestmark = pytest.mark.postgres
 
@@ -793,3 +799,41 @@ def test_postgres_event_facts_migration_rolls_back_when_the_backfill_fails(
             assert record_store.query_dicts(
                 "SELECT COUNT(*) AS facts FROM event_run_facts"
             ) == [{"facts": 1500}]
+
+
+@pytest.mark.postgres
+def test_postgres_session_metadata_filters_select_json_string_values(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om369_filters") as url:
+        with _postgres_sessions(tmp_path, url) as sessions:
+            check_metadata_filters(sessions)
+
+
+@pytest.mark.postgres
+def test_postgres_session_metadata_filters_read_top_level_strings(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om369_differences") as url:
+        with _postgres_sessions(tmp_path, url) as sessions:
+            check_backend_reading_differences(sessions, postgres=True)
+
+
+@pytest.mark.postgres
+def test_postgres_acp_session_list_filters_by_surface(tmp_path: Path) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om369_acp") as url:
+        with _postgres_sessions(tmp_path, url) as sessions:
+            check_acp_session_list(sessions, tmp_path / "acp")
+
+
+@pytest.mark.postgres
+def test_postgres_focus_directory_sessions_filter_by_working_dir(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om369_focus") as url:
+        with _postgres_sessions(tmp_path, url) as sessions:
+            check_focus_directory_sessions(sessions, tmp_path / "focus")
