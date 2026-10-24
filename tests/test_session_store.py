@@ -1,11 +1,19 @@
 import sqlite3
 import tempfile
+import threading
 import unittest
+from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from openminion.modules.storage.runtime import SessionStore as RuntimeSessionStore
-from openminion.modules.storage.runtime.migrations import migrate_database
+from openminion.modules.storage.runtime.context import build_runtime_storage
+from openminion.modules.storage.runtime.migrations import (
+    DEFAULT_MIGRATIONS,
+    MigrationError,
+    migrate_database,
+)
 from openminion.modules.storage.runtime.pinned_context import (
     PinnedContextEntry,
     PinnedContextPolicy,
@@ -19,12 +27,26 @@ from openminion.modules.storage.runtime.session_store import (
     SessionStore,
     build_session_key,
 )
+from openminion.modules.storage.runtime.session_store import run_facts
 from openminion.modules.storage.runtime.sqlite import connect_database
+from tests._run_status_scenarios import (
+    check_event_facts,
+    check_fact_writes,
+    check_upgraded_history,
+    legacy_event_rows,
+    recorded_backfill_migrations,
+    stored_events,
+)
 from openminion.modules.storage.runtime.session_store.models import (
     RuntimeSessionStoreIntegrityError,
 )
 
 EVENT_CLOCK = "openminion.modules.storage.runtime.session_store.lifecycle.utc_now_iso"
+MESSAGE_CLOCK = "openminion.modules.storage.runtime.session_store.messages.utc_now_iso"
+MESSAGE_UUID = "openminion.modules.storage.runtime.session_store.messages.uuid4"
+TIED_AT = "2026-10-22T01:00:00+00:00"
+# Each message id sorts before the id of the message appended before it.
+DESCENDING_IDS = tuple(char * 32 for char in "fc80")
 
 
 class SessionStoreTests(unittest.TestCase):
@@ -512,6 +534,277 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual([event.id for event in newest_run], run_ids[-1:])
         self.assertEqual([event.id for event in oldest_runs], run_ids[:2])
 
+    def _append(self, session_id: str, event_type: str, **payload) -> int:
+        return self.store.append_event(
+            session_id=session_id, event_type=event_type, payload=payload
+        ).id
+
+    def test_list_run_events_matches_the_stored_top_level_run_id(self) -> None:
+        session, other = (
+            self.store.resolve_session(agent_id="main", channel="console", target=t)
+            for t in ("run-events", "run-events-other")
+        )
+        special = 'q"u\\o%t_e café'
+        r1 = [self._append(session.id, "run.queued", run_id="r1")]
+        self._append(session.id, "tool.call", run_id="r1")
+        self._append(other.id, "run.queued", run_id="r1")
+        self._append(session.id, "run.queued", run_id="r2", parent={"run_id": "r1"})
+        self._append(session.id, "run.queued", run_id="R1")
+        r1.append(self._append(session.id, "run.running", run_id="r1"))
+        self._append(session.id, "run.queued", run_id="r1x")
+        quoted = self._append(session.id, "run.queued", run_id=special)
+        r1.append(self._append(session.id, "run.completed", run_id="r1"))
+
+        def listed(run_id: str, limit: int = 10) -> list[int]:
+            return [
+                event.id
+                for event in self.store.list_run_events(
+                    session_id=session.id, run_id=run_id, limit=limit
+                )
+            ]
+
+        self.assertEqual(listed("r1"), r1[::-1])
+        self.assertEqual(listed("r1", limit=2), r1[::-1][:2])
+        self.assertEqual(listed(special), [quoted])
+        self.assertEqual(listed("r9"), [])
+        self.assertEqual(listed("r1", limit=0), [])
+
+    def test_summarize_recent_runs_reports_whole_runs_seen_in_the_window(
+        self,
+    ) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="run-summary"
+        )
+        stamps = [f"2026-10-23T10:00:0{second}.000001+00:00" for second in range(9)]
+        with patch(EVENT_CLOCK, side_effect=stamps):
+            ids = [
+                self._append(session.id, event_type, **payload)
+                for event_type, payload in (
+                    ("run.queued", {"run_id": "a", "step": "accepted"}),
+                    ("run.queued", {"run_id": "old", "state": "queued"}),
+                    # The payload state, when it is a run state, decides.
+                    ("run.queued", {"run_id": "a", "state": "failed", "error": 5}),
+                    ("run.failed", {"run_id": "a", "state": " RUNNING ", "step": " "}),
+                    ("run.completed", {"run_id": "b", "state": "bogus"}),
+                    ("run.running", {"run_id": "a", "error": None}),
+                    ("tool.call", {"run_id": "a"}),
+                    ("run.running", {"step": "no run id"}),
+                    ("run.cancel_requested", {"run_id": "b"}),
+                )
+            ]
+
+        def summary(scan_limit: int) -> dict[str, dict]:
+            return {
+                row["run_id"]: row
+                for row in self.store.summarize_recent_runs(
+                    session_id=session.id,
+                    scan_limit=scan_limit,
+                    terminal_states=["completed", "failed"],
+                )
+            }
+
+        # The newest 3 `run.` events are ids[5], ids[7] (no run id) and ids[8].
+        self.assertEqual(sorted(summary(3)), ["a", "b"])
+        self.assertEqual(
+            summary(3)["a"],
+            {
+                "run_id": "a",
+                "event_count": 4,
+                "started_at": stamps[0],
+                "last_id": ids[5],
+                "step_id": ids[0],
+                "error_id": ids[2],
+                "terminal_id": ids[2],
+            },
+        )
+        self.assertEqual(
+            {key: summary(3)["b"][key] for key in ("last_id", "terminal_id")},
+            {"last_id": ids[8], "terminal_id": ids[4]},
+        )
+        self.assertEqual(sorted(summary(100)), ["a", "b", "old"])
+
+    def test_summarize_thread_events_follows_the_thread_rules(self) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="thread-summary"
+        )
+
+        def thread(event_type: str, conversation: str | None, thread_id: str, **p):
+            payload = {"thread_id": thread_id, **p}
+            if conversation is not None:
+                payload["conversation_id"] = conversation
+            return self._append(session.id, event_type, **payload)
+
+        start = thread("run.queued", "c", "t", run_id="r1", invocation_id="i1")
+        thread("run.queued", "c", "t", run_id="r2")
+        writer = thread("client.attach", "c", "t", attach_id="w", attach_role="")
+        thread("client.attach", "c", "t", attach_id="o", attach_role="observer")
+        thread("client.attach", "c", "t", attach_id=" ", attach_role="writer")
+        shared = thread("response.acked", None, "")
+        other = thread("run.running", "c", "u", run_id="r3")
+
+        def facts(conversation_id: str, thread_id: str) -> dict:
+            return self.store.summarize_thread_events(
+                session_id=session.id,
+                conversation_id=conversation_id,
+                thread_id=thread_id,
+                start_event_type="run.queued",
+                attach_event_type="client.attach",
+                writer_role="writer",
+                flag_event_types=["response.acked", "client.detached"],
+            )
+
+        self.assertEqual(
+            facts("c", "t"),
+            {
+                "latest_id": writer + 2,
+                "run_event_id": start + 1,
+                "start_id": start,
+                "attach_id": writer,
+                "present": set(),
+            },
+        )
+        # An event without a conversation is in the thread only when the
+        # conversation is the session itself; without a thread, in every thread.
+        self.assertEqual(facts(session.id, "t")["latest_id"], shared)
+        self.assertEqual(facts(session.id, "t")["present"], {"response.acked"})
+        self.assertEqual(facts("", "u")["latest_id"], other)
+        self.assertEqual(facts("", "u")["run_event_id"], other)
+        self.assertIsNone(facts("missing", "t")["latest_id"])
+
+    def test_list_events_by_id_reads_the_session_rows_in_chunks(self) -> None:
+        session, other = (
+            self.store.resolve_session(agent_id="main", channel="console", target=t)
+            for t in ("by-id", "by-id-other")
+        )
+        ids = [self._append(session.id, "step", index=i) for i in range(1203)]
+        foreign = self._append(other.id, "step")
+
+        events = self.store.list_events_by_id(
+            session_id=session.id, event_ids=[*ids[::-1], foreign, ids[0], 0]
+        )
+
+        self.assertEqual([event.id for event in events], ids)
+        self.assertEqual(
+            self.store.list_events_by_id(session_id=session.id, event_ids=[]), []
+        )
+
+    def _new_session(self, target: str) -> str:
+        return self.store.resolve_session(
+            agent_id="main", channel="console", target=target
+        ).id
+
+    def test_event_facts_read_payload_values_as_the_run_status_readers(self) -> None:
+        check_event_facts(self.store, self._new_session("event-facts"))
+
+    def test_event_facts_follow_the_event_transaction(self) -> None:
+        check_fact_writes(self.store, self._new_session)
+
+    def _legacy_database(self, count: int) -> tuple[Path, list[str]]:
+        """A database at runtime migration 12 with `count` stored events."""
+        legacy_path = Path(self._tmp.name) / "legacy" / "openminion.db"
+        migrate_database(
+            legacy_path,
+            migrations=tuple(item for item in DEFAULT_MIGRATIONS if item.version < 13),
+        )
+        session_ids = ["legacy-a", "legacy-b"]
+        with closing(connect_database(legacy_path)) as conn:
+            conn.executemany(
+                "INSERT INTO sessions(id, session_key, channel, target) "
+                "VALUES (?, ?, 'console', ?)",
+                [(sid, f"key-{sid}", sid) for sid in session_ids],
+            )
+            conn.executemany(
+                "INSERT INTO events(session_id, event_type, payload_json, created_at) "
+                "VALUES (:session_id, :event_type, :payload_json, :created_at)",
+                legacy_event_rows(session_ids, count),
+            )
+            conn.commit()
+        return legacy_path, session_ids
+
+    def test_event_facts_migration_backfills_existing_history(self) -> None:
+        # 2,345 events: three backfill batches of up to 1,000.
+        legacy_path, session_ids = self._legacy_database(2345)
+        with closing(connect_database(legacy_path)) as conn:
+            stored = stored_events(SessionStore(conn))
+
+        batches: list[int] = []
+        result = migrate_database(
+            legacy_path, migrations=recorded_backfill_migrations(batches)
+        )
+
+        self.assertEqual(result.applied_versions, (13,))
+        self.assertEqual(batches, [1000, 1000, 345, 0])
+        with closing(connect_database(legacy_path)) as conn:
+            store = SessionStore(conn)
+            check_upgraded_history(
+                store,
+                lambda target: (
+                    store.resolve_session(
+                        agent_id="main", channel="console", target=target
+                    ).id
+                ),
+                session_ids=session_ids,
+                stored=stored,
+            )
+
+    def test_event_facts_migration_rolls_back_when_the_backfill_fails(self) -> None:
+        legacy_path, _session_ids = self._legacy_database(1500)
+        with closing(connect_database(legacy_path)) as conn:
+            # A payload `json.loads` cannot read, after the first batch of 1,000.
+            conn.execute(
+                "UPDATE events SET payload_json = ? WHERE id = 1400", ('{"run_id": ',)
+            )
+            conn.commit()
+            stored = stored_events(SessionStore(conn))
+
+        def assert_not_applied() -> None:
+            with closing(connect_database(legacy_path)) as conn:
+                self.assertEqual(
+                    conn.execute("SELECT MAX(version) FROM migrations").fetchone()[0],
+                    12,
+                )
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT name FROM sqlite_master WHERE name = 'event_run_facts'"
+                    ).fetchone()
+                )
+                self.assertEqual(stored_events(SessionStore(conn)), stored)
+
+        # Any error in the backfill, here after its first batch of facts, rolls
+        # the whole migration back.
+        real_facts = run_facts.event_run_facts
+        derived: list[int] = []
+
+        def interrupted(event):
+            derived.append(event.id)
+            if len(derived) > 1000:
+                raise RuntimeError("backfill interrupted")
+            return real_facts(event)
+
+        with patch.object(run_facts, "event_run_facts", side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError, "backfill interrupted"):
+                migrate_database(legacy_path)
+        assert_not_applied()
+
+        with self.assertRaises(MigrationError) as raised:
+            migrate_database(legacy_path)
+        self.assertIn(
+            "v13 (add_event_run_facts) failed: event 1400 has a payload_json that is "
+            "not JSON",
+            str(raised.exception),
+        )
+        assert_not_applied()
+
+        # Rerunning the migration after the fix applies it whole.
+        with closing(connect_database(legacy_path)) as conn:
+            conn.execute("UPDATE events SET payload_json = '{}' WHERE id = 1400")
+            conn.commit()
+        self.assertEqual(migrate_database(legacy_path).applied_versions, (13,))
+        with closing(connect_database(legacy_path)) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM event_run_facts").fetchone()[0], 1500
+            )
+
     def test_list_sessions_and_count_sessions(self) -> None:
         first = self.store.resolve_session(
             agent_id="main", channel="console", target="chat-a"
@@ -832,6 +1125,304 @@ class SessionStoreTests(unittest.TestCase):
 
         self.assertIsNone(self.store.latest_conversation_id(session_id=session.id))
         self.assertIsNone(self.store.latest_conversation_id(session_id=""))
+
+    def _append_tied_messages(self, session_id: str) -> list[MessageRecord]:
+        specs = (
+            ("inbound", "conv-a", "thread-a"),
+            ("outbound", "conv-a", "thread-a"),
+            ("inbound", "conv-b", "thread-b"),
+            ("outbound", "conv-b", "thread-b"),
+        )
+        with (
+            patch(MESSAGE_CLOCK, return_value=TIED_AT),
+            patch(
+                MESSAGE_UUID,
+                side_effect=[SimpleNamespace(hex=value) for value in DESCENDING_IDS],
+            ),
+        ):
+            return [
+                self.store.append_message(
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    thread_id=thread_id,
+                    role=role,
+                    body=f"{conversation_id}/{role}",
+                )
+                for role, conversation_id, thread_id in specs
+            ]
+
+    def test_tied_messages_keep_append_order_and_newest_append_reads_last(
+        self,
+    ) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="chat"
+        )
+        appended = self._append_tied_messages(session.id)
+        ids = [item.id for item in appended]
+
+        listed = self.store.list_messages(session_id=session.id)
+        self.assertEqual([item.id for item in listed], ids)
+        self.assertEqual([item.rowid for item in listed], [1, 2, 3, 4])
+        self.assertEqual([item.rowid for item in appended], [1, 2, 3, 4])
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_messages(session_id=session.id, limit=2)
+            ],
+            ids[:2],
+        )
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_recent_messages(
+                    session_id=session.id, limit=1
+                )
+            ],
+            ids[3:],
+        )
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_recent_messages(
+                    session_id=session.id, limit=3
+                )
+            ],
+            ids[1:],
+        )
+        self.assertEqual(
+            self.store.latest_conversation_id(session_id=session.id), "conv-b"
+        )
+        self.assertEqual(ids, list(DESCENDING_IDS))
+        self.assertEqual({item.created_at for item in listed}, {TIED_AT})
+
+    def test_tied_messages_keep_append_order_within_conversation_and_thread(
+        self,
+    ) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="chat"
+        )
+        a_in, a_out, b_in, b_out = self._append_tied_messages(session.id)
+
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_messages(
+                    session_id=session.id, conversation_id="conv-a"
+                )
+            ],
+            [a_in.id, a_out.id],
+        )
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_recent_messages(
+                    session_id=session.id, conversation_id="conv-a", limit=1
+                )
+            ],
+            [a_out.id],
+        )
+        thread_b = self.store.list_recent_messages(
+            session_id=session.id,
+            conversation_id="conv-b",
+            thread_id="thread-b",
+            limit=1,
+        )
+        self.assertEqual([item.id for item in thread_b], [b_out.id])
+        self.assertEqual(thread_b[0].rowid, 4)
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_messages_after_rowid(
+                    session_id=session.id,
+                    after_rowid=a_out.rowid,
+                    thread_id="thread-b",
+                )
+            ],
+            [b_in.id, b_out.id],
+        )
+
+    def test_tied_message_cursors_page_in_append_order(self) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="chat"
+        )
+        appended = self._append_tied_messages(session.id)
+        ids = [item.id for item in appended]
+
+        pages: list[list[str]] = []
+        cursor = 0
+        while True:
+            page = self.store.list_messages_after_rowid(
+                session_id=session.id, after_rowid=cursor, limit=2
+            )
+            if not page:
+                break
+            pages.append([item.id for item in page])
+            cursor = page[-1].rowid
+        self.assertEqual(pages, [ids[:2], ids[2:]])
+
+        # A cursor recorded at append time still points at the same message
+        # after later appends in the same clock tick.
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_messages_after_rowid(
+                    session_id=session.id, after_rowid=appended[0].rowid
+                )
+            ],
+            ids[1:],
+        )
+        self.assertEqual(
+            [
+                item.id
+                for item in self.store.list_recent_messages(
+                    session_id=session.id,
+                    limit=2,
+                    after_rowid=appended[1].rowid,
+                    exclude_message_ids=(ids[3],),
+                )
+            ],
+            [ids[2]],
+        )
+
+    def _append_seq_by_id(self, session_id: str) -> dict[str, int]:
+        rows = self.connection.execute(
+            "SELECT id, append_seq FROM messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+        return {str(row["id"]): int(row["append_seq"]) for row in rows}
+
+    def test_append_seq_is_allocated_per_session_and_survives_restart(self) -> None:
+        first = self.store.resolve_session(
+            agent_id="main", channel="console", target="first"
+        )
+        second = self.store.resolve_session(
+            agent_id="main", channel="console", target="second"
+        )
+        with patch(MESSAGE_CLOCK, return_value=TIED_AT):
+            first_ids = [
+                self.store.append_message(
+                    session_id=first.id, role="inbound", body="f1"
+                ).id,
+                self.store.append_message(
+                    session_id=first.id, role="outbound", body="f2"
+                ).id,
+            ]
+            second_id = self.store.append_message(
+                session_id=second.id, role="inbound", body="s1"
+            ).id
+
+            self.connection.close()
+            self.connection = connect_database(self.database_path)
+            self.store = SessionStore(self.connection)
+            first_ids.append(
+                self.store.append_message(
+                    session_id=first.id, role="inbound", body="f3"
+                ).id
+            )
+
+        self.assertEqual(
+            self._append_seq_by_id(first.id),
+            {first_ids[0]: 1, first_ids[1]: 2, first_ids[2]: 3},
+        )
+        self.assertEqual(self._append_seq_by_id(second.id), {second_id: 1})
+        self.assertEqual(
+            [item.id for item in self.store.list_messages(session_id=first.id)],
+            first_ids,
+        )
+
+    def test_failed_append_rolls_back_session_write_and_append_seq(self) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="chat"
+        )
+        with patch(MESSAGE_CLOCK, return_value=TIED_AT):
+            first = self.store.append_message(
+                session_id=session.id, role="inbound", body="first"
+            )
+        before = self.store.get_session(session.id)
+        assert before is not None
+
+        with (
+            patch(MESSAGE_CLOCK, return_value="2026-10-22T01:00:01+00:00"),
+            patch(MESSAGE_UUID, return_value=SimpleNamespace(hex=first.id)),
+        ):
+            with self.assertRaises(sqlite3.IntegrityError):
+                self.store.append_message(
+                    session_id=session.id, role="outbound", body="duplicate id"
+                )
+
+        after = self.store.get_session(session.id)
+        assert after is not None
+        self.assertEqual(
+            (after.updated_at, after.last_activity_at),
+            (before.updated_at, before.last_activity_at),
+        )
+        self.assertEqual(self.store.count_messages(session_id=session.id), 1)
+        with patch(MESSAGE_CLOCK, return_value=TIED_AT):
+            second = self.store.append_message(
+                session_id=session.id, role="outbound", body="second"
+            )
+        self.assertEqual(
+            self._append_seq_by_id(session.id), {first.id: 1, second.id: 2}
+        )
+        self.assertEqual(
+            [item.id for item in self.store.list_messages(session_id=session.id)],
+            [first.id, second.id],
+        )
+
+    def test_concurrent_appends_to_one_session_allocate_distinct_append_order(
+        self,
+    ) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="chat"
+        )
+        peers = [build_runtime_storage(self.database_path) for _ in range(4)]
+        appended: dict[int, list[MessageRecord]] = {index: [] for index in range(4)}
+        errors: list[BaseException] = []
+        start = threading.Barrier(len(peers))
+
+        def _append(index: int) -> None:
+            try:
+                start.wait()
+                for step in range(10):
+                    appended[index].append(
+                        peers[index].sessions.append_message(
+                            session_id=session.id,
+                            role="inbound",
+                            body=f"peer-{index}-{step}",
+                        )
+                    )
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        try:
+            with patch(MESSAGE_CLOCK, return_value=TIED_AT):
+                workers = [
+                    threading.Thread(target=_append, args=(index,))
+                    for index in range(len(peers))
+                ]
+                for worker in workers:
+                    worker.start()
+                for worker in workers:
+                    worker.join()
+        finally:
+            for peer in peers:
+                peer.close()
+
+        self.assertEqual(errors, [])
+        records = [item for items in appended.values() for item in items]
+        self.assertEqual(sorted(item.rowid for item in records), list(range(1, 41)))
+        self.assertEqual(
+            sorted(self._append_seq_by_id(session.id).values()), list(range(1, 41))
+        )
+        listed = self.store.list_messages(session_id=session.id)
+        self.assertEqual(
+            [item.id for item in listed],
+            [item.id for item in sorted(records, key=lambda item: item.rowid)],
+        )
+        for items in appended.values():
+            self.assertEqual(
+                [item.rowid for item in items], sorted(item.rowid for item in items)
+            )
 
     def test_session_context_create_and_update(self) -> None:
         session = self.store.resolve_session(

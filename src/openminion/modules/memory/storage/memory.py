@@ -755,6 +755,9 @@ class InMemoryMemoryStore(CapabilityMemoryStore):
             ),
         )
 
+    def close(self) -> None:
+        return None
+
     def candidate_put(self, candidate: MemoryCandidate) -> str:
         with self._candidate_write_lock:
             current = self._records.candidate_get(candidate.candidate_id)

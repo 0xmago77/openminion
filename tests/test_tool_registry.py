@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -9,6 +10,7 @@ import threading
 import unittest
 from unittest import mock
 
+import pytest
 from pydantic import BaseModel, ConfigDict
 
 from openminion.modules.llm.providers.base import ProviderToolCall
@@ -22,7 +24,10 @@ from openminion.modules.tool import (
     build_default_tool_registry,
     build_default_tool_registry_debug_report,
 )
-from openminion.modules.tool.registry import ToolRegistry
+from openminion.modules.tool.registry import (
+    ToolRegistry,
+    _TEMPORARY_REGISTRATION_OWNER,
+)
 from openminion.modules.tool.registry.catalog import ToolSpec
 from openminion.modules.tool.errors import ToolRuntimeError
 
@@ -1125,3 +1130,94 @@ def test_temporary_registration_scope_preserves_cross_thread_isolation() -> None
         assert unrelated.result(timeout=1) == {}
     finally:
         pool.shutdown(wait=True)
+
+
+@pytest.mark.parametrize(
+    ("inherited", "acquired", "unwind", "marker_failure"),
+    [
+        (False, True, None, None),
+        (False, True, asyncio.CancelledError, None),
+        (True, True, None, None),
+        (True, True, RuntimeError, None),
+        (True, False, None, None),
+        (False, True, None, "set"),
+        (False, True, None, "reset"),
+    ],
+)
+def test_temporary_registration_scope_requires_lock_ownership(
+    inherited, acquired, unwind, marker_failure, monkeypatch
+):
+    class FiniteLock:
+        def __init__(self):
+            self.requests = []
+            self.releases = 0
+
+        def acquire(self, blocking=True):
+            self.requests.append(blocking)
+            return acquired
+
+        def release(self):
+            self.releases += 1
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *_args):
+            self.release()
+
+    marker_error = KeyboardInterrupt(f"marker {marker_failure} interrupted")
+
+    class FiniteMarker:
+        def get(self):
+            return _TEMPORARY_REGISTRATION_OWNER.get()
+
+        def set(self, owner):
+            if marker_failure == "set":
+                raise marker_error
+            return _TEMPORARY_REGISTRATION_OWNER.set(owner)
+
+        def reset(self, token):
+            if marker_failure == "reset":
+                raise marker_error
+            _TEMPORARY_REGISTRATION_OWNER.reset(token)
+
+    registry = ToolRegistry()
+    lock = FiniteLock()
+    registry._temporary_registration_lock = lock
+    previous = id(registry) if inherited else None
+    token = _TEMPORARY_REGISTRATION_OWNER.set(previous)
+    monkeypatch.setattr(
+        "openminion.modules.tool.registry._TEMPORARY_REGISTRATION_OWNER", FiniteMarker()
+    )
+    entered = []
+    try:
+
+        def enter_scope():
+            with registry.temporary_registration_scope():
+                entered.append(True)
+                assert _TEMPORARY_REGISTRATION_OWNER.get() == id(registry)
+                if unwind is not None:
+                    raise unwind("scope unwound")
+
+        if marker_failure is not None:
+            with pytest.raises(KeyboardInterrupt) as exc_info:
+                enter_scope()
+            assert exc_info.value is marker_error
+        elif not acquired:
+            with pytest.raises(RuntimeError, match="cross-thread.*separate runtime"):
+                enter_scope()
+        elif unwind is not None:
+            with pytest.raises(unwind, match="scope unwound"):
+                enter_scope()
+        else:
+            enter_scope()
+        assert entered == ([] if not acquired or marker_failure == "set" else [True])
+        assert lock.requests == [not inherited]
+        assert lock.releases == int(acquired)
+        if marker_failure == "set":
+            assert registry._tools == {}, "marker setup failure left registered tools"
+        expected_owner = id(registry) if marker_failure == "reset" else previous
+        assert _TEMPORARY_REGISTRATION_OWNER.get() == expected_owner
+    finally:
+        _TEMPORARY_REGISTRATION_OWNER.reset(token)

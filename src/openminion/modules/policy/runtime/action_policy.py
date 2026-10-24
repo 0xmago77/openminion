@@ -1,5 +1,7 @@
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 from openminion.base.config import OpenMinionConfig
 from openminion.modules.tool.plugin_api import POLICY_AUTHORIZATION_DESCRIPTORS
@@ -13,7 +15,13 @@ from ..models import (
     RiskSpec,
     policy_config_from_action_policy,
 )
-from ..constants import POLICY_DECISION_DENY
+from ..constants import (
+    POLICY_DECISION_DENY,
+    POLICY_RISK_DESTRUCTIVE,
+    POLICY_RISK_EXEC,
+    POLICY_RISK_READ,
+    POLICY_RISK_WRITE,
+)
 
 
 def select_policy_rule(
@@ -97,12 +105,37 @@ def build_action_policy_service(
         policy_dir / "policy.db",
         config=policy_config_from_action_policy(config.action_policy),
     )
-    for tool_name, tool in tool_registry.list().items():
-        risk = derive_tool_risk_spec(tool_name=tool_name, tool=tool)
-        policy_ctl.register_risk(tool_name, risk)
-        if "." not in tool_name:
-            policy_ctl.register_risk(f"{tool_name}.default", risk)
+    for key, risk in derive_tool_risk_registry(tool_registry.list()).items():
+        policy_ctl.register_risk(key, risk)
     return policy_ctl
+
+
+def derive_tool_risk_registry(tools: Mapping[str, Any]) -> dict[str, RiskSpec]:
+    risks = {}
+    for name, tool in tools.items():
+        risk = derive_tool_risk_spec(tool_name=name, tool=tool)
+        risks[name] = risk
+        if "." not in name:
+            risks[f"{name}.default"] = risk
+    return risks
+
+
+@contextmanager
+def temporary_tool_risks(
+    registry: dict[str, RiskSpec], tools: Mapping[str, Any]
+) -> Iterator[None]:
+    """Bind run-scoped declarations and restore the previous risk entries."""
+    risks = derive_tool_risk_registry(tools)
+    previous = {key: registry.get(key) for key in risks}
+    registry.update(risks)
+    try:
+        yield
+    finally:
+        for key, spec in previous.items():
+            if spec is None:
+                registry.pop(key, None)
+            else:
+                registry[key] = spec
 
 
 def derive_tool_risk_spec(*, tool_name: str, tool: Any) -> RiskSpec:
@@ -129,34 +162,34 @@ def derive_tool_risk_spec(*, tool_name: str, tool: Any) -> RiskSpec:
 
     if dangerous:
         return RiskSpec(
-            risk_class="destructive",
+            risk_class=cast(RiskClass, POLICY_RISK_DESTRUCTIVE),
             side_effects="local",
             reversibility="irreversible",
             default_confirm=True,
         )
     if min_scope == "READ_ONLY":
         return RiskSpec(
-            risk_class="read",
+            risk_class=cast(RiskClass, POLICY_RISK_READ),
             side_effects="none",
             reversibility="reversible",
             default_confirm=False,
         )
     if min_scope == "WRITE_SAFE":
         return RiskSpec(
-            risk_class="write",
+            risk_class=cast(RiskClass, POLICY_RISK_WRITE),
             side_effects="local",
             reversibility="reversible" if idempotent else "unknown",
             default_confirm=not idempotent,
         )
     if min_scope in {"POWER_USER", "UI_AUTOMATION"}:
         return RiskSpec(
-            risk_class="exec",
+            risk_class=cast(RiskClass, POLICY_RISK_EXEC),
             side_effects="local",
             reversibility="unknown",
             default_confirm=True,
         )
     return RiskSpec(
-        risk_class="write",
+        risk_class=cast(RiskClass, POLICY_RISK_WRITE),
         side_effects="local",
         reversibility="unknown",
         default_confirm=not idempotent,
@@ -167,8 +200,10 @@ __all__ = (
     "build_action_policy_service",
     "blocked_rule_decision",
     "derive_tool_risk_spec",
+    "derive_tool_risk_registry",
     "policy_config_from_action_policy",
     "merge_policy_risk",
     "resolve_profile_action_policy",
     "select_policy_rule",
+    "temporary_tool_risks",
 )

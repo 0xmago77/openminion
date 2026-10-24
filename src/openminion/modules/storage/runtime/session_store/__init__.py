@@ -12,6 +12,12 @@ from .models import (
     SessionContextRecord,
     SessionRecord,
 )
+from .run_facts import (
+    extract_event_error,
+    normalize_run_state,
+    payload_id,
+    payload_text,
+)
 from .store import SessionStore
 from .turn_leases import (
     RuntimeSessionTurnBusyError,
@@ -35,5 +41,9 @@ __all__ = (
     "build_explicit_session_key",
     "build_room_session_key",
     "build_session_key",
+    "extract_event_error",
     "is_room_session_key",
+    "normalize_run_state",
+    "payload_id",
+    "payload_text",
 )

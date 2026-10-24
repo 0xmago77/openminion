@@ -1,7 +1,10 @@
 import asyncio
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from openminion.services.context.session import (
@@ -14,13 +17,22 @@ from openminion.modules.brain.constants import (
     RESPOND_KIND_POLICY_CONFIRMATION_PROMPT,
     SESSION_EVENT_POLICY_CONFIRMATION_PROMPT,
 )
-from openminion.modules.storage.runtime.migrations import migrate_database
+from openminion.modules.storage.runtime.migrations import (
+    DEFAULT_MIGRATIONS,
+    migrate_database,
+)
 from openminion.modules.storage.runtime.pinned_context import PinnedContextEntry
 from openminion.modules.storage.runtime.session_store import SessionStore
 from openminion.modules.storage.runtime.session_store.turn_leases import (
     RuntimeSessionTurnFenceError,
 )
 from openminion.modules.storage.runtime.sqlite import connect_database
+
+MESSAGE_CLOCK = "openminion.modules.storage.runtime.session_store.messages.utc_now_iso"
+MESSAGE_UUID = "openminion.modules.storage.runtime.session_store.messages.uuid4"
+TIED_AT = "2026-10-22T01:00:00+00:00"
+# Each message id sorts before the id of the message appended before it.
+DESCENDING_IDS = tuple(char * 32 for char in "fca840")
 
 
 class SessionContextServiceTests(unittest.TestCase):
@@ -112,6 +124,123 @@ class SessionContextServiceTests(unittest.TestCase):
 
         self.assertEqual(history[0].metadata.get("role"), "system")
         self.assertEqual([item.id for item in history[1:]], [records[-2].id])
+
+    def test_compaction_cursor_keeps_later_tied_messages_visible(self) -> None:
+        session = self.store.resolve_session(
+            agent_id="main", channel="console", target="room"
+        )
+        service = SessionContextService(
+            self.store, keep_recent_messages=2, max_compact_per_turn=50
+        )
+        with (
+            patch(MESSAGE_CLOCK, return_value=TIED_AT),
+            patch(
+                MESSAGE_UUID,
+                side_effect=[SimpleNamespace(hex=value) for value in DESCENDING_IDS],
+            ),
+        ):
+            records = [
+                self.store.append_message(
+                    session_id=session.id, role="inbound", body=f"m{index}"
+                )
+                for index in range(1, 5)
+            ]
+            result = service.compact_session(session_id=session.id, force=True)
+            records += [
+                self.store.append_message(
+                    session_id=session.id, role="inbound", body=f"m{index}"
+                )
+                for index in range(5, 7)
+            ]
+
+        context = self.store.get_session_context(session_id=session.id)
+        assert context is not None
+        self.assertEqual(result.compacted_count, 2)
+        self.assertEqual(
+            (
+                context.compacted_until_rowid,
+                context.compacted_until_message_id,
+                context.compacted_until_created_at,
+            ),
+            (2, records[1].id, TIED_AT),
+        )
+        history = service.build_history(
+            session_id=session.id, channel="console", target="room", recent_limit=10
+        )
+        self.assertEqual(history[0].metadata.get("role"), "system")
+        self.assertEqual(
+            [item.id for item in history[1:]], [item.id for item in records[2:]]
+        )
+
+    def test_history_after_append_seq_upgrade_shows_uncompacted_tied_messages(
+        self,
+    ) -> None:
+        legacy_path = Path(self._tmp.name) / "legacy" / "openminion.db"
+        migrate_database(
+            legacy_path,
+            migrations=tuple(item for item in DEFAULT_MIGRATIONS if item.version < 12),
+        )
+        # g1-g4 share one created_at and their ids sort in reverse of append
+        # order. Compaction ran after g3 (old position 2: e0, g3); g4 came
+        # later in the same clock tick.
+        rows = [
+            ("5" * 32, "e0", "2026-10-22T00:59:00+00:00"),
+            ("f" * 32, "g1", TIED_AT),
+            ("c" * 32, "g2", TIED_AT),
+            ("8" * 32, "g3", TIED_AT),
+            ("0" * 32, "g4", TIED_AT),
+            ("4" * 32, "l1", "2026-10-22T01:01:00+00:00"),
+        ]
+        with closing(sqlite3.connect(str(legacy_path))) as conn:
+            conn.execute(
+                "INSERT INTO sessions(id, session_key, channel, target) "
+                "VALUES ('legacy', 'legacy-key', 'console', 'chat')"
+            )
+            conn.executemany(
+                "INSERT INTO messages(id, session_id, role, body, created_at) "
+                "VALUES (?, 'legacy', 'inbound', ?, ?)",
+                rows,
+            )
+            conn.execute(
+                "INSERT INTO session_contexts(session_id, rolling_summary, "
+                "compacted_until_rowid, compacted_until_created_at, "
+                "compacted_until_message_id, compacted_message_count) "
+                "VALUES ('legacy', 'summary of e0, g3', 2, ?, ?, 2)",
+                (TIED_AT, "8" * 32),
+            )
+            conn.commit()
+
+        migrate_database(legacy_path)
+        with closing(connect_database(legacy_path)) as connection:
+            store = SessionStore(connection)
+            service = SessionContextService(
+                store, keep_recent_messages=2, max_compact_per_turn=50
+            )
+
+            def _history_bodies() -> list[str]:
+                history = service.build_history(
+                    session_id="legacy",
+                    channel="console",
+                    target="chat",
+                    recent_limit=10,
+                )
+                self.assertEqual(history[0].metadata.get("role"), "system")
+                return [item.body for item in history[1:]]
+
+            self.assertEqual(_history_bodies(), ["g1", "g2", "g3", "g4", "l1"])
+            result = service.compact_session(session_id="legacy", force=True)
+            context = store.get_session_context(session_id="legacy")
+            assert context is not None
+            self.assertEqual(result.compacted_count, 3)
+            self.assertEqual(
+                (
+                    context.compacted_until_rowid,
+                    context.compacted_until_message_id,
+                    context.compacted_message_count,
+                ),
+                (4, "8" * 32, 4),
+            )
+            self.assertEqual(_history_bodies(), ["g4", "l1"])
 
     def test_token_budget_avoids_compacting_tiny_messages_within_safety_bound(
         self,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import fnmatch
 import re
 from pathlib import Path
-from typing import Any, Dict, Iterable, Literal, Optional, cast
+from typing import Any, ContextManager, Dict, Iterable, Literal, Optional, cast
 from urllib.parse import urlparse
 
 from openminion.modules.tool.plugin_api import (
@@ -69,6 +69,7 @@ from .confirmation import (
     resolve_exact_authorization_decision,
 )
 from .action_policy import blocked_rule_decision, merge_policy_risk, select_policy_rule
+from .action_policy import temporary_tool_risks
 from ..grants import (
     confirmation_grant_terms,
     GrantMatch,
@@ -183,6 +184,9 @@ class PolicyCtl:
             self._risk_registry[key] = spec
             return
         self._risk_registry[key] = RiskSpec.from_dict(spec)
+
+    def temporary_tool_risks(self, tools: Dict[str, Any]) -> ContextManager[None]:
+        return temporary_tool_risks(self._risk_registry, tools)
 
     def check(
         self,

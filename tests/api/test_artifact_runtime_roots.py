@@ -8,6 +8,8 @@ import pytest
 from openminion import Agent, APIRuntime
 from openminion.base.config import OpenMinionConfig, save_config
 from openminion.modules.artifact.control import ArtifactCtl
+from openminion.modules.memory.storage.audit import SQLiteMemoryAuditSink
+from openminion.modules.memory.storage.sqlite.store import SQLiteMemoryStore
 from openminion.services.runtime import memory as runtime_memory
 from tests._csc_fixtures import _csc_install_default_agent
 
@@ -153,3 +155,89 @@ def test_runtime_close_closes_each_runtime_artifact_store_once(
     assert len(memory_stores) == 1
     assert created[0] is memory_stores[0]
     assert close_counts == [1, 1, 1]
+
+
+def test_runtime_close_closes_the_memory_audit_sink_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[SQLiteMemoryAuditSink] = []
+    closed: list[int] = []
+    memory_sinks: list[SQLiteMemoryAuditSink] = []
+    original_init = SQLiteMemoryAuditSink.__init__
+    original_close = SQLiteMemoryAuditSink.close
+    create_memory_sink = runtime_memory.SQLiteMemoryAuditSink
+
+    def record_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        created.append(self)
+
+    def record_close(self):
+        closed.append(id(self))
+        original_close(self)
+
+    def record_memory_sink(db_path):
+        sink = create_memory_sink(db_path)
+        memory_sinks.append(sink)
+        return sink
+
+    monkeypatch.setattr(SQLiteMemoryAuditSink, "__init__", record_init)
+    monkeypatch.setattr(SQLiteMemoryAuditSink, "close", record_close)
+    monkeypatch.setattr(runtime_memory, "SQLiteMemoryAuditSink", record_memory_sink)
+
+    runtime = _echo_runtime(tmp_path / "root")
+    try:
+        with Agent(runtime=runtime) as agent:
+            assert agent.run("hello").run_state == "completed"
+        open_after_turn = [sink._conn is not None for sink in created]
+        close_counts: list[list[int]] = []
+        for _ in range(2):
+            runtime.close()
+            close_counts.append([closed.count(id(sink)) for sink in created])
+        open_after_close = [sink._conn is not None for sink in created]
+    finally:
+        runtime.close()
+        for sink in created:
+            original_close(sink)
+
+    assert created == memory_sinks
+    assert len(created) == 1
+    assert open_after_turn == [True]
+    assert close_counts == [[1], [1]]
+    assert open_after_close == [False]
+
+
+def test_runtime_close_closes_the_memory_store_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores: list[object] = []
+    closed: list[int] = []
+    original_close = SQLiteMemoryStore.close
+    resolve_backend = runtime_memory.resolve_memory_backend
+
+    def record_close(self):
+        closed.append(id(self))
+        original_close(self)
+
+    def record_backend(**kwargs):
+        resolved = resolve_backend(**kwargs)
+        stores.append(resolved.store)
+        return resolved
+
+    monkeypatch.setattr(SQLiteMemoryStore, "close", record_close)
+    monkeypatch.setattr(runtime_memory, "resolve_memory_backend", record_backend)
+
+    runtime = _echo_runtime(tmp_path / "root")
+    try:
+        with Agent(runtime=runtime) as agent:
+            assert agent.run("hello").run_state == "completed"
+        close_counts: list[list[int]] = []
+        for _ in range(2):
+            runtime.close()
+            close_counts.append([closed.count(id(store)) for store in stores])
+    finally:
+        runtime.close()
+
+    assert [type(store) for store in stores] == [SQLiteMemoryStore]
+    assert close_counts == [[1], [1]]

@@ -1,11 +1,31 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-23
+Last updated: 2026-10-24
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+## Current package line - 2026-10-24
+
+- Preserve deterministic session-message and transcript-event ordering when
+  timestamps tie, including stable compaction boundaries across storage
+  upgrades.
+- Reconstruct run status and lifecycle state beyond the first 2,000 events
+  with bounded SQLite and PostgreSQL queries.
+- Require declared risk metadata for temporary SDK and handoff tools, and
+  prevent denied tools from starting delegated work.
+- Fail fast when shared-runtime handoff tools are registered across threads,
+  while releasing the registration lock after marker failures.
+- Close runtime-owned memory stores and audit sinks exactly once without
+  closing borrowed resources.
+- Release SQLite connections immediately after migrations and OMX imports so
+  Windows callers can rename or remove database files without waiting for
+  garbage collection.
+- Runtime migration 13 requires every process sharing a database to upgrade
+  together. Stop all writers and retain a pre-upgrade backup; mixed-version
+  writers and downgrade-in-place are not supported.
 
 ## Current package line - 2026-10-22
 

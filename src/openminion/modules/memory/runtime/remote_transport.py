@@ -220,6 +220,9 @@ class RemoteMemoryStore:
     def __init__(self, transport: RemoteMemoryTransport) -> None:
         self._transport = transport
 
+    def close(self) -> None:
+        return None
+
     def _parse_record(self, payload: dict[str, Any]) -> MemoryRecord:
         now = (
             payload.get("updated_at")

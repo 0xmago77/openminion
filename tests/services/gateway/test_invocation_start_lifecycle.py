@@ -240,6 +240,15 @@ class InvocationStartLifecycleTests(GatewayServiceTestCase):
 
         assert lifecycle.invocation_id == "invocation-1"
         assert lifecycle.invocation_source_event_id == start.id
+        # The start is below the newest 2,000 events, and the projection still
+        # reports its run and the newest event.
+        assert (lifecycle.latest_run_id, lifecycle.latest_run_state) == (
+            "run-1",
+            "queued",
+        )
+        assert lifecycle.latest_event_id == self.sessions.event_high_water(
+            session_id=session.id
+        )
 
     def test_same_timestamp_appends_return_their_own_rows(self) -> None:
         session = self.sessions.resolve_session(

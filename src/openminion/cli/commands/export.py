@@ -32,7 +32,8 @@ def run_export(args) -> int:
 
     include_events = bool(getattr(args, "include_events", False))
 
-    records: list[dict[str, Any]] = []
+    messages: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
     runtime_storage = build_runtime_storage(storage_path)
     try:
         sessions: SessionStore = runtime_storage.sessions
@@ -46,7 +47,7 @@ def run_export(args) -> int:
             session_id=session_id, limit=unbounded_limit
         ):
             stats = RunStats.from_message_metadata(message.metadata)
-            records.append(
+            messages.append(
                 {
                     "type": "message",
                     "id": str(message.id),
@@ -64,7 +65,7 @@ def run_export(args) -> int:
                 newest_first=False,
                 limit=unbounded_limit,
             ):
-                records.append(
+                events.append(
                     {
                         "type": "event",
                         "id": str(event.id),
@@ -76,7 +77,7 @@ def run_export(args) -> int:
     finally:
         runtime_storage.close()
 
-    records.sort(key=lambda x: (x["created_at"], x.get("id", "")))
+    records = _merge_transcript(messages, events)
 
     if out_format == "jsonl":
         output = "\n".join(json.dumps(record, sort_keys=True) for record in records)
@@ -91,6 +92,36 @@ def run_export(args) -> int:
         print(output)
 
     return 0
+
+
+def _transcript_key(record: dict[str, Any]) -> str:
+    return str(record["created_at"])
+
+
+def _merge_transcript(
+    messages: list[dict[str, Any]], events: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Interleave messages and events, both given in store order, by created_at.
+
+    Messages sharing a created_at keep their append order, and events sharing
+    one keep their insertion order: the sort is stable, so tied events stay as
+    `list_events` returns them. Nothing stored orders a message against an
+    event, so at an exact created_at tie the messages come first, then the
+    events. This is a presentation rule; it does not say which was written
+    first.
+    """
+    ordered_events = sorted(events, key=_transcript_key)
+    merged: list[dict[str, Any]] = []
+    next_event = 0
+    for message in messages:
+        while next_event < len(ordered_events) and _transcript_key(
+            ordered_events[next_event]
+        ) < _transcript_key(message):
+            merged.append(ordered_events[next_event])
+            next_event += 1
+        merged.append(message)
+    merged.extend(ordered_events[next_event:])
+    return merged
 
 
 def _export_md(session_id: str, records: list[dict[str, Any]]) -> str:
