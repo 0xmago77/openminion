@@ -13,6 +13,15 @@ This file tracks package-facing release notes for `openminion`.
   exposed in the args schema are evaluated (return, `self`/`cls` and
   `*args`/`**kwargs` annotations are left alone), and decoration fails with a
   clear `TypeError` when an exposed argument annotation cannot be resolved.
+- Apply memory retention in the runtime session lifecycle with a PostgreSQL
+  memory store. The lifecycle hands the retention helpers the runtime's
+  `AuditedMemoryStore`, so confidence decay, summary compression and deletion,
+  per-scope capacity and stale insight eviction took the SQLite path and failed
+  with `'PostgresMemoryStore' object has no attribute '_connect'`: no retention
+  was applied, every turn logged `memory.session_lifecycle failed`, and the
+  first-turn summary compression failed silently. The helpers now run on the
+  store behind the audit wrapper, as they already did with SQLite, and the
+  lifecycle completes once per session (#392).
 
 ## Current package line - 2026-10-24
 
