@@ -4,7 +4,7 @@ import concurrent.futures
 import json
 import os
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +19,7 @@ from openminion.modules.storage.runtime.context import build_runtime_storage
 from openminion.modules.storage.runtime.idempotency_store import IdempotencyStore
 from openminion.modules.storage.runtime.migrations import (
     DEFAULT_MIGRATIONS,
+    MigrationError,
     migrate_record_store,
 )
 from openminion.modules.storage.runtime.session_store import SessionStore
@@ -30,16 +31,27 @@ from openminion.modules.task.run import (
     resolve_thread_lifecycle,
 )
 from tests._run_status_scenarios import (
+    append_nonstandard_values,
     append_payload_variants,
     append_runs,
     append_thread_payload_variants,
     append_threads,
+    check_bounded_reads,
+    check_event_facts,
+    check_fact_writes,
+    check_long_ids,
+    check_nonstandard_probe_cases,
+    check_nonstandard_values,
     check_review_cases,
     check_token_text_ids,
     check_run_readers,
     check_thread_payload_variants,
     check_thread_projection,
+    check_upgraded_history,
+    legacy_event_rows,
+    recorded_backfill_migrations,
     stepping_clock,
+    stored_events,
 )
 
 pytestmark = pytest.mark.postgres
@@ -584,6 +596,15 @@ def _postgres_sessions(tmp_path: Path, url: str) -> Iterator[SessionStore]:
         storage.close()
 
 
+def _session_factory(sessions: SessionStore) -> Callable[[str], str]:
+    def new_session(target: str) -> str:
+        return sessions.resolve_session(
+            agent_id="main", channel="console", target=target
+        ).id
+
+    return new_session
+
+
 @pytest.mark.postgres
 def test_postgres_run_status_readers_past_the_default_window(tmp_path: Path) -> None:
     pytest.importorskip("sqlalchemy")
@@ -648,3 +669,127 @@ def test_postgres_run_status_readers_past_the_default_window(tmp_path: Path) -> 
             assert projection.latest_event_id == sessions.event_high_water(
                 session_id="window"
             )
+
+
+@pytest.mark.postgres
+def test_postgres_event_facts_read_payload_values_as_the_run_status_readers(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om352_facts") as url:
+        with _postgres_sessions(tmp_path, url) as sessions:
+            check_event_facts(sessions, _session_factory(sessions)("facts"))
+
+
+@pytest.mark.postgres
+def test_postgres_event_facts_follow_the_event_transaction(tmp_path: Path) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om352_fact_writes") as url:
+        with _postgres_sessions(tmp_path, url) as sessions:
+            check_fact_writes(sessions, _session_factory(sessions))
+
+
+@pytest.mark.postgres
+def test_postgres_run_status_reads_nonstandard_payload_values(tmp_path: Path) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om352_nonstandard") as url:
+        with _postgres_sessions(tmp_path, url) as sessions:
+            new_session = _session_factory(sessions)
+            session_id = new_session("nonstandard")
+            append_nonstandard_values(sessions, session_id)
+            check_nonstandard_values(sessions, session_id, nul_requests=False)
+            check_nonstandard_probe_cases(sessions, new_session)
+
+
+@pytest.mark.postgres
+def test_postgres_run_status_accepts_ids_of_any_length(tmp_path: Path) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om352_long_ids") as url:
+        with _postgres_sessions(tmp_path, url) as sessions:
+            check_long_ids(sessions, _session_factory(sessions))
+
+
+@pytest.mark.postgres
+def test_postgres_run_status_reads_a_bounded_number_of_rows(tmp_path: Path) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om352_bounds") as url:
+        with _postgres_sessions(tmp_path, url) as sessions:
+            check_bounded_reads(sessions, _session_factory(sessions)("bounds"))
+
+
+def _insert_legacy_history(record_store: Any, count: int) -> list[str]:
+    session_ids = ["legacy-a", "legacy-b"]
+    for session_id in session_ids:
+        record_store.execute_count(
+            "INSERT INTO sessions(id, session_key, channel, target) "
+            "VALUES (?, ?, 'console', ?)",
+            (session_id, f"key-{session_id}", session_id),
+        )
+    record_store.insert_many("events", legacy_event_rows(session_ids, count))
+    return session_ids
+
+
+@pytest.mark.postgres
+def test_postgres_event_facts_migration_backfills_existing_history(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om352_backfill") as url:
+        # 2,345 events: three backfill batches of up to 1,000.
+        with _legacy_postgres_store(url) as record_store:
+            session_ids = _insert_legacy_history(record_store, 2345)
+            stored = stored_events(SessionStore(record_store))
+            batches: list[int] = []
+            result = migrate_record_store(
+                record_store,
+                backend_type="postgres",
+                migrations=recorded_backfill_migrations(batches),
+            )
+            assert result.applied_versions == (13,)
+            assert batches == [1000, 1000, 345, 0]
+        with _postgres_sessions(tmp_path, url) as sessions:
+            check_upgraded_history(
+                sessions,
+                _session_factory(sessions),
+                session_ids=session_ids,
+                stored=stored,
+            )
+
+
+@pytest.mark.postgres
+def test_postgres_event_facts_migration_rolls_back_when_the_backfill_fails(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om352_backfill_fail") as url:
+        with _legacy_postgres_store(url) as record_store:
+            _insert_legacy_history(record_store, 1500)
+            # A payload `json.loads` cannot read, after the first batch of 1,000.
+            record_store.execute_count(
+                "UPDATE events SET payload_json = ? WHERE id = 1400", ('{"run_id": ',)
+            )
+            stored = stored_events(SessionStore(record_store))
+
+            with pytest.raises(
+                MigrationError,
+                match="add_event_run_facts.*event 1400 has a payload_json that is not",
+            ):
+                migrate_record_store(record_store, backend_type="postgres")
+
+            assert record_store.query_dicts(
+                "SELECT MAX(version) AS version FROM migrations"
+            ) == [{"version": 12}]
+            assert record_store.query_dicts(
+                "SELECT to_regclass('event_run_facts') IS NULL AS missing"
+            ) == [{"missing": True}]
+            assert stored_events(SessionStore(record_store)) == stored
+
+            # Rerunning the migration after the fix applies it whole.
+            record_store.execute_count(
+                "UPDATE events SET payload_json = '{}' WHERE id = 1400"
+            )
+            result = migrate_record_store(record_store, backend_type="postgres")
+            assert result.applied_versions == (13,)
+            assert record_store.query_dicts(
+                "SELECT COUNT(*) AS facts FROM event_run_facts"
+            ) == [{"facts": 1500}]
