@@ -2,7 +2,14 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Mapping, Optional, Set
 
 from openminion.modules.controlplane.runtime.client import RunStatus as RunStatus
-from openminion.modules.storage.runtime.session_store import EventRecord, SessionStore
+from openminion.modules.storage.runtime.session_store import (
+    EventRecord,
+    SessionStore,
+    extract_event_error as _extract_event_error,
+    normalize_run_state as _normalize_run_state,
+    payload_id,
+    payload_text,
+)
 from .constants import RUN_STATUS_DEFAULT_SCAN_LIMIT
 
 RUN_STATE_QUEUED = "queued"
@@ -474,14 +481,14 @@ def list_session_run_events(
 
 
 def _to_run_event(event: EventRecord) -> Optional[RunEvent]:
-    run_id = str(event.payload.get("run_id", "")).strip()
+    run_id = payload_text(event.payload, "run_id")
     if not run_id:
         return None
 
     state = _normalize_run_state(
         state=event.payload.get("state"), source_event_type=event.event_type
     )
-    current_step = str(event.payload.get("step", "")).strip()
+    current_step = payload_text(event.payload, "step")
     payload = dict(event.payload)
     return RunEvent(
         id=int(event.id),
@@ -493,23 +500,6 @@ def _to_run_event(event: EventRecord) -> Optional[RunEvent]:
         payload=payload,
         created_at=event.created_at,
     )
-
-
-def _normalize_run_state(*, state: Any, source_event_type: str) -> str:
-    candidate = str(state or "").strip().lower()
-    if candidate in _RUN_STATES:
-        return candidate
-
-    if source_event_type.startswith("run."):
-        suffix = source_event_type.split(".", 1)[1].strip().lower()
-        if suffix in _RUN_STATES:
-            return suffix
-    return RUN_STATE_RUNNING
-
-
-def _extract_event_error(payload: Mapping[str, Any]) -> str:
-    raw_error = payload.get("error")
-    return "" if raw_error is None else str(raw_error).strip()
 
 
 def resolve_thread_routing_decision(
@@ -763,7 +753,7 @@ def _invocation_start_fields(event: EventRecord | None) -> tuple[str, int, str]:
     if event is None:
         return "", 0, ""
     return (
-        str(event.payload.get("invocation_id", "")).strip(),
+        payload_text(event.payload, "invocation_id"),
         int(event.id),
         event.created_at,
     )
@@ -795,8 +785,8 @@ def _event_matches_thread(
     session_id: str,
 ) -> bool:
     payload = event.payload or {}
-    event_conversation = str(payload.get("conversation_id", "") or "").strip()
-    event_thread = str(payload.get("thread_id", "") or "").strip()
+    event_conversation = payload_id(payload, "conversation_id")
+    event_thread = payload_id(payload, "thread_id")
     if conversation_id:
         if event_conversation:
             if event_conversation != conversation_id:
@@ -839,7 +829,8 @@ def _resolve_writer_attach_id(
     messages: List[Any],
 ) -> str:
     if attach_event is not None:
-        return str(attach_event.payload.get("attach_id", "")).strip()
+        attach_id: str = payload_text(attach_event.payload, "attach_id")
+        return attach_id
     if messages:
         meta = getattr(messages[-1], "metadata", {}) or {}
         return str(meta.get("attach_id", "")).strip()
