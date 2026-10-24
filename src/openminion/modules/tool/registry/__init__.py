@@ -91,12 +91,22 @@ class ToolRegistry:
 
     @contextmanager
     def temporary_registration_scope(self) -> Iterator[None]:
-        with self.temporary_registration_lock:
+        lock = self.temporary_registration_lock
+        # Inherited context permits reads, not ownership of another thread's lock.
+        inherited = _TEMPORARY_REGISTRATION_OWNER.get() == id(self)
+        if not lock.acquire(blocking=not inherited):
+            raise RuntimeError(  # allow-bare-raise: preserve the SDK error contract
+                "Temporary tool registration in a cross-thread shared-runtime "
+                "handoff would deadlock; use a separate runtime for the child agent"
+            )
+        try:
             token = _TEMPORARY_REGISTRATION_OWNER.set(id(self))
             try:
                 yield
             finally:
                 _TEMPORARY_REGISTRATION_OWNER.reset(token)
+        finally:
+            lock.release()
 
     def registration_read_lock(self) -> Any:
         if _TEMPORARY_REGISTRATION_OWNER.get() == id(self):

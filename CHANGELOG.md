@@ -7,6 +7,9 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Fail fast with a separate-runtime error when an SDK handoff tries to register
+  child tools from another thread while its parent holds the shared registry.
+
 - Declare risk metadata on temporary tools, both the SDK handoff tool and
   ordinary-named temporary tools, and enforce that a denial prevents
   handoff child execution.
