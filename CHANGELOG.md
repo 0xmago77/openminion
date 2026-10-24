@@ -1,7 +1,7 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-23
+Last updated: 2026-10-24
 
 This file tracks package-facing release notes for `openminion`.
 
@@ -41,8 +41,13 @@ This file tracks package-facing release notes for `openminion`.
   state, step, start and end time, error and event count over all of its
   events; a run's event list returns its newest events at any age; and the
   thread lifecycle reads all of the thread's events, so it agrees with the
-  invocation lookup and the event high water. Each reader runs a fixed
-  number of queries whose rows do not grow with the history (#352).
+  invocation lookup and the event high water. Each reader runs a bounded
+  number of queries whose rows do not grow with the history. The readers
+  aggregate run-status facts that the session store writes with each event,
+  read from the stored payload as the readers read it, so values such as NaN,
+  Infinity or an escaped NUL read as before. Runtime migration 13 adds the
+  facts on SQLite and Postgres and fills them for existing events in the
+  upgrade's transaction; stored payloads are unchanged (#352).
 
 ## Current package line - 2026-10-22
 
