@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 from typing import Any
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 
 from openminion.modules.storage.constants import SESSION_RETENTION_HOLD_VERSION
 
@@ -26,8 +26,18 @@ from .rows import (
     row_to_event,
     row_to_retention_hold,
 )
+from .run_facts import (
+    decode_key,
+    encode_key,
+    event_run_facts,
+    key_digest,
+)
 
 LIFECYCLE_UNSET = object()
+# Event columns of a query that joins `event_run_facts AS f` to `events AS e`.
+_JOINED_EVENT_COLUMNS = ", ".join(
+    f"e.{column.strip()}" for column in EVENT_COLUMNS.split(",")
+)
 MEMORY_CAPTURE_HOLD_ACTOR = "memory_capture"
 MEMORY_CAPTURE_HOLD_SCHEMA_VERSION = SESSION_RETENTION_HOLD_VERSION
 
@@ -249,12 +259,15 @@ class RuntimeSessionStoreLifecycle:
                 f"canonical event {canonical_id!r} conflicts with stored event",
                 canonical_event_id=canonical_id,
             )
+        event = row_to_event(row)
         if inserted > 0:
+            # A replay keeps the facts written with the first insert.
+            self._insert_run_facts(event)
             self._backend.execute_count(
                 "UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?",
                 (now, now, session_id),
             )
-        return row_to_event(row), inserted == 0
+        return event, inserted == 0
 
     def _insert_event_locked(
         self,
@@ -280,11 +293,26 @@ class RuntimeSessionStoreLifecycle:
         )
         if row is None:
             raise RuntimeError(f"Failed to read inserted event: {event_id}")
+        event = row_to_event(row)
+        self._insert_run_facts(event)
         self._backend.execute_count(
             "UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?",
             (now, now, session_id),
         )
-        return row_to_event(row)
+        return event
+
+    def _insert_run_facts(self, event: EventRecord) -> None:
+        """Write the run facts of an event inserted in this transaction.
+
+        `event` is the stored row read back, so its payload is the one the
+        readers and the migration 13 backfill read.
+        """
+        facts = event_run_facts(event)
+        self._backend.execute_count(
+            f"INSERT INTO event_run_facts ({', '.join(facts)}) "
+            f"VALUES ({', '.join('?' for _ in facts)})",
+            tuple(facts.values()),
+        )
 
     def _ensure_capture_hold_locked(
         self,
@@ -442,6 +470,195 @@ class RuntimeSessionStoreLifecycle:
             (session_id, max(1, int(before_id)), safe_limit),
         )
         return [row_to_event(row) for row in rows]
+
+    def list_events_by_id(
+        self, *, session_id: str, event_ids: Sequence[int]
+    ) -> list[EventRecord]:
+        """Read the session's events with these ids, by id, 500 ids per query."""
+        ids = sorted({int(event_id) for event_id in event_ids if event_id})
+        events: list[EventRecord] = []
+        for start in range(0, len(ids), 500):
+            chunk = ids[start : start + 500]
+            marks = ", ".join("?" for _ in chunk)
+            rows = self._backend.query_dicts(
+                f"SELECT {EVENT_COLUMNS} FROM events "
+                f"WHERE session_id = ? AND id IN ({marks}) ORDER BY id ASC",
+                (session_id, *chunk),
+            )
+            events.extend(row_to_event(row) for row in rows)
+        return events
+
+    def list_run_events(
+        self, *, session_id: str, run_id: str, limit: int = 100
+    ) -> list[EventRecord]:
+        """List one run's newest `limit` `run.` events, newest id first.
+
+        The run is the payload's top-level `run_id` as `_to_run_event` reads it,
+        matched exactly through the events' run facts; `run_id` is compared as
+        given.
+        """
+        safe_limit = max(0, min(int(limit), EVENT_PAGE_MAX))
+        run_key = encode_key(run_id)
+        if safe_limit == 0 or not run_key:
+            return []
+        rows = self._backend.query_dicts(
+            f"""
+            SELECT {_JOINED_EVENT_COLUMNS}
+            FROM event_run_facts AS f
+            JOIN events AS e ON e.id = f.event_id
+            WHERE f.session_id = ? AND f.run_key_digest = ? AND f.run_key = ?
+            AND e.event_type LIKE ?
+            ORDER BY f.event_id DESC
+            LIMIT ?
+            """,
+            (session_id, key_digest(run_key), run_key, "run.%", safe_limit),
+        )
+        return [row_to_event(row) for row in rows]
+
+    def summarize_recent_runs(
+        self,
+        *,
+        session_id: str,
+        scan_limit: int,
+        terminal_states: Sequence[str],
+    ) -> list[dict[str, Any]]:
+        """Aggregate every `run.` event of each run seen in the newest `scan_limit`.
+
+        A run is the payload's top-level `run_id`, and it is reported when one
+        of its events is among the session's newest `scan_limit` `run.` events
+        by id. One row per run, over all of its `run.` events: `run_id`,
+        `event_count`, `started_at` (stored `created_at` of its first event by
+        id), and the ids of its latest event (`last_id`), of its latest event
+        with a non-empty `step` (`step_id`) or `error` (`error_id`), and of its
+        latest event whose state is in `terminal_states` (`terminal_id`). The
+        payload values come from the events' run facts.
+        """
+        terminal = ", ".join("?" for _ in terminal_states)
+        rows = self._backend.query_dicts(
+            f"""
+            SELECT runs.run_key, runs.event_count, runs.last_id, runs.step_id,
+                   runs.error_id, runs.terminal_id, head.created_at AS started_at
+            FROM (
+                SELECT f.run_key, COUNT(*) AS event_count,
+                       MIN(f.event_id) AS first_id, MAX(f.event_id) AS last_id,
+                       MAX(CASE WHEN f.has_step = 1 THEN f.event_id END) AS step_id,
+                       MAX(CASE WHEN f.has_error = 1 THEN f.event_id END)
+                           AS error_id,
+                       MAX(CASE WHEN f.run_state IN ({terminal})
+                           THEN f.event_id END) AS terminal_id
+                FROM (
+                    SELECT DISTINCT recent.run_key_digest, recent.run_key
+                    FROM (
+                        SELECT w.run_key_digest, w.run_key
+                        FROM event_run_facts AS w
+                        JOIN events AS we ON we.id = w.event_id
+                        WHERE w.session_id = ? AND we.event_type LIKE ?
+                        ORDER BY w.event_id DESC
+                        LIMIT ?
+                    ) AS recent
+                    WHERE recent.run_key <> ''
+                ) AS listed
+                JOIN event_run_facts AS f
+                    ON f.session_id = ?
+                    AND f.run_key_digest = listed.run_key_digest
+                    AND f.run_key = listed.run_key
+                JOIN events AS e ON e.id = f.event_id
+                WHERE e.event_type LIKE ?
+                GROUP BY f.run_key
+            ) AS runs
+            JOIN events AS head ON head.id = runs.first_id
+            """,
+            (
+                *terminal_states,
+                session_id,
+                "run.%",
+                max(1, int(scan_limit)),
+                session_id,
+                "run.%",
+            ),
+        )
+        summaries: list[dict[str, Any]] = []
+        for row in rows:
+            summary = dict(row)
+            summary["run_id"] = decode_key(str(summary.pop("run_key")))
+            summaries.append(summary)
+        return summaries
+
+    def summarize_thread_events(
+        self,
+        *,
+        session_id: str,
+        conversation_id: str,
+        thread_id: str,
+        start_event_type: str,
+        attach_event_type: str,
+        writer_role: str,
+        flag_event_types: Sequence[str],
+    ) -> dict[str, Any]:
+        """Summarize all of a thread's events in one aggregate query.
+
+        An event is in the thread as in `task/run/status.py`: with a
+        `conversation_id`, its payload `conversation_id` equals it, or is empty
+        when the conversation is the session itself; with a `thread_id`, its
+        payload `thread_id` equals it or is empty. Returns the ids of the
+        thread's latest event (`latest_id`), latest event with a case-sensitive
+        `run.` type and a `run_id` (`run_event_id`), latest `start_event_type`
+        event with an `invocation_id` (`start_id`) and latest
+        `attach_event_type` event with an `attach_id` whose `attach_role` is
+        empty or `writer_role` (`attach_id`), and the `flag_event_types` that
+        occur (`present`). The payload values come from the events' run facts.
+        """
+        flags = "".join(
+            f", MAX(CASE WHEN e.event_type = ? THEN 1 ELSE 0 END) AS flag_{index}"
+            for index in range(len(flag_event_types))
+        )
+        clauses, params = ["f.session_id = ?"], [session_id]
+        if conversation_id:
+            conversation_key = encode_key(conversation_id)
+            if conversation_id == session_id:
+                clauses.append("f.conversation_key IN (?, ?)")
+                params.extend(["", conversation_key])
+            else:
+                clauses.append("f.conversation_key = ?")
+                params.append(conversation_key)
+        if thread_id:
+            clauses.append("f.thread_key IN (?, ?)")
+            params.extend(["", encode_key(thread_id)])
+        row = self._backend.query_one(
+            f"""
+            SELECT MAX(f.event_id) AS latest_id,
+                   MAX(CASE WHEN SUBSTR(e.event_type, 1, 4) = 'run.'
+                            AND f.run_key <> ''
+                       THEN f.event_id END) AS run_event_id,
+                   MAX(CASE WHEN e.event_type = ? AND f.has_invocation = 1
+                       THEN f.event_id END) AS start_id,
+                   MAX(CASE WHEN e.event_type = ? AND f.has_attach = 1
+                            AND f.attach_role IN ('', ?)
+                       THEN f.event_id END) AS attach_id{flags}
+            FROM event_run_facts AS f
+            JOIN events AS e ON e.id = f.event_id
+            WHERE {" AND ".join(clauses)}
+            """,
+            (
+                start_event_type,
+                attach_event_type,
+                encode_key(writer_role),
+                *flag_event_types,
+                *params,
+            ),
+        )
+        facts = dict(row or {})
+        return {
+            "latest_id": facts.get("latest_id"),
+            "run_event_id": facts.get("run_event_id"),
+            "start_id": facts.get("start_id"),
+            "attach_id": facts.get("attach_id"),
+            "present": {
+                event_type
+                for index, event_type in enumerate(flag_event_types)
+                if facts.get(f"flag_{index}")
+            },
+        }
 
     def event_high_water(self, *, session_id: str) -> int:
         row = self._backend.query_one(
