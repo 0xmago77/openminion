@@ -298,8 +298,18 @@ class BuiltinKnowledgeBackend(KnowledgeBackend):
 class BackendMemoryStoreAdapter(MemoryStore):
     """Adapt a knowledge backend to the legacy ``MemoryStore`` contract."""
 
-    def __init__(self, backend: KnowledgeBackend) -> None:
+    def __init__(
+        self, backend: KnowledgeBackend, *, owns_backend: bool = False
+    ) -> None:
         self._backend = backend
+        self._owns_backend = owns_backend
+
+    def close(self) -> None:
+        if not self._owns_backend:
+            return
+        self._owns_backend = False
+        if callable(close_backend := getattr(self._backend, "close", None)):
+            close_backend()
 
     def put(self, record):
         return self._backend.put_record(record)
@@ -454,10 +464,12 @@ class BackendMemoryStoreAdapter(MemoryStore):
         return _call_backend_extra(self._backend, "apply_capture_bundle", bundle)
 
 
-def adapt_backend_to_store(backend: KnowledgeBackend) -> MemoryStore:
+def adapt_backend_to_store(
+    backend: KnowledgeBackend, *, owns_backend: bool = False
+) -> MemoryStore:
     if isinstance(backend, BuiltinKnowledgeBackend):
         return backend.store
-    return BackendMemoryStoreAdapter(backend)
+    return BackendMemoryStoreAdapter(backend, owns_backend=owns_backend)
 
 
 def _call_backend_extra(
