@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 
 from openminion.modules.storage.migrations.alembic import (
     discover_module_alembic_paths,
@@ -138,7 +138,7 @@ class MigrationRunner:
                 om_meta={},
             )
 
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with closing(sqlite3.connect(str(self.db_path))) as conn, conn:
             application_id = self._pragma_int(conn, "application_id", default=0)
             user_version = self._pragma_int(conn, "user_version", default=0)
             om_meta = self._read_om_meta(conn)
@@ -496,7 +496,7 @@ class MigrationRunner:
         target: str,
         migrated_at: str,
     ) -> None:
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with closing(sqlite3.connect(str(self.db_path))) as conn, conn:
             conn.execute(f"PRAGMA application_id={self.module_application_id}")
             if self.target_user_version is not None:
                 conn.execute(f"PRAGMA user_version={self.target_user_version}")
