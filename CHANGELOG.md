@@ -7,6 +7,13 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Resolve postponed (`from __future__ import annotations`) and quoted
+  annotations on `@openminion.tool` functions in their own module, keeping
+  `Annotated` field descriptions and constraints. Only argument annotations
+  exposed in the args schema are evaluated (return, `self`/`cls` and
+  `*args`/`**kwargs` annotations are left alone), and decoration fails with a
+  clear `TypeError` when an exposed argument annotation cannot be resolved.
+
 ## Current package line - 2026-10-24
 
 - Preserve deterministic session-message and transcript-event ordering when
