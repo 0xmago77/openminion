@@ -7,73 +7,25 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
-- Close the target SQLite connection that `import_omx()` opens as soon as the
-  tables are imported, keeping commit on success and rollback on error. It used
-  to stay open until a garbage collection and, on Windows, blocked renaming or
-  deleting the imported database right after the import (#378).
+## Current package line - 2026-10-24
 
-- Close the SQLite connections that the shared migration runner opens to
-  detect a module database, verify it and update its metadata as soon as each
-  step finishes, keeping commit on success and rollback on error. They used to
-  stay open until a garbage collection and, on Windows, blocked renaming or
-  deleting the database file after `runtime.close()` (#373).
-
-- Fail fast with a separate-runtime error when an SDK handoff tries to register
-  child tools from another thread while its parent holds the shared registry.
-
-- Declare risk metadata on temporary tools, both the SDK handoff tool and
-  ordinary-named temporary tools, and enforce that a denial prevents
-  handoff child execution.
-
-- Keep runtime session messages that share a timestamp in append order, with a
-  per-session append sequence that runtime migration 12 adds on SQLite and
-  Postgres. Message readers, compaction positions and transcript export no
-  longer depend on random message ids; message ids and timestamps are
-  unchanged. On upgrade, a compaction boundary that falls inside a group of
-  messages sharing one timestamp moves back before that group, so its
-  members are replayed into history and summarized again once rather than
-  left hidden (#353).
-- Close the memory audit sink that the runtime memory assembly creates when the
-  runtime closes: once, with the memory service, and not while the memory
-  scheduler is still running. `AuditedMemoryStore` still leaves a sink passed
-  without `owns_sink=True` open (#361).
-- Close the memory store that the runtime memory assembly creates when the
-  runtime closes: once, with the memory service, and not while the memory
-  scheduler is still running. With a PostgreSQL memory backend this disposes
-  the engine, so its pooled connections no longer stay open after
-  `runtime.close()`. The `mock` and `remote` memory stores, which hold
-  nothing to release, now have a `close()` that does nothing.
-  `AuditedMemoryStore` still leaves a store passed without `owns_store=True`
-  open (#368).
-- Keep runtime session events that share a timestamp in insertion order in
-  `openminion export transcript --include-events`, instead of comparing their
-  ids as strings (event 10 exported before event 2). Where a message and an
-  event share a timestamp, the transcript shows the message first (#365).
-- Report run status past a session's first 2,000 run events. Run listings
-  cover the runs seen among the newest run events and report each run's
-  state, step, start and end time, error and event count over all of its
-  events; a run's event list returns its newest events at any age; and the
-  thread lifecycle reads all of the thread's events, so it agrees with the
-  invocation lookup and the event high water. Each reader runs a bounded
-  number of queries whose rows do not grow with the history. The readers
-  aggregate run-status facts that the session store writes with each event,
-  read from the stored payload as the readers read it, so values such as NaN,
-  Infinity or an escaped NUL read as before. Runtime migration 13 adds the
-  facts on SQLite and Postgres and fills them for existing events in the
-  upgrade's transaction; stored payloads are unchanged (#352).
-- Upgrade note for runtime migration 13 (#352): upgrade every process that
-  shares a runtime database together. Stop all writers, keep a backup of the
-  database taken before the upgrade, upgrade them, and do not run a binary from
-  before this change against the upgraded database. Rolling back needs that
-  matching pre-upgrade backup, not just an older executable. Events that an
-  older writer appends after migration 13 get no run-status facts, a later
-  restart does not add them, and run listings, run event lists and the thread
-  lifecycle can omit those events. Mixed-version writers and downgrade followed
-  by a new upgrade are not supported. If a stored `payload_json` is not valid
-  JSON, the upgrade stops and rolls back as a whole, names the event, leaves
-  migration 13 unapplied and keeps the stored data unchanged. The upgrade never
-  skips, substitutes or rewrites that payload: restore a good backup, or correct
-  the record deliberately, before upgrading again.
+- Preserve deterministic session-message and transcript-event ordering when
+  timestamps tie, including stable compaction boundaries across storage
+  upgrades.
+- Reconstruct run status and lifecycle state beyond the first 2,000 events
+  with bounded SQLite and PostgreSQL queries.
+- Require declared risk metadata for temporary SDK and handoff tools, and
+  prevent denied tools from starting delegated work.
+- Fail fast when shared-runtime handoff tools are registered across threads,
+  while releasing the registration lock after marker failures.
+- Close runtime-owned memory stores and audit sinks exactly once without
+  closing borrowed resources.
+- Release SQLite connections immediately after migrations and OMX imports so
+  Windows callers can rename or remove database files without waiting for
+  garbage collection.
+- Runtime migration 13 requires every process sharing a database to upgrade
+  together. Stop all writers and retain a pre-upgrade backup; mixed-version
+  writers and downgrade-in-place are not supported.
 
 ## Current package line - 2026-10-22
 
