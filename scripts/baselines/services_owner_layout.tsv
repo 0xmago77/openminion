@@ -55,7 +55,7 @@ scope	max_python_files	max_loc
 # obtains on that existing assembly owner, which closes it on shutdown.
 # Issue 384 (2026-10-24) carries the brain's fatal-error working state through
 # the existing gateway terminal owner so runtime failures finish as failed runs.
-services	208	41779
+services	208	41782
 services/security	6	187
 services/stats	1	25
 services/tool	3	50
