@@ -48,6 +48,19 @@ This file tracks package-facing release notes for `openminion`.
   Infinity or an escaped NUL read as before. Runtime migration 13 adds the
   facts on SQLite and Postgres and fills them for existing events in the
   upgrade's transaction; stored payloads are unchanged (#352).
+- Upgrade note for runtime migration 13 (#352): upgrade every process that
+  shares a runtime database together. Stop all writers, keep a backup of the
+  database taken before the upgrade, upgrade them, and do not run a binary from
+  before this change against the upgraded database. Rolling back needs that
+  matching pre-upgrade backup, not just an older executable. Events that an
+  older writer appends after migration 13 get no run-status facts, a later
+  restart does not add them, and run listings, run event lists and the thread
+  lifecycle can omit those events. Mixed-version writers and downgrade followed
+  by a new upgrade are not supported. If a stored `payload_json` is not valid
+  JSON, the upgrade stops and rolls back as a whole, names the event, leaves
+  migration 13 unapplied and keeps the stored data unchanged. The upgrade never
+  skips, substitutes or rewrites that payload: restore a good backup, or correct
+  the record deliberately, before upgrading again.
 
 ## Current package line - 2026-10-22
 
