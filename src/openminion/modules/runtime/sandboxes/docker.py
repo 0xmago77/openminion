@@ -192,7 +192,7 @@ class DockerSandboxRunner:
             )
         finally:
             if worker_id:
-                self._command("rm", "--force", "--volumes", worker_id, check=False)
+                self._command("rm", "--force", "--volumes", worker_id)
 
     def fs_write(self, spec: FsWriteSpec, sandbox: ExecutionSandboxSpec) -> FsResult:
         del sandbox
