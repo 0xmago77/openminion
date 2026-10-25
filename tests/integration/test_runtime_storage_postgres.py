@@ -58,6 +58,7 @@ from tests._run_status_scenarios import (
     check_nonstandard_values,
     check_review_cases,
     check_token_text_ids,
+    check_run_event_type_case,
     check_run_readers,
     check_thread_payload_variants,
     check_thread_projection,
@@ -721,6 +722,16 @@ def test_postgres_run_status_accepts_ids_of_any_length(tmp_path: Path) -> None:
     with _postgres_schema("om352_long_ids") as url:
         with _postgres_sessions(tmp_path, url) as sessions:
             check_long_ids(sessions, _session_factory(sessions))
+
+
+@pytest.mark.postgres
+def test_postgres_run_readers_match_the_run_prefix_case_sensitively(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om396_case") as url:
+        with _postgres_sessions(tmp_path, url) as sessions:
+            check_run_event_type_case(sessions, _session_factory(sessions))
 
 
 @pytest.mark.postgres
