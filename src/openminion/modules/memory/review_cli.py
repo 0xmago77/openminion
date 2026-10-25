@@ -26,7 +26,7 @@ from openminion.modules.memory.runtime.utility_planner import (
     stage_utility_plan,
 )
 
-ServiceFactory = Callable[[str | None], Any]
+ServiceFactory = Callable[[str | None, typer.Context], Any]
 _CLI_ERRORS = (OSError, RuntimeError, TypeError, ValueError)
 
 
@@ -77,6 +77,7 @@ def _fail(exc: Exception) -> None:
 def _register_export(review: typer.Typer, service_factory: ServiceFactory) -> None:
     @review.command("export")
     def export_command(
+        ctx: typer.Context,
         scope: list[str] = typer.Option(..., "--scope"),
         out: Path = typer.Option(..., "--out"),
         markdown_out: Path | None = typer.Option(None, "--markdown-out"),
@@ -88,7 +89,7 @@ def _register_export(review: typer.Typer, service_factory: ServiceFactory) -> No
         """Export a canonical JSON review artifact."""
 
         try:
-            artifact = service_factory(db).export_review_artifact(
+            artifact = service_factory(db, ctx).export_review_artifact(
                 MemoryBundleExportOptions(
                     scopes=scope,
                     include_candidates=include_candidates,
@@ -131,6 +132,7 @@ def _register_inspect(review: typer.Typer) -> None:
 def _register_plan(review: typer.Typer, service_factory: ServiceFactory) -> None:
     @review.command("plan")
     def plan_command(
+        ctx: typer.Context,
         artifact_path: Path = typer.Option(..., "--artifact"),
         out: Path = typer.Option(..., "--out"),
         scope_rewrite: list[str] = typer.Option([], "--scope-rewrite"),
@@ -143,7 +145,7 @@ def _register_plan(review: typer.Typer, service_factory: ServiceFactory) -> None
 
         try:
             artifact = read_review_artifact(artifact_path)
-            plan = service_factory(db).plan_review_import(
+            plan = service_factory(db, ctx).plan_review_import(
                 artifact,
                 _options(
                     scope_rewrite=scope_rewrite,
@@ -162,6 +164,7 @@ def _register_plan(review: typer.Typer, service_factory: ServiceFactory) -> None
 def _register_decide(review: typer.Typer, service_factory: ServiceFactory) -> None:
     @review.command("decide")
     def decide_command(
+        ctx: typer.Context,
         plan_path: Path = typer.Option(..., "--plan"),
         out: Path = typer.Option(..., "--out"),
         reviewer: str = typer.Option(..., "--reviewer"),
@@ -173,7 +176,7 @@ def _register_decide(review: typer.Typer, service_factory: ServiceFactory) -> No
 
         try:
             plan = read_review_plan(plan_path)
-            receipt = service_factory(db).decide_review_import(
+            receipt = service_factory(db, ctx).decide_review_import(
                 plan,
                 reviewer=reviewer,
                 decision=decision,
@@ -189,6 +192,7 @@ def _register_decide(review: typer.Typer, service_factory: ServiceFactory) -> No
 def _register_apply(review: typer.Typer, service_factory: ServiceFactory) -> None:
     @review.command("apply")
     def apply_command(
+        ctx: typer.Context,
         artifact_path: Path = typer.Option(..., "--artifact"),
         plan_path: Path = typer.Option(..., "--plan"),
         receipt_path: Path = typer.Option(..., "--receipt"),
@@ -200,7 +204,7 @@ def _register_apply(review: typer.Typer, service_factory: ServiceFactory) -> Non
             artifact = read_review_artifact(artifact_path)
             plan = read_review_plan(plan_path)
             receipt = read_review_receipt(receipt_path)
-            result = service_factory(db).apply_review_import(
+            result = service_factory(db, ctx).apply_review_import(
                 artifact,
                 plan,
                 receipt,
@@ -218,6 +222,7 @@ def _register_utility_plan(
 ) -> None:
     @review.command("utility-plan")
     def utility_plan_command(
+        ctx: typer.Context,
         canary: Path = typer.Option(..., "--canary"),
         stage: bool = typer.Option(False, "--stage"),
         json_out: bool = typer.Option(False, "--json"),
@@ -228,7 +233,7 @@ def _register_utility_plan(
         try:
             plan = build_utility_plan_from_canary(canary)
             if stage:
-                plan = stage_utility_plan(plan, service_factory(db))
+                plan = stage_utility_plan(plan, service_factory(db, ctx))
         except _CLI_ERRORS as exc:
             _fail(exc)
         if json_out:

@@ -70,7 +70,16 @@ from openminion.modules.storage.module_cli import build_storage_argv, run_storag
 from openminion.modules.memory.review_cli import register_review_commands
 
 
-def _get_service(db: Optional[str] = None) -> MemoryService:
+def _get_service(
+    db: Optional[str] = None, ctx: Optional[typer.Context] = None
+) -> MemoryService:
+    """Build the memctl memory service over a store and audit sink it creates.
+
+    The service owns that store and sink. With `ctx`, the context of the
+    command that asked for it, the service is closed when that context closes,
+    whether the command succeeds or fails. Without a context the caller owns
+    the service and closes it with `close()`.
+    """
     resolved_db_path: Path
     if db:
         resolved_db_path = Path(db)
@@ -104,8 +113,13 @@ def _get_service(db: Optional[str] = None) -> MemoryService:
     audited_store = AuditedMemoryStore(
         store,
         sink=SQLiteMemoryAuditSink(default_memory_audit_db_path(resolved_db_path)),
+        owns_store=True,
+        owns_sink=True,
     )
-    return MemoryService(audited_store, PromotionPolicy())
+    service = MemoryService(audited_store, PromotionPolicy(), owns_store=True)
+    if ctx is not None:
+        ctx.call_on_close(service.close)
+    return service
 
 
 def _resolve_storage_db_path(db: Optional[Path]) -> Path:
@@ -319,6 +333,7 @@ def _register_trace_commands(trace_app: typer.Typer) -> None:
 def _register_namespace_list_command(app: typer.Typer) -> None:
     @app.command("list")
     def cmd_list(
+        ctx: typer.Context,
         scope: Optional[str] = typer.Option(None, help="Legacy scope filter"),
         type: Optional[str] = typer.Option(None, help="Filter by type"),
         limit: int = typer.Option(100, help="Max results"),
@@ -350,7 +365,7 @@ def _register_namespace_list_command(app: typer.Typer) -> None:
                 "Error: --scope or at least one namespace id is required", err=True
             )
             raise typer.Exit(1)
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         opts = ListQueryOptions(
             scopes=[scope] if scope else [],
             types=[type] if type else None,
@@ -364,6 +379,7 @@ def _register_namespace_list_command(app: typer.Typer) -> None:
 def _register_namespace_search_command(app: typer.Typer) -> None:
     @app.command("search")
     def cmd_search(
+        ctx: typer.Context,
         query: str = typer.Argument(..., help="Full-text search query"),
         scope: Optional[str] = typer.Option(None),
         limit: int = typer.Option(20),
@@ -391,7 +407,7 @@ def _register_namespace_search_command(app: typer.Typer) -> None:
             project_id=project_id,
             graph_id=graph_id,
         )
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         opts = SearchQueryOptions(
             query=query,
             scopes=[scope] if scope else [],
@@ -433,12 +449,13 @@ def _register_read_commands(app: typer.Typer) -> None:
 def _register_memory_read_command_handlers(app: typer.Typer) -> None:
     @app.command("get")
     def cmd_get(
+        ctx: typer.Context,
         record_id: str = typer.Argument(..., help="Record ID"),
         json_out: bool = typer.Option(False, "--json"),
         db: Optional[str] = typer.Option(None),
     ):
         """Get a single memory record by ID."""
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         try:
             record = svc.get(record_id)
             _output(record, json_out)
@@ -450,6 +467,7 @@ def _register_memory_read_command_handlers(app: typer.Typer) -> None:
 
     @app.command("candidates")
     def cmd_candidates(
+        ctx: typer.Context,
         session_id: str = typer.Option(..., help="Session ID to list candidates for"),
         status: Optional[str] = typer.Option(None, help="Filter by status"),
         limit: int = typer.Option(100),
@@ -457,13 +475,14 @@ def _register_memory_read_command_handlers(app: typer.Typer) -> None:
         db: Optional[str] = typer.Option(None),
     ):
         """List candidates for a session."""
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         opts = CandidateListOptions(session_id=session_id, status=status, limit=limit)
         candidates = svc.candidate_list(opts)
         _output(candidates, json_out)
 
     @app.command("history")
     def cmd_history(
+        ctx: typer.Context,
         scope: str = typer.Option(...),
         type: str = typer.Option(...),
         key: str = typer.Option(...),
@@ -471,7 +490,7 @@ def _register_memory_read_command_handlers(app: typer.Typer) -> None:
         db: Optional[str] = typer.Option(None),
     ):
         """Show version history for a keyed record."""
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         records = svc._store.history(scope, type, key)  # noqa: SLF001
         if json_out:
             _output(records, True)
@@ -480,12 +499,13 @@ def _register_memory_read_command_handlers(app: typer.Typer) -> None:
 
     @app.command("stats")
     def cmd_stats(
+        ctx: typer.Context,
         scope: Optional[str] = typer.Option(None, "--scope"),
         json_out: bool = typer.Option(False, "--json"),
         db: Optional[str] = typer.Option(None, "--db"),
     ):
         """Show aggregate memory stats."""
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         try:
             stats = compute_stats(svc._store, scope=scope)  # noqa: SLF001
         except TypeError as exc:
@@ -497,6 +517,7 @@ def _register_memory_read_command_handlers(app: typer.Typer) -> None:
 
     @app.command("export")
     def cmd_export(
+        ctx: typer.Context,
         scope: str = typer.Option(..., "--scope"),
         type: Optional[str] = typer.Option(None, "--type"),
         limit: int = typer.Option(100, "--limit"),
@@ -518,7 +539,7 @@ def _register_memory_read_command_handlers(app: typer.Typer) -> None:
         db: Optional[str] = typer.Option(None, "--db"),
     ):
         """Export filtered memory records."""
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         if bundle:
             if export_format != "jsonl":
                 typer.echo(
@@ -555,6 +576,7 @@ def _register_memory_read_command_handlers(app: typer.Typer) -> None:
 
     @app.command("import")
     def cmd_import(
+        ctx: typer.Context,
         bundle: Path = typer.Option(..., "--bundle"),
         scope_rewrite: list[str] = typer.Option([], "--scope-rewrite"),
         trust: str = typer.Option("direct", "--trust"),
@@ -565,7 +587,7 @@ def _register_memory_read_command_handlers(app: typer.Typer) -> None:
         db: Optional[str] = typer.Option(None, "--db"),
     ):
         """Import a memory bundle."""
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         rewrites: dict[str, str] = {}
         for item in scope_rewrite:
             raw = item.strip()
@@ -625,13 +647,14 @@ def _register_memory_read_command_handlers(app: typer.Typer) -> None:
 
     @app.command("inspect")
     def cmd_inspect(
+        ctx: typer.Context,
         scope: Optional[str] = typer.Option(None, "--scope"),
         trace_file: Optional[Path] = typer.Option(None, "--trace-file"),
         json_out: bool = typer.Option(False, "--json"),
         db: Optional[str] = typer.Option(None, "--db"),
     ):
         """Show a combined memory inspection view."""
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         db_path = _resolve_storage_db_path(Path(db) if db else None)
         resolved_trace_file = resolve_trace_file_path(
             explicit_path=trace_file,
@@ -686,6 +709,7 @@ def _register_memory_read_command_handlers(app: typer.Typer) -> None:
 
     @app.command("diagnose-tool-failures")
     def cmd_diagnose_tool_failures(
+        ctx: typer.Context,
         scope: Optional[str] = typer.Option(None, "--scope"),
         tombstone_structured: bool = typer.Option(False, "--tombstone-structured"),
         limit: Optional[int] = typer.Option(None, "--limit"),
@@ -693,7 +717,7 @@ def _register_memory_read_command_handlers(app: typer.Typer) -> None:
         db: Optional[str] = typer.Option(None, "--db"),
     ):
         """Cmd diagnose tool failures helper."""
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         report = diagnose_tool_failure_fact_poisoning(
             svc._store,  # noqa: SLF001
             scopes=[scope] if scope else None,
@@ -709,13 +733,14 @@ def _register_memory_read_command_handlers(app: typer.Typer) -> None:
 def _register_write_commands(app: typer.Typer) -> None:
     @app.command("approve")
     def cmd_approve(
+        ctx: typer.Context,
         candidate_id: str = typer.Argument(...),
         reviewer: str = typer.Option(..., help="Reviewer identifier"),
         note: Optional[str] = typer.Option(None),
         db: Optional[str] = typer.Option(None),
     ):
         """Approve a candidate."""
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         try:
             updated = svc.candidate_update(
                 candidate_id,
@@ -731,13 +756,14 @@ def _register_write_commands(app: typer.Typer) -> None:
 
     @app.command("reject")
     def cmd_reject(
+        ctx: typer.Context,
         candidate_id: str = typer.Argument(...),
         reviewer: str = typer.Option(...),
         note: Optional[str] = typer.Option(None),
         db: Optional[str] = typer.Option(None),
     ):
         """Reject a candidate."""
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         try:
             updated = svc.candidate_update(
                 candidate_id,
@@ -753,6 +779,7 @@ def _register_write_commands(app: typer.Typer) -> None:
 
     @app.command("promote-approved")
     def cmd_promote_approved(
+        ctx: typer.Context,
         session_id: str = typer.Option(
             ..., help="Promote all approved candidates in session"
         ),
@@ -760,7 +787,7 @@ def _register_write_commands(app: typer.Typer) -> None:
         db: Optional[str] = typer.Option(None),
     ):
         """Promote all approved candidates in a session to a target scope."""
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         opts = CandidateListOptions(
             session_id=session_id,
             status=MEMORY_CANDIDATE_STATUS_APPROVED,
@@ -781,12 +808,13 @@ def _register_write_commands(app: typer.Typer) -> None:
 
     @app.command("gc")
     def cmd_gc(
+        ctx: typer.Context,
         db: Optional[str] = typer.Option(None),
         batch_size: int = typer.Option(500),
         json_out: bool = typer.Option(False, "--json"),
     ):
         """Run garbage collection and retention pass."""
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         retention_config = None
         if not db:
             retention_config = load_config(env=dict(os.environ)).retention
@@ -849,6 +877,7 @@ def _register_write_commands(app: typer.Typer) -> None:
 
     @app.command("forget")
     def cmd_forget(
+        ctx: typer.Context,
         record_id: str = typer.Option(
             None, "--memory", help="Memory record ID to forget"
         ),
@@ -874,7 +903,7 @@ def _register_write_commands(app: typer.Typer) -> None:
                 err=True,
             )
             raise typer.Exit(1)
-        svc = _get_service(db)
+        svc = _get_service(db, ctx)
         if record_id:
             try:
                 ok = svc.delete_record(record_id, reason=reason)

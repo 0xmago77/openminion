@@ -216,7 +216,7 @@ def test_memctl_stats_errors_for_non_sqlite_backend(
     monkeypatch.setattr(
         memory_cli,
         "_get_service",
-        lambda db=None: MemoryService(InMemoryRecordStore()),
+        lambda db=None, ctx=None: MemoryService(InMemoryRecordStore()),
     )
 
     result = runner.invoke(app, ["stats"])
