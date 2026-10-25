@@ -169,6 +169,8 @@ def _parse_semgrep_result(
         errors = payload.get("errors", [])
         if not isinstance(rows, list) or not isinstance(errors, list):
             raise TypeError("results and errors must be lists")
+        if any(not isinstance(row, dict) for row in rows):
+            raise TypeError("results must contain objects")
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         return _semgrep_result(
             target=target_name,
@@ -185,7 +187,7 @@ def _parse_semgrep_result(
             ),
         )
 
-    findings = [_semgrep_finding(row, target) for row in rows if isinstance(row, dict)]
+    findings = [_semgrep_finding(row, target) for row in rows]
     returned = findings[:max_findings]
     partial_reason = ""
     status = "completed"

@@ -73,6 +73,7 @@ def _build_turn_response_metadata(
         total_tokens_used = event_total_tokens
     tool_calls_count = int(action_outputs.get("tool_calls_count", 0) or 0)
     _default_agent_id = resolve_default_agent_id(self._config)
+    working_state = getattr(step_out, STATE_KEY_WORKING, None)
     metadata = {
         "agent": self._config.agents[_default_agent_id].name or _default_agent_id,
         "provider": str(getattr(self._provider, "name", "brain-orchestrator")),
@@ -83,6 +84,7 @@ def _build_turn_response_metadata(
         "elapsed_ms": str(int(elapsed_ms)),
         "turn_duration_ms": str(int(elapsed_ms)),
         "brain_status": str(getattr(step_out, "status", "completed")),
+        "brain_working_status": str(getattr(working_state, "status", "") or ""),
         "llm_call_counts_by_purpose": json.dumps(llm_call_counts, sort_keys=True),
         "llm_calls_count": str(sum(llm_call_counts.values())),
         "tool_calls_count": str(tool_calls_count),

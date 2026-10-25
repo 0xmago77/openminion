@@ -7,6 +7,14 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Let PostgreSQL memory retention and purge remove records and candidates
+  that carry evidence. The shared evidence decoder now keeps the list that
+  PostgreSQL returns for the JSONB `evidence_json` column, instead of parsing
+  its Python text form, so confidence decay, summary retention, scope
+  capacity, stale insight eviction and the purge of soft-deleted records and
+  promoted or rejected candidates no longer fail with `JSONDecodeError` on an
+  item with evidence, and remove its artifact refs. SQLite JSON text, empty
+  values and `None` decode as before (#400).
 - Resolve postponed (`from __future__ import annotations`) and quoted
   annotations on `@openminion.tool` functions in their own module, keeping
   `Annotated` field descriptions and constraints. Only argument annotations
@@ -29,6 +37,12 @@ This file tracks package-facing release notes for `openminion`.
   participant it adds to a session after the upgrade lists before other joins
   with the same timestamp, adding a second one to that session fails, and a
   participant it rejoins keeps its earlier place.
+- Report an internal brain runtime failure (the state machine's `fatal_error`
+  path, such as a tool returning a value that cannot be JSON-serialized) as
+  `run_state="failed"` on `AgentRunResult` and in the persisted run, instead of
+  `"completed"`. The existing structured `error_code`, `error_message` and
+  `error_details` stay in the result metadata. Recoverable tool errors that the
+  brain answers without a fatal transition still complete (Refs #384).
 - Apply memory retention in the runtime session lifecycle with a PostgreSQL
   memory store. The lifecycle hands the retention helpers the runtime's
   `AuditedMemoryStore`, so confidence decay, summary compression and deletion,
