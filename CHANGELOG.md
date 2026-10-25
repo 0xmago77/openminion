@@ -7,6 +7,15 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Keep a turn's freshness contract, obligations and diagnostics on an entry
+  step that has no new user input and no valid typed `freshness` contract,
+  such as the continuation step after the closure freshness guard turns a
+  close into a continue. The step used to replace them with the classifier's
+  default for empty input, which dropped the exact-date, live-data and
+  sources obligations the guard was enforcing. A valid typed contract still
+  replaces them, new user input is still classified, and a first step with
+  neither keeps the default. The step emits `brain.freshness.entry_fallback`
+  with reason `retained_turn_contract` (Refs #395).
 - Let PostgreSQL memory retention and purge remove records and candidates
   that carry evidence. The shared evidence decoder now keeps the list that
   PostgreSQL returns for the JSONB `evidence_json` column, instead of parsing
