@@ -3534,10 +3534,13 @@ def test_postprocess_turn_ignores_last_result_from_prior_turn() -> None:
     assert "tool_calls_cumulative" not in response.metadata
 
 
-@pytest.mark.parametrize("structural_only", [False, True])
+@pytest.mark.parametrize(
+    "structural_only, example_profile",
+    [(False, None), (True, None), (True, "security-researcher-local-lab")],
+)
 @pytest.mark.parametrize("tool_name", ["time", "exec.run", "security.publish_report"])
 def test_postprocess_turn_uses_current_adaptive_snapshot_tool_results(
-    structural_only: bool, tool_name: str, tmp_path: Path
+    structural_only: bool, example_profile: str | None, tool_name: str, tmp_path: Path
 ) -> None:
     bridge = DummyBridge()
     bridge._config = OpenMinionConfig()
@@ -3549,6 +3552,11 @@ def test_postprocess_turn_uses_current_adaptive_snapshot_tool_results(
         session_api=_DummySessionAPI({}),
         profile=SimpleNamespace(structural_tool_results=structural_only),
     )
+    if example_profile:
+        example = Path(__file__).resolve().parents[3] / "examples" / example_profile
+        runner.profile = OpenMinionConfig.from_dict(
+            json.loads((example / "profile.json").read_text())
+        ).agents[example_profile]
     tool_result = {
         "tool_name": tool_name,
         "ok": True,
