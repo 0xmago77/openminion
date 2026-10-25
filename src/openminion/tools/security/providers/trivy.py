@@ -225,6 +225,9 @@ def _parse_trivy_result(
         results = payload.get("Results", [])
         if not isinstance(results, list):
             raise TypeError("Results must be a list")
+        if any(not isinstance(result, dict) for result in results):
+            raise TypeError("Results must contain objects")
+        findings = _findings(results, scanner_kind=scanner_kind, target=target)
     except (json.JSONDecodeError, AttributeError, TypeError) as exc:
         return _trivy_result(
             capability_id=capability_id,
@@ -242,7 +245,6 @@ def _parse_trivy_result(
             ),
         )
 
-    findings = _findings(results, scanner_kind=scanner_kind, target=target)
     returned = findings[:max_findings]
     status = (
         "completed"
@@ -281,8 +283,6 @@ def _findings(
 ) -> list[SecurityFinding]:
     findings: list[SecurityFinding] = []
     for result in results:
-        if not isinstance(result, dict):
-            continue
         result_target = relative_path(str(result.get("Target") or ""), target)
         if scanner_kind == "vuln":
             findings.extend(
@@ -303,11 +303,11 @@ def _findings(
 
 def _rows(result: dict[str, Any], key: str) -> list[dict[str, Any]]:
     value = result.get(key, [])
-    return (
-        [row for row in value if isinstance(row, dict)]
-        if isinstance(value, list)
-        else []
-    )
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
+        raise TypeError(f"{key} must be an array of objects or null")
+    return value
 
 
 def _vulnerability(row: dict[str, Any], path: str) -> SecurityFinding:

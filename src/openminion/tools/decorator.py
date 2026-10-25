@@ -1,24 +1,61 @@
 import inspect
-from typing import Any, Optional, overload
+import types
+from typing import Any, Optional, get_type_hints, overload
 from collections.abc import Callable, Mapping
 
 from pydantic import BaseModel, ConfigDict, create_model
 
 
+def _exposed_parameters(signature: inspect.Signature) -> dict[str, inspect.Parameter]:
+    """Parameters surfaced in the args model: no self/cls and no variadics."""
+    return {
+        name: param
+        for name, param in signature.parameters.items()
+        if name not in ("self", "cls")
+        and param.kind
+        not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    }
+
+
+def _resolve_postponed_annotations(
+    func: Callable[..., Any], parameters: Mapping[str, inspect.Parameter]
+) -> dict[str, Any]:
+    """Resolve string annotations (PEP 563 or quoted) of exposed parameters.
+
+    Only the parameters that become args-model fields are evaluated, in the
+    function's module namespace. Return, self/cls and variadic annotations are
+    never consumed by the args model, so they are left unevaluated.
+    ``include_extras=True`` keeps ``Annotated`` metadata such as ``Field``
+    descriptions and constraints. An exposed name that cannot be resolved
+    raises instead of producing an args model that pydantic cannot build.
+    """
+    postponed = {
+        name: param.annotation
+        for name, param in parameters.items()
+        if isinstance(param.annotation, str)
+    }
+    if not postponed:
+        return {}
+    exposed = types.SimpleNamespace(__annotations__=postponed)
+    globalns = getattr(inspect.unwrap(func), "__globals__", {})
+    try:
+        return get_type_hints(exposed, globalns=globalns, include_extras=True)
+    except NameError as exc:
+        qualname = getattr(func, "__qualname__", repr(func))
+        raise TypeError(
+            f"@tool could not resolve the argument annotations of {qualname!r}: "
+            f"{exc}. Argument annotation names must be importable from the "
+            "function's module."
+        ) from exc
+
+
 def _build_args_model(func: Callable[..., Any], model_name: str) -> type[BaseModel]:
     signature = inspect.signature(func)
+    parameters = _exposed_parameters(signature)
+    resolved_annotations = _resolve_postponed_annotations(func, parameters)
     fields: dict[str, tuple[Any, Any]] = {}
-    for name, param in signature.parameters.items():
-        if name in ("self", "cls"):
-            continue
-        if param.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        ):
-            # *args / **kwargs are not surfaced to the model; runtime callers
-            # must pass declared params only.
-            continue
-        annotation = param.annotation
+    for name, param in parameters.items():
+        annotation = resolved_annotations.get(name, param.annotation)
         if annotation is inspect.Parameter.empty:
             annotation = Any
         default = param.default if param.default is not inspect.Parameter.empty else ...

@@ -7,6 +7,43 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Let PostgreSQL memory retention and purge remove records and candidates
+  that carry evidence. The shared evidence decoder now keeps the list that
+  PostgreSQL returns for the JSONB `evidence_json` column, instead of parsing
+  its Python text form, so confidence decay, summary retention, scope
+  capacity, stale insight eviction and the purge of soft-deleted records and
+  promoted or rejected candidates no longer fail with `JSONDecodeError` on an
+  item with evidence, and remove its artifact refs. SQLite JSON text, empty
+  values and `None` decode as before (#400).
+- Resolve postponed (`from __future__ import annotations`) and quoted
+  annotations on `@openminion.tool` functions in their own module, keeping
+  `Annotated` field descriptions and constraints. Only argument annotations
+  exposed in the args schema are evaluated (return, `self`/`cls` and
+  `*args`/`**kwargs` annotations are left alone), and decoration fails with a
+  clear `TypeError` when an exposed argument annotation cannot be resolved.
+- Keep room participants that join with the same timestamp in join order, with
+  a per-session join sequence that runtime migration 14 adds on SQLite and
+  Postgres. `list_participants`, and the agent selected when the active agent
+  leaves, no longer depend on random participant row ids. A participant added
+  again while active keeps its place and join time; one that leaves and
+  rejoins takes a new place after every earlier join. Explicit active-agent
+  selection is unchanged. On upgrade, existing participants keep the order
+  they listed in before, so participants that already share a timestamp keep
+  their row id order (#364).
+- Upgrade note for runtime migration 14 (#364): as for migration 13, upgrade
+  every process that shares a runtime database together, keep a pre-upgrade
+  backup, and do not run a binary from before this change against the
+  upgraded database. An older writer stores no join place: the first
+  participant it adds to a session after the upgrade lists before other joins
+  with the same timestamp, adding a second one to that session fails, and a
+  participant it rejoins keeps its earlier place.
+- Report an internal brain runtime failure (the state machine's `fatal_error`
+  path, such as a tool returning a value that cannot be JSON-serialized) as
+  `run_state="failed"` on `AgentRunResult` and in the persisted run, instead of
+  `"completed"`. The existing structured `error_code`, `error_message` and
+  `error_details` stay in the result metadata. Recoverable tool errors that the
+  brain answers without a fatal transition still complete (Refs #384).
+
 ## Current package line - 2026-10-24
 
 - Preserve deterministic session-message and transcript-event ordering when
