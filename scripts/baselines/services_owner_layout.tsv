@@ -54,7 +54,8 @@ scope	max_python_files	max_loc
 # Issue 349 (2026-10-23) records the artifact store the runtime memory assembly
 # obtains on that existing assembly owner, which closes it on shutdown.
 # Issue 384 (2026-10-24) carries the brain's fatal-error working state through
-# the existing gateway terminal owner so runtime failures finish as failed runs.
+# the existing gateway terminal owner so runtime failures finish as failed runs
+# (+25 LOC over dev 177ec8f5 at 41757; file count unchanged at 208).
 services	208	41782
 services/security	6	187
 services/stats	1	25
