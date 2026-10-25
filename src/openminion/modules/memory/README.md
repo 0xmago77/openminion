@@ -115,6 +115,15 @@ The reference adapter is
 `openminion.modules.memory.backends.external.reference_sqlite`; capability
 validation remains owned by the external backend registry.
 
+Atomic terminal capture, `apply_capture_bundle(bundle)`, is an optional backend
+method outside the required `KnowledgeBackend` protocol. A backend that
+implements it receives each turn's capture bundle and returns its receipt, as
+the built-in store does, and an error it raises propagates unchanged. A backend
+without it, such as the reference adapter, is reported with
+`CaptureRecoveryUnsupportedError`: the turn completes, its capture intent stays
+pending with `"error_code": "CAPTURE_RECOVERY_UNSUPPORTED"` in
+`memory_capture_bundle_result`, and pending-capture recovery leaves it pending.
+
 ## CLI portability
 
 The memory module now supports selective record-level portability in addition to
