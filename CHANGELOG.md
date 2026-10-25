@@ -7,6 +7,14 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Let PostgreSQL memory retention and purge remove records and candidates
+  that carry evidence. The shared evidence decoder now keeps the list that
+  PostgreSQL returns for the JSONB `evidence_json` column, instead of parsing
+  its Python text form, so confidence decay, summary retention, scope
+  capacity, stale insight eviction and the purge of soft-deleted records and
+  promoted or rejected candidates no longer fail with `JSONDecodeError` on an
+  item with evidence, and remove its artifact refs. SQLite JSON text, empty
+  values and `None` decode as before (#400).
 - Resolve postponed (`from __future__ import annotations`) and quoted
   annotations on `@openminion.tool` functions in their own module, keeping
   `Annotated` field descriptions and constraints. Only argument annotations
