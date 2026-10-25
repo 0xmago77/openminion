@@ -1,6 +1,9 @@
-"""Fixed-argv scanner process execution with bounded output."""
+"""Fixed-argv scanner process execution with bounded returned output."""
 
+import os
+import signal
 import subprocess
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,7 +37,11 @@ def run_scanner(
         )
         stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
-        process.kill()
+        if os.name == "posix":
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
         stdout, stderr = process.communicate()
         stdout, stdout_cut = _bounded(stdout)
         stderr, stderr_cut = _bounded(stderr)

@@ -190,7 +190,7 @@ class GatewayTurnRunner(GatewayTurnRunnerFlowMixin):
             input_tokens, output_tokens = self._usage_totals_from_response(response)
             self._finish_run_record(
                 run_id,
-                status="completed",
+                status=outbound.metadata["run_state"],
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
             )

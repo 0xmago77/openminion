@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pytest
 
@@ -160,3 +161,61 @@ def test_trivy_version_failure_keeps_fixed_configuration_identity(
     assert result.configuration_identity.scanner_version == ""
     assert result.configuration_identity.scan_mode == "vuln"
     assert result.configuration_identity.fixed_flags == list(trivy.TRIVY_FIXED_FLAGS)
+
+
+@pytest.mark.parametrize(
+    "scanner,key",
+    [
+        (trivy.scan_dependencies, "Vulnerabilities"),
+        (trivy.scan_artifact, "Misconfigurations"),
+        (trivy.scan_secrets, "Secrets"),
+    ],
+)
+@pytest.mark.parametrize("rows", [{"unexpected": "object"}, [None]])
+def test_trivy_rejects_malformed_finding_collections(
+    monkeypatch, tmp_path, scanner, key, rows
+):
+    monkeypatch.setattr(trivy.shutil, "which", lambda _name: "/usr/bin/trivy")
+    result = scanner(
+        LocalScanArgs(target="."),
+        target=tmp_path,
+        config=_config(tmp_path),
+        process_runner=_runner(json.dumps({"Results": [{key: rows}]}), return_code=0),
+    )
+    assert not result.ok and result.status == "failed"
+    assert result.error and result.error.code == "INVALID_RESPONSE"
+    assert result.findings == []
+
+
+@pytest.mark.parametrize("payload", [{"Results": [42]}, {"Results": [{}, 42]}])
+def test_trivy_rejects_malformed_result_rows(monkeypatch, tmp_path, payload):
+    monkeypatch.setattr(trivy.shutil, "which", lambda _name: "/usr/bin/trivy")
+    result = trivy.scan_dependencies(
+        LocalScanArgs(target="."),
+        target=tmp_path,
+        config=_config(tmp_path),
+        process_runner=_runner(json.dumps(payload), return_code=0),
+    )
+    assert not result.ok and result.status == "failed"
+    assert result.error and result.error.code == "INVALID_RESPONSE"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"Results": []},
+        {"Results": [{}]},
+        {"Results": [{"Vulnerabilities": None}]},
+        {"Results": [{"Vulnerabilities": []}]},
+    ],
+)
+def test_trivy_preserves_empty_and_null_findings(monkeypatch, tmp_path, payload):
+    monkeypatch.setattr(trivy.shutil, "which", lambda _name: "/usr/bin/trivy")
+    result = trivy.scan_dependencies(
+        LocalScanArgs(target="."),
+        target=tmp_path,
+        config=_config(tmp_path),
+        process_runner=_runner(json.dumps(payload), return_code=0),
+    )
+    assert result.ok and result.status == "completed" and result.findings == []
