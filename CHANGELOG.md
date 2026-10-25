@@ -7,6 +7,11 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Report the deepest key history in `memctl inspect` (`history_summary` with
+  `--json`, the `Deepest history` line otherwise) for the SQLite store that
+  memctl wraps in its audited store; it was always missing there. A store
+  without that summary, such as PostgreSQL, and a database without keyed
+  history still report none (#402).
 - Let PostgreSQL memory retention and purge remove records and candidates
   that carry evidence. The shared evidence decoder now keeps the list that
   PostgreSQL returns for the JSONB `evidence_json` column, instead of parsing
