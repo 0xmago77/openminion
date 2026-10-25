@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import uuid
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,7 @@ SESSION_APP_ID = get_module_application_id("session")
 
 
 def _init_db(path: Path) -> None:
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn, conn:
         conn.execute(f"PRAGMA application_id = {MODULE_APP_ID}")
         conn.execute("PRAGMA user_version = 1")
         conn.execute(
@@ -152,7 +153,7 @@ def test_runner_rolls_back_on_failed_verify(tmp_path):
 
     def fake_upgrade(*, target: str) -> None:
         del target
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn, conn:
             conn.execute("INSERT INTO notes(body) VALUES ('changed-during-migration')")
             conn.commit()
 
@@ -164,7 +165,7 @@ def test_runner_rolls_back_on_failed_verify(tmp_path):
     assert report.rolled_back is True
     assert report.error is not None
 
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn:
         rows = conn.execute("SELECT body FROM notes ORDER BY id").fetchall()
 
     # rollback should restore snapshot, removing the migration-time row.
@@ -272,7 +273,7 @@ def test_secret_backup_restore_round_trip_after_migrate(tmp_path: Path) -> None:
     )
     assert runner.migrate(target="head").success is True
 
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn, conn:
         conn.execute(
             """
             INSERT INTO secrets(key, namespace, value, created_at, updated_at)
@@ -283,7 +284,7 @@ def test_secret_backup_restore_round_trip_after_migrate(tmp_path: Path) -> None:
 
     artifact = runner.backup()
 
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn, conn:
         conn.execute("DELETE FROM secrets")
         conn.commit()
 
@@ -291,7 +292,7 @@ def test_secret_backup_restore_round_trip_after_migrate(tmp_path: Path) -> None:
     verify = runner.verify(level="quick")
     assert verify.ok is True
 
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn:
         row = conn.execute("SELECT value FROM secrets WHERE key = 'k1'").fetchone()
     assert row is not None
     assert row[0] == "v1"
