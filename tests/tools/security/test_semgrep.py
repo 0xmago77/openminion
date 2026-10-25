@@ -141,3 +141,17 @@ def test_semgrep_version_failure_keeps_local_config_identity(
     assert result.configuration_identity.scanner_version == ""
     assert result.configuration_identity.scan_mode == "code"
     assert len(result.configuration_identity.config_sha256) == 64
+
+
+@pytest.mark.parametrize("rows", [[42], [{"check_id": "valid"}, None]])
+def test_semgrep_rejects_malformed_finding_rows(monkeypatch, tmp_path, rows):
+    monkeypatch.setattr(semgrep.shutil, "which", lambda _name: "/usr/bin/semgrep")
+    result = semgrep.scan_code(
+        LocalScanArgs(target="."),
+        target=tmp_path,
+        config=_config(tmp_path),
+        process_runner=_runner(json.dumps({"results": rows}), return_code=0),
+    )
+    assert not result.ok and result.status == "failed"
+    assert result.error and result.error.code == "INVALID_RESPONSE"
+    assert result.findings == []

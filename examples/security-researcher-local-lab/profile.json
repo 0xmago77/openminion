@@ -28,7 +28,8 @@
     "security-researcher-local-lab": {
       "name": "security-researcher-local-lab",
       "provider": "echo",
-      "skill": "security-researcher-local-lab"
+      "skill": "security-researcher-local-lab",
+      "structural_tool_results": true
     }
   }
 }
