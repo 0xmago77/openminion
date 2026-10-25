@@ -509,15 +509,13 @@ def llm_response_kwargs(
     prompt_tokens, completion_tokens, total_tokens, _input, _output, cached_tokens = (
         token_usage_values(usage_payload)
     )
-    # Providers that return tool calls without ids (for example text-parsed
-    # fallback calls) need ids that stay unique across every model step of a
-    # turn. Tool transcript event ids are derived from (turn, call_id), so a
-    # bare "call_1" reused by a later step in the same turn collides with the
-    # first step's event and fails the turn with an idempotency conflict.
-    response_nonce = uuid4().hex[:8]
+    # Tool transcript events are keyed by (turn, call_id). A provider that
+    # omits call ids must not hand two response batches in one turn the same
+    # "call_1", so each batch gets its own full UUID prefix (#410).
+    batch_id = uuid4().hex
     tool_calls = [
         ToolCall(
-            id=tc.id or f"call_{response_nonce}_{index + 1}",
+            id=tc.id or f"call_{batch_id}_{index + 1}",
             name=tc.name,
             arguments=tc.arguments,
             batch_index=index,

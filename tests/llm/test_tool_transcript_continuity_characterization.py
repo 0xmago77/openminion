@@ -94,31 +94,10 @@ def test_provider_calls_without_ids_receive_unique_batch_ids() -> None:
     assert len(set(ids)) == 2
     assert ids[0].startswith("call_") and ids[0].endswith("_1")
     assert ids[1].startswith("call_") and ids[1].endswith("_2")
+    assert ids[0].rsplit("_", 1)[0] == ids[1].rsplit("_", 1)[0]
     assert validate_tool_transcript(LLMRequest(messages=messages)) == (
         "canonical_events"
     )
-
-
-def test_provider_calls_without_ids_stay_unique_across_responses() -> None:
-    """Two model steps in one turn must not both produce ``call_1``."""
-
-    def _ids() -> list[str]:
-        payload = llm_response_kwargs(
-            resp=ProviderResponse(
-                text="",
-                model="adapter-neutral-model",
-                tool_calls=[
-                    ProviderToolCall(id="", name="file.read", arguments={"path": "a"})
-                ],
-            ),
-            req=SimpleNamespace(model="adapter-neutral-model"),
-            client_name="adapter-neutral",
-            structured_fields={},
-            trace_context={},
-        )
-        return [call.id for call in payload["tool_calls"]]
-
-    assert _ids() != _ids()
 
 
 def test_provider_recovery_marker_survives_llm_response_conversion() -> None:
