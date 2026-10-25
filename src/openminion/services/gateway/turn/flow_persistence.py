@@ -7,7 +7,7 @@ from openminion.modules.brain.constants import (
     SESSION_EVENT_POLICY_CONFIRMATION_PROMPT,
 )
 from openminion.modules.policy import RISK_LOW
-from openminion.modules.task.run import RUN_STATE_COMPLETED
+from openminion.modules.task.run import RUN_STATE_COMPLETED, RUN_STATE_FAILED
 from openminion.modules.telemetry.trace.phase_timing import active_chat_phase
 from openminion.services.gateway.constants import CALLER_HANDLES_DELIVERY_METADATA_KEY
 from openminion.services.gateway.memory import record_memory_turn
@@ -15,7 +15,7 @@ from openminion.services.gateway.response import build_outbound_message
 from openminion.services.gateway.routing import parse_metadata_bool
 
 from openminion.modules.session.capture import verify_terminal_capture_receipt
-from .flow_models import _RoutingResult
+from .flow_models import _RoutingResult, _response_run_state
 
 if TYPE_CHECKING:
     from openminion.modules.storage.runtime.session_store import SessionStore
@@ -174,7 +174,7 @@ class GatewayTurnPersistenceDeliveryMixin:
             memory_context_meta=memory_context_meta,
             memory_retrieval_meta=memory_retrieval_meta,
         )
-        outbound.metadata["run_state"] = RUN_STATE_COMPLETED
+        outbound.metadata["run_state"] = _response_run_state(response)
         if (
             outbound.metadata.get("respond_kind", "").strip()
             == RESPOND_KIND_POLICY_CONFIRMATION_PROMPT
@@ -335,12 +335,14 @@ class GatewayTurnPersistenceDeliveryMixin:
                     },
                     session_turn_fence_token=session_turn_fence_token,
                 )
+        run_state = outbound.metadata["run_state"]
+        failed = run_state == RUN_STATE_FAILED
         with active_chat_phase("terminal_event"):
             self._lifecycle_ops.emit_terminal_run_state(
                 session_id=session_id,
                 run_id=run_id,
-                legacy_state=RUN_STATE_COMPLETED,
-                current_step="turn.completed",
+                legacy_state=run_state,
+                current_step=f"turn.{run_state}",
                 payload=self._lifecycle_ops.corr_payload(
                     normalized_request_id=normalized_request_id,
                     lifecycle_payload=lifecycle_payload,
@@ -348,6 +350,14 @@ class GatewayTurnPersistenceDeliveryMixin:
                         "response_chars": str(len(outbound.body)),
                         "provider": response.metadata.get("provider", ""),
                         "model": response.metadata.get("model", ""),
+                        **{
+                            key: response.metadata.get(source, "")
+                            for key, source in (
+                                ("error", "error_message"),
+                                ("error_code", "error_code"),
+                            )
+                            if failed
+                        },
                     },
                 ),
                 conversation_id=conversation_id or None,

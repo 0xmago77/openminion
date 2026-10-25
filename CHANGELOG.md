@@ -29,6 +29,12 @@ This file tracks package-facing release notes for `openminion`.
   participant it adds to a session after the upgrade lists before other joins
   with the same timestamp, adding a second one to that session fails, and a
   participant it rejoins keeps its earlier place.
+- Report an internal brain runtime failure (the state machine's `fatal_error`
+  path, such as a tool returning a value that cannot be JSON-serialized) as
+  `run_state="failed"` on `AgentRunResult` and in the persisted run, instead of
+  `"completed"`. The existing structured `error_code`, `error_message` and
+  `error_details` stay in the result metadata. Recoverable tool errors that the
+  brain answers without a fatal transition still complete (Refs #384).
 
 ## Current package line - 2026-10-24
 
