@@ -7,6 +7,13 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Close the memory store and audit database that a `memctl` command opens
+  when the command ends, whether it succeeds or fails. The command's service
+  now owns the store and audit sink it creates and closes them once, through
+  the command's Click context; a service built by the factory outside a
+  command is closed by its caller with `close()`. The audit database used to
+  stay open until garbage collection, so an in-process caller on Windows
+  (such as typer's `CliRunner`) could not rename or delete it (Refs #403).
 - Let PostgreSQL memory retention and purge remove records and candidates
   that carry evidence. The shared evidence decoder now keeps the list that
   PostgreSQL returns for the JSONB `evidence_json` column, instead of parsing
