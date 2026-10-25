@@ -7,6 +7,11 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Close the SQLite connections that twelve storage and API runtime tests open
+  themselves, and the API runtime one of them builds, before the test removes
+  its temporary directory or restores the database, so these tests pass on
+  native Windows as they do on Linux. Test-only; no package behaviour changes
+  (#408).
 - Resolve postponed (`from __future__ import annotations`) and quoted
   annotations on `@openminion.tool` functions in their own module, keeping
   `Annotated` field descriptions and constraints. Only argument annotations
