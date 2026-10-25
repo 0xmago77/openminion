@@ -266,6 +266,48 @@ def test_run_uses_exact_direct_argv_and_always_removes_worker() -> None:
     assert calls[-1] == ("rm", "--force", "--volumes", "worker-123")
 
 
+@pytest.mark.parametrize(
+    "execution_result",
+    [ExecResult(0, "ok", ""), ExecResult(124, "", "", timed_out=True)],
+    ids=["completed", "timed_out"],
+)
+def test_run_reports_worker_removal_failure(
+    monkeypatch: pytest.MonkeyPatch, execution_result: ExecResult
+) -> None:
+    runner = DockerSandboxRunner(_config(), docker_binary="/usr/bin/docker")
+    docker_command = runner._command
+    _fake_control(runner, _target())
+    fake_command = runner._command
+
+    def command(self, *args: str, check: bool = True):
+        del self
+        if args[0] == "rm":
+            return docker_command(*args, check=check)
+        return fake_command(*args, check=check)
+
+    monkeypatch.setattr(runner, "_command", MethodType(command, runner))
+    monkeypatch.setattr(
+        runner, "_start_worker", lambda *args, **kwargs: execution_result
+    )
+    removals = []
+
+    def fail_removal(argv, **kwargs):
+        removals.append(argv[-4:])
+        return _completed(stderr=b"worker removal refused", returncode=1)
+
+    monkeypatch.setattr(subprocess, "run", fail_removal)
+    try:
+        with pytest.raises(DockerSandboxError, match="worker removal refused") as exc:
+            runner.run_exec(
+                ExecSpec(cmd=["curl", "http://127.0.0.1"], cwd="/workspace"),
+                _execution_spec(runner),
+            )
+        assert exc.value.code == "SANDBOX_UNAVAILABLE"
+        assert removals == [["rm", "--force", "--volumes", "worker-123"]]
+    finally:
+        runner.close()
+
+
 def test_run_removes_worker_when_execution_fails() -> None:
     runner = DockerSandboxRunner(_config(), docker_binary="/usr/bin/docker")
     calls = _fake_control(runner, _target())
