@@ -43,6 +43,7 @@ from openminion.modules.memory.diagnostics.operability import (
 )
 from openminion.modules.memory.diagnostics.cli import (
     build_inspect_payload,
+    parse_inspect_scope,
     emit_export,
     follow_trace_file,
     read_trace_events_or_warn,
@@ -654,6 +655,11 @@ def _register_memory_read_command_handlers(app: typer.Typer) -> None:
         db: Optional[str] = typer.Option(None, "--db"),
     ):
         """Show a combined memory inspection view."""
+        try:
+            parse_inspect_scope(scope)
+        except InvalidArgumentError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1) from exc
         svc = _get_service(db, ctx)
         db_path = _resolve_storage_db_path(Path(db) if db else None)
         resolved_trace_file = resolve_trace_file_path(
@@ -672,7 +678,7 @@ def _register_memory_read_command_handlers(app: typer.Typer) -> None:
         snapshot = payload["snapshot"]
         typer.echo("Memory inspect")
         typer.echo(f"  db: {payload['db_path']}")
-        typer.echo(f"  scope: {scope or 'all'}")
+        typer.echo(f"  scope: {payload['scope'] or 'all'}")
         typer.echo(
             "  availability: "
             f"memory={snapshot.get('memory_available')} "
