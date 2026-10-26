@@ -741,7 +741,7 @@ class SessionStoreTests(unittest.TestCase):
             legacy_path, migrations=recorded_backfill_migrations(batches)
         )
 
-        self.assertEqual(result.applied_versions, (13, 14))
+        self.assertEqual(result.applied_versions, (13, 14, 15))
         self.assertEqual(batches, [1000, 1000, 345, 0])
         with closing(connect_database(legacy_path)) as conn:
             store = SessionStore(conn)
@@ -808,7 +808,7 @@ class SessionStoreTests(unittest.TestCase):
         with closing(connect_database(legacy_path)) as conn:
             conn.execute("UPDATE events SET payload_json = '{}' WHERE id = 1400")
             conn.commit()
-        self.assertEqual(migrate_database(legacy_path).applied_versions, (13, 14))
+        self.assertEqual(migrate_database(legacy_path).applied_versions, (13, 14, 15))
         with closing(connect_database(legacy_path)) as conn:
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM event_run_facts").fetchone()[0], 1500

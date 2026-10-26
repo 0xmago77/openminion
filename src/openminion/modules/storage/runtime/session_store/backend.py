@@ -4,13 +4,33 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from openminion.modules.storage.record_store import RecordStore
+from openminion.modules.storage.record_store import RecordStore, RecordStoreSQLite
 
+from .metadata_strings import metadata_string_match
 from .models import MessageRecord
 from .rows import MESSAGE_COLUMNS, row_to_message
 
 
+def _sql_dialect(store_or_connection: RecordStore | sqlite3.Connection) -> str | None:
+    from openminion.modules.storage.backends.postgres import RecordStorePostgres
+
+    if isinstance(store_or_connection, (sqlite3.Connection, RecordStoreSQLite)):
+        return "sqlite"
+    if isinstance(store_or_connection, RecordStorePostgres):
+        return "postgres"
+    return None
+
+
 class RuntimeSessionStoreBackend:
+    """The session store's connection: a record store or a raw SQLite connection.
+
+    The SQL dialect comes from the object the store is given: a
+    `sqlite3.Connection` or a `RecordStoreSQLite` is SQLite, a
+    `RecordStorePostgres` is PostgreSQL. Any other `RecordStore` has no known
+    dialect: the shared SQL still runs on it, and a session metadata filter
+    raises `TypeError`.
+    """
+
     def __init__(self, store_or_connection: RecordStore | sqlite3.Connection) -> None:
         if isinstance(store_or_connection, sqlite3.Connection):
             self._record_store: RecordStore | None = None
@@ -19,6 +39,42 @@ class RuntimeSessionStoreBackend:
             self._record_store = store_or_connection
             self._conn = None
         self._raw_tx_depth = 0
+        self._dialect = _sql_dialect(store_or_connection)
+
+    @property
+    def dialect(self) -> str | None:
+        """`"sqlite"`, `"postgres"`, or `None` for another record store."""
+        return self._dialect
+
+    def session_metadata_match(self, key: str, value: str) -> tuple[str, list[str]]:
+        """Return SQL and parameters for one session metadata filter condition.
+
+        SQLite keeps its existing reader, `json_extract(metadata_json,
+        '$.<key>') = value`: it reads `key` as a JSON path and an object or
+        array as its minified JSON text.
+
+        PostgreSQL matches a session whose stored metadata, as
+        `SessionRecord.metadata` reads it, has a top-level member named exactly
+        `key` whose value is a string equal to `value`, using the
+        `session_metadata_strings` rows (see `metadata_strings`). Every name
+        and value is literal, and numbers, booleans, null, objects, arrays and
+        missing members never match. A `value` that is not a string raises
+        `TypeError`.
+        """
+        if self._dialect == "sqlite":
+            return "json_extract(metadata_json, ?) = ?", [f"$.{key}", value]
+        if self._dialect == "postgres":
+            if not isinstance(value, str):
+                raise TypeError(
+                    "session metadata filter values must be strings, "
+                    f"not {type(value).__name__}"
+                )
+            return metadata_string_match(key, value)
+        raise TypeError(
+            "session metadata filters need a sqlite3.Connection, a "
+            "RecordStoreSQLite or a RecordStorePostgres, not "
+            f"{type(self._record_store).__name__}"
+        )
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
