@@ -17,6 +17,9 @@ from tests._memory_retention_scenarios import (
     GC_TARGETS,
     RETENTION_SCENARIOS,
     gc_target,
+    memctl_gc_rows,
+    run_memctl_gc,
+    seed_memctl_gc_records,
 )
 from tests.storage.postgres_test_utils import schema_url
 
@@ -205,3 +208,22 @@ def test_retention_helper_changes_seeded_postgres_records(
     # The runtime session lifecycle passes its AuditedMemoryStore (#392).
     target, sink = gc_target(kind, postgres_store)
     scenario(target, postgres_store, sink)
+
+
+def test_memctl_gc_with_a_typed_postgres_config(
+    postgres_store: PostgresMemoryStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # memctl builds its own AuditedMemoryStore over a PostgreSQL store from the
+    # typed config; the purge runs on the store it wraps (#401).
+    seed_memctl_gc_records(postgres_store)
+    url = postgres_store._engine.url.render_as_string(hide_password=False)
+
+    result = run_memctl_gc(
+        tmp_path, monkeypatch, {"backend": "postgres", "postgres": {"url": url}}
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "GC: deleted_records=1, deleted_candidates=0" in result.stdout
+    assert memctl_gc_rows(postgres_store) == {"old": (0.6, False), "deleted": None}

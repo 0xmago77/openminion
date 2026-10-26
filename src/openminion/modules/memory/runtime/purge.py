@@ -4,6 +4,7 @@ from typing import Any
 
 from openminion.base.time import utc_now
 from openminion.modules.artifact.refs import remove_reference_edges
+from openminion.modules.memory.storage.audit import AuditedMemoryStore
 from openminion.modules.memory.storage.base import MemoryStore
 from openminion.modules.memory.storage.postgres.store import PostgresMemoryStore
 
@@ -313,10 +314,24 @@ def _purge_sqlite_soft_deleted(
         remove_artifact_refs(store, owner_id=owner_id, ref_values=ref_values)
 
 
+def backing_store(store: MemoryStore) -> MemoryStore:
+    """Return the store the purge and retention helpers run their SQL on.
+
+    The runtime passes its ``AuditedMemoryStore``; the helpers use the store it
+    wraps (one level), which the SQLite path already reached through attribute
+    forwarding. Their writes are not audited on either backend, and closing
+    stays with the wrapper's owner.
+    """
+    if isinstance(store, AuditedMemoryStore):
+        return store._store
+    return store
+
+
 def purge_soft_deleted(
     store: MemoryStore,
     batch_size: int = 500,
 ) -> GCResult:
+    store = backing_store(store)
     now = utc_now().isoformat()
     result = GCResult()
     if isinstance(store, PostgresMemoryStore):

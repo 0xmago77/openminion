@@ -4,8 +4,8 @@ from typing import Any
 from sqlalchemy import text
 
 from openminion.base.time import utc_now
+from openminion.modules.memory.runtime.purge import backing_store
 from openminion.modules.memory.runtime.gc_records import (
-    backing_store,
     parse_when,
     remove_collected_artifact_refs,
     soft_delete_postgres_record,

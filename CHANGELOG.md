@@ -31,6 +31,15 @@ This file tracks package-facing release notes for `openminion`.
   `Error: invalid scope: ...` on stderr with exit code 1, as `memctl search`
   and `memctl list` report one, before the memory service opens. JSON and
   human output report the same normalized scope (Refs #413).
+- Let `memctl gc` purge soft-deleted records with a PostgreSQL memory store.
+  memctl runs gc on the `AuditedMemoryStore` it builds, and
+  `purge_soft_deleted` chose its SQL by the wrapper's type, so a PostgreSQL
+  store took the SQLite branch and the command exited with
+  `'PostgresMemoryStore' object has no attribute '_connect'` after the
+  retention pass. The purge now runs on the store the wrapper holds, using
+  the one-level wrapper resolution the retention helpers use since #392,
+  which moves into the purge module. The purge SQL, auditing and errors are
+  unchanged (Refs #401).
 
 ## Current package line - 2026-10-26
 
