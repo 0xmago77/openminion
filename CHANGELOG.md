@@ -15,6 +15,15 @@ This file tracks package-facing release notes for `openminion`.
   `PermissionError`; on Linux a restore onto a new path reported `ok` but left
   a database without most of the snapshot's tables. The restore's validation,
   progress reporting, JSON output and errors are unchanged (Refs #412).
+- Let memory consolidation cron runs recover pending terminal capture intents
+  and then submit their scheduled turn. The cron executor passed the agent
+  service's keyword-only capture candidate extractor to the recovery's
+  positional callback, with the runtime session store as its session API, so
+  every consolidation run with a pending intent failed with `TypeError` before
+  its turn. A small adapter at the cron call site now calls the extractor by
+  keyword with the brain session API that the agent's runner uses for turns.
+  Recovery authorization, capture identity, the capture bundle write and the
+  pending/unsupported accounting are unchanged (Refs #420).
 - Close what a runtime memory assembly build obtained when the build fails
   partway. The artifact store, and the memory store with its audit sink for
   the built-in backend, are closed once each through their current owner,
