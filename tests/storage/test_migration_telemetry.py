@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,7 +26,7 @@ def test_telemetry_migration_head_includes_debug_query_indexes() -> None:
 
 
 def _init_db(path: Path) -> None:
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn, conn:
         conn.execute(f"PRAGMA application_id = {MODULE_APP_ID}")
         conn.execute("PRAGMA user_version = 1")
         conn.execute(
@@ -195,7 +196,7 @@ def test_migrate_with_verify_emits_failed_outcome_without_exception(
 
     def fake_upgrade(*, target: str) -> None:
         del target
-        with sqlite3.connect(str(runner.db_path)) as conn:
+        with closing(sqlite3.connect(str(runner.db_path))) as conn, conn:
             conn.execute("INSERT INTO notes(body) VALUES ('changed-during-migration')")
             conn.commit()
 
