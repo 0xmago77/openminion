@@ -2,7 +2,7 @@ import asyncio
 import sqlite3
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 import io
 import json
 import os
@@ -1019,35 +1019,38 @@ class APIRuntimeBootstrapTests(unittest.TestCase):
             save_config(config, str(config_path))
 
             app = APIRuntime.from_config_path(str(config_path))
-            self.assertEqual(app.storage_path, database_path.resolve())
-            self.assertTrue(database_path.exists())
-            self.assertIsNotNone(app.sessions)
-            self.assertIsNotNone(app.idempotency)
-            self.assertTrue(app.self_improvement.enabled)
-            self.assertEqual(app.gateway._session_context._keep_recent_messages, 7)
-            self.assertEqual(app.gateway._session_context._max_compact_per_turn, 9)
-            self.assertEqual(app.gateway._session_context._summary_max_chars, 4321)
-            self.assertTrue(app.gateway._session_context._archive_enabled)
-            self.assertEqual(app.gateway._session_context._archive_ref_limit, 5)
-            self.assertEqual(
-                app.gateway._session_context._archive_root,
-                (tmp_path / "session-context-archive").resolve(),
-            )
-            self.assertTrue(app.gateway._agent_memory.enabled)
-            self.assertEqual(app.gateway._agent_memory._retrieval_max_chars, 1234)
-            self.assertEqual(app.gateway._agent_memory._log_retention_days, 15)
-            self.assertEqual(app.gateway._agent_memory._max_facts, 33)
-            self.assertEqual(app.gateway._agent_memory._max_todos, 44)
-            self.assertEqual(app.memory_root, (app.data_root / "memory").resolve())
-
-            with sqlite3.connect(str(database_path)) as conn:
-                version = conn.execute(
-                    "SELECT MAX(version) FROM migrations"
-                ).fetchone()[0]
-                expected_head = max(
-                    migration.version for migration in DEFAULT_MIGRATIONS
+            try:
+                self.assertEqual(app.storage_path, database_path.resolve())
+                self.assertTrue(database_path.exists())
+                self.assertIsNotNone(app.sessions)
+                self.assertIsNotNone(app.idempotency)
+                self.assertTrue(app.self_improvement.enabled)
+                self.assertEqual(app.gateway._session_context._keep_recent_messages, 7)
+                self.assertEqual(app.gateway._session_context._max_compact_per_turn, 9)
+                self.assertEqual(app.gateway._session_context._summary_max_chars, 4321)
+                self.assertTrue(app.gateway._session_context._archive_enabled)
+                self.assertEqual(app.gateway._session_context._archive_ref_limit, 5)
+                self.assertEqual(
+                    app.gateway._session_context._archive_root,
+                    (tmp_path / "session-context-archive").resolve(),
                 )
-                self.assertEqual(version, expected_head)
+                self.assertTrue(app.gateway._agent_memory.enabled)
+                self.assertEqual(app.gateway._agent_memory._retrieval_max_chars, 1234)
+                self.assertEqual(app.gateway._agent_memory._log_retention_days, 15)
+                self.assertEqual(app.gateway._agent_memory._max_facts, 33)
+                self.assertEqual(app.gateway._agent_memory._max_todos, 44)
+                self.assertEqual(app.memory_root, (app.data_root / "memory").resolve())
+
+                with closing(sqlite3.connect(str(database_path))) as conn:
+                    version = conn.execute(
+                        "SELECT MAX(version) FROM migrations"
+                    ).fetchone()[0]
+                    expected_head = max(
+                        migration.version for migration in DEFAULT_MIGRATIONS
+                    )
+                    self.assertEqual(version, expected_head)
+            finally:
+                app.close()
 
 
 def _make_config(tmp_path: Path) -> Path:
