@@ -24,6 +24,13 @@ This file tracks package-facing release notes for `openminion`.
   keyword with the brain session API that the agent's runner uses for turns.
   Recovery authorization, capture identity, the capture bundle write and the
   pending/unsupported accounting are unchanged (Refs #420).
+- Let `memctl inspect` run without `--scope`, or with an empty one, as the
+  command intends: it inspects with the default inspection identifiers and
+  reports stats for every scope, instead of exiting with a traceback from the
+  scope parser. A non-empty invalid scope is now reported as
+  `Error: invalid scope: ...` on stderr with exit code 1, as `memctl search`
+  and `memctl list` report one, before the memory service opens. JSON and
+  human output report the same normalized scope (Refs #413).
 - Close what a runtime memory assembly build obtained when the build fails
   partway. The artifact store, and the memory store with its audit sink for
   the built-in backend, are closed once each through their current owner,

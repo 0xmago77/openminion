@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import typer
+from sophiagraph.contracts.errors import (
+    InvalidArgumentError as SophiaInvalidArgumentError,
+)
 
 from openminion.base.config import resolve_data_root, resolve_home_root
 from openminion.base.config.env import resolve_environment_config
@@ -20,6 +23,7 @@ from openminion.modules.memory.diagnostics.operability import (
     summarize_history,
     summarize_trace_event,
 )
+from openminion.modules.memory.errors import InvalidArgumentError
 from openminion.modules.memory.models import MemoryScope
 from openminion.modules.memory.service import MemoryService
 from openminion.modules.memory.storage.audit import AuditedMemoryStore
@@ -158,6 +162,17 @@ def render_stats_human(stats: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def parse_inspect_scope(scope: str | None) -> MemoryScope | None:
+    """Parse inspect's optional scope; no scope or an empty one means all scopes."""
+    normalized = str(scope or "").strip()
+    if not normalized:
+        return None
+    try:
+        return MemoryScope.parse(normalized)
+    except SophiaInvalidArgumentError as exc:
+        raise InvalidArgumentError(str(exc)) from exc
+
+
 def build_inspect_payload(
     *,
     service: MemoryService,
@@ -168,10 +183,8 @@ def build_inspect_payload(
     store = service._store  # noqa: SLF001
     session_id = "inspect"
     agent_id = "inspect"
-    try:
-        parsed_scope = MemoryScope.parse(str(scope or "").strip())
-    except ValueError:
-        parsed_scope = None
+    parsed_scope = parse_inspect_scope(scope)
+    scope = None if parsed_scope is None else str(scope).strip()
     if parsed_scope is not None:
         if parsed_scope.is_session:
             session_id = parsed_scope.value
