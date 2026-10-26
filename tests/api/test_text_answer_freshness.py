@@ -8,10 +8,12 @@ When an entry step answers in text, the respond route ends the turn with that
 text. It is now finalized by `final_close_message`, the owner that finalizes a
 judge's closing answer: an answer whose evidence meets the obligations is kept
 as it is, and one without the required evidence becomes the existing
-freshness-failure message. A read-only observer records each call of the
-existing verifier, `verify_freshness_answer`, made by `final_close_message` on
-the respond route, and an entry observer records the obligations each entry
-step leaves on the turn.
+freshness-failure message. On a same-turn continuation the evidence is the
+result the turn's execution handed to the continuation; a result from another
+turn is not evidence. A read-only observer records each call of the existing
+verifier, `verify_freshness_answer`, made by `final_close_message` on the
+respond route, and an entry observer records the obligations each entry step
+leaves on the turn.
 """
 
 from __future__ import annotations
@@ -345,10 +347,10 @@ def test_continuation_text_without_the_required_evidence_is_a_freshness_failure(
     """Same-turn continuation after the closure guard blocks the judge's close.
 
     The continuation entry step keeps the turn's obligations (#422) and
-    answers in text. The respond route offers no tool evidence for that text,
-    so the existing verifier reports both missing obligations and the turn
-    ends with the freshness failure, not with the continuation's text, the
-    judge's blocked answer or the tool loop's summary.
+    answers in text. Its evidence is the turn's `lookup_order` result, which
+    has no dated field, so the existing verifier reports the missing exact
+    date and the turn ends with the freshness failure, not with the
+    continuation's text, the judge's blocked answer or the tool loop's summary.
     """
     script = Script(classifier=LIVE_EXACT, first_entry="tool")
 
@@ -365,11 +367,11 @@ def test_continuation_text_without_the_required_evidence_is_a_freshness_failure(
             "answer": CONTINUATION_TEXT,
             "time_sensitive": True,
             "obligations": [True, True, True],
-            "result": [MISSING_LIVE, MISSING_DATE],
+            "result": [MISSING_DATE],
         }
     ]
     expected = build_freshness_failure_message(
-        contract=SHOPPING, reasons=[MISSING_LIVE, MISSING_DATE]
+        contract=SHOPPING, reasons=[MISSING_DATE]
     )
     assert text.endswith(expected)
     assert CONTINUATION_TEXT not in text
@@ -426,3 +428,108 @@ def test_judge_close_on_the_tool_path_is_unchanged(
     assert calls == ["A-104"]
     assert observed["respond"] == []
     assert text.endswith(JUDGE_TEXT)
+
+
+SECOND_TURN_TEXT = f"[second turn] Order A-104 is ready, code {CODE}."
+
+
+class ContinueScript(Script):
+    """The judge asks to continue; continuation entries answer in text.
+
+    From `second_turn` on, every entry step answers `SECOND_TURN_TEXT`.
+    """
+
+    second_turn = False
+
+    def respond(self, body: dict[str, Any]) -> dict[str, Any]:
+        result = super().respond(body)
+        kind = self.kinds[-1]
+        if kind == "judge":
+            verdict = {
+                "final_answer": JUDGE_TEXT,
+                "satisfied": False,
+                "next_action": "continue",
+                "reason": "Summarize the observed order status in a final answer.",
+            }
+            return _tool_call("submit_output", verdict, "continue-judge")
+        if self.second_turn and kind in {"entry", "entry_after_tool"}:
+            return _text(SECOND_TURN_TEXT)
+        return result
+
+
+def test_continuation_text_with_the_turns_live_evidence_is_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, observed: dict[str, list]
+) -> None:
+    """The judge continues after a successful lookup; the continuation answers.
+
+    The lookup meets the live-data obligation as it does when the judge
+    closes directly, so the continuation's text is kept, not replaced by the
+    judge's answer or the tool loop's summary.
+    """
+    script = ContinueScript(classifier=LIVE_NO_DATE, first_entry="tool")
+
+    text, calls = _run(script, tmp_path, monkeypatch, forced_tools=["lookup_order"])
+
+    assert calls == ["A-104"]
+    assert script.kinds.count("judge") == 1
+    assert observed["respond"] == [
+        {
+            "answer": CONTINUATION_TEXT,
+            "time_sensitive": True,
+            "obligations": [True, True, False],
+            "result": [],
+        }
+    ]
+    assert text.endswith(CONTINUATION_TEXT)
+    assert JUDGE_TEXT not in text
+    assert "[loop]" not in text
+
+
+def test_evidence_from_an_earlier_turn_does_not_satisfy_the_next_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, observed: dict[str, list]
+) -> None:
+    """Turn 1 hands its lookup to a continuation; turn 2 answers in text.
+
+    Both turns run in one conversation, as the HTTP turns route and the
+    interactive CLI send them, so turn 2 starts from turn 1's working state.
+    """
+    real_build_payload = Agent._build_payload
+
+    def build_payload(self: Agent, message: str, **kwargs: Any) -> dict[str, Any]:
+        payload = real_build_payload(self, message, **kwargs)
+        payload["conversation_id"] = "order-chat"
+        return payload
+
+    monkeypatch.setattr(Agent, "_build_payload", build_payload)
+    script = ContinueScript(classifier=LIVE_NO_DATE, first_entry="tool")
+
+    with _scripted_agent(
+        script, tmp_path, monkeypatch, forced_tools=["lookup_order"]
+    ) as (agent, calls):
+        first = agent.run("Check order A-104", session_id="text", timeout_seconds=120)
+        script.second_turn = True
+        second = agent.run(
+            "Is order A-104 still ready?", session_id="text", timeout_seconds=120
+        )
+
+    assert calls == ["A-104"]
+    assert first.text.endswith(CONTINUATION_TEXT)
+    assert observed["respond"] == [
+        {
+            "answer": CONTINUATION_TEXT,
+            "time_sensitive": True,
+            "obligations": [True, True, False],
+            "result": [],
+        },
+        {
+            "answer": SECOND_TURN_TEXT,
+            "time_sensitive": True,
+            "obligations": [True, True, False],
+            "result": [MISSING_LIVE],
+        },
+    ]
+    expected = build_freshness_failure_message(
+        contract=SHOPPING, reasons=[MISSING_LIVE]
+    )
+    assert second.text.endswith(expected)
+    assert SECOND_TURN_TEXT not in second.text
