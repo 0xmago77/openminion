@@ -7,6 +7,10 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Keep research incomplete when synthesis fails or returns a blank answer,
+  even when sources were collected. Retain checkpoint evidence for resumption
+  and project-owned incomplete status; record exception types without provider
+  response bodies.
 - Give tool calls that a provider returns without ids a full-UUID batch
   prefix (`call_<uuid>_<n>`) instead of a bare `call_<n>`. Tool transcript
   events are keyed by turn and call id, so two id-less response batches in the

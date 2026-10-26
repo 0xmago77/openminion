@@ -805,27 +805,25 @@ class ResearchMode(SimpleCheckpointMixin):
             else None
         )
         answer = _normalized_text(synthesis.answer if synthesis is not None else "")
-        answer = _ensure_source_urls(answer, findings)
-        if synthesis is not None:
+        if synthesis is not None and answer:
+            answer = _ensure_source_urls(answer, findings)
             synthesis = synthesis.model_copy(update={"answer": answer})
-        if project_owned:
-            if synthesis is None:
-                synthesis = ResearchSynthesis(
-                    answer=_no_synthesis_closeout(query),
-                    status="incomplete",
-                    remaining_work="Collect evidence and produce a usable synthesis.",
+        else:
+            answer = _no_synthesis_closeout(query)
+            if not project_owned:
+                self._pause_incomplete_research(ctx, task_id=task_id)
+                return ExecutionResult.from_step_output(
+                    ctx.respond(message=answer, status=BRAIN_STATE_WAITING_USER)
                 )
-            return _project_owned_finalization(ctx, synthesis)
-        if not answer:
-            self._pause_incomplete_research(ctx, task_id=task_id)
-            return ExecutionResult.from_step_output(
-                ctx.respond(
-                    message=_no_synthesis_closeout(query),
-                    status=BRAIN_STATE_WAITING_USER,
-                )
+            synthesis = ResearchSynthesis(
+                answer=answer,
+                status="incomplete",
+                remaining_work="Collect evidence and produce a usable synthesis.",
             )
+        if project_owned:
+            return _project_owned_finalization(ctx, synthesis)
 
-        if synthesis is not None and synthesis.status != "complete":
+        if synthesis.status != "complete":
             self._next_iteration = 0
             self._remaining_work = _normalized_text(synthesis.remaining_work)
             self._pause_incomplete_research(ctx, task_id=task_id)
@@ -882,8 +880,7 @@ class ResearchMode(SimpleCheckpointMixin):
         synthesis_prompt = _build_synthesis_prompt(query=query, findings=findings)
         runner = runner_from_context(ctx)
         llm_api = getattr(runner, "llm_api", None) if runner is not None else None
-        profile = getattr(runner, "profile", None) if runner is not None else None
-        llm_profiles = getattr(profile, "llm_profiles", None)
+        llm_profiles = getattr(getattr(runner, "profile", None), "llm_profiles", None)
         model = _normalized_text(getattr(llm_profiles, "summarize_model", ""))
         if runner is None or llm_api is None or not model:
             return None
@@ -907,7 +904,12 @@ class ResearchMode(SimpleCheckpointMixin):
             if isinstance(raw, dict):
                 runner._debit_tokens(ctx.state, raw, ctx.logger)
             return ResearchSynthesis.model_validate(raw)
-        except (RuntimeError, TypeError, ValueError):
+        except (RuntimeError, TypeError, ValueError) as exc:
+            ctx.logger.emit(
+                "brain.research.synthesis_failed",
+                {"error_type": type(exc).__name__},
+                trace_id=ctx.state.trace_id,
+            )
             return None
 
     def _pause_incomplete_research(
