@@ -22,6 +22,7 @@ from openminion.modules.memory.diagnostics.operability import (
 )
 from openminion.modules.memory.models import MemoryScope
 from openminion.modules.memory.service import MemoryService
+from openminion.modules.memory.storage.audit import AuditedMemoryStore
 from openminion.modules.memory.storage.sqlite.store import SQLiteMemoryStore
 
 
@@ -189,6 +190,8 @@ def build_inspect_payload(
     all_events = read_trace_events(trace_file)
     recent_events = all_events[-5:]
     history_summary = None
+    if isinstance(store, AuditedMemoryStore):
+        store = store._store  # noqa: SLF001
     if isinstance(store, SQLiteMemoryStore):
         with store._connect() as conn:
             row = conn.execute(
