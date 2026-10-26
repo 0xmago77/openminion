@@ -7,6 +7,14 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Let SDK turns complete with an external memory backend that does not
+  implement atomic capture bundles, such as the bundled `reference-sqlite`
+  adapter. The backend adapter now reports the missing optional
+  `apply_capture_bundle` with the existing `CaptureRecoveryUnsupportedError`
+  instead of raising `NotImplementedError` out of `Agent.run`, so the turn's
+  capture intent stays pending with `CAPTURE_RECOVERY_UNSUPPORTED`, as it does
+  for the local JSONL memory adapter. Backends that implement the method are
+  called as before, and their errors still propagate (Refs #397).
 - Let PostgreSQL memory retention and purge remove records and candidates
   that carry evidence. The shared evidence decoder now keeps the list that
   PostgreSQL returns for the JSONB `evidence_json` column, instead of parsing

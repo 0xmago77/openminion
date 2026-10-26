@@ -5,7 +5,10 @@ from typing import Any, Callable, Iterable, cast
 from sophiagraph.models import MemoryEmbedding
 from sophiagraph.query import EmbeddingListOptions, ListQueryOptions
 
-from openminion.modules.memory.errors import InvalidArgumentError
+from openminion.modules.memory.errors import (
+    CaptureRecoveryUnsupportedError,
+    InvalidArgumentError,
+)
 from openminion.modules.memory.portability.models import (
     MemoryBundleExportOptions,
     MemoryBundleImportOptions,
@@ -461,7 +464,20 @@ class BackendMemoryStoreAdapter(MemoryStore):
         return _call_backend_extra(self._backend, "list_all")
 
     def apply_capture_bundle(self, bundle: Any) -> Any:
-        return _call_backend_extra(self._backend, "apply_capture_bundle", bundle)
+        """Apply an atomic capture bundle, which external backends may not offer.
+
+        A backend without a callable ``apply_capture_bundle`` is reported with
+        ``CaptureRecoveryUnsupportedError``, as the memory service reports a
+        store without one, so the capture stays pending. An error raised by a
+        backend's own ``apply_capture_bundle`` propagates unchanged.
+        """
+        handler = getattr(self._backend, "apply_capture_bundle", None)
+        if not callable(handler):
+            raise CaptureRecoveryUnsupportedError(
+                f"memory backend {type(self._backend).__name__} does not support "
+                "atomic capture bundles"
+            )
+        return handler(bundle)
 
 
 def adapt_backend_to_store(
