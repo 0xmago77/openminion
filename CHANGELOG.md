@@ -7,11 +7,29 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Make `storagectl restore` leave the target equal to the snapshot. storagectl
+  now dispatches `restore` before it builds its `StorageEngine`, as it already
+  does for `pool-stats`, `dr-drill` and `a2a-archive-old`, so its SQLite record
+  store no longer holds a connection open on the database file that the
+  restore replaces. On native Windows the restore failed with
+  `PermissionError`; on Linux a restore onto a new path reported `ok` but left
+  a database without most of the snapshot's tables. The restore's validation,
+  progress reporting, JSON output and errors are unchanged (Refs #412).
+- Let memory consolidation cron runs recover pending terminal capture intents
+  and then submit their scheduled turn. The cron executor passed the agent
+  service's keyword-only capture candidate extractor to the recovery's
+  positional callback, with the runtime session store as its session API, so
+  every consolidation run with a pending intent failed with `TypeError` before
+  its turn. A small adapter at the cron call site now calls the extractor by
+  keyword with the brain session API that the agent's runner uses for turns.
+  Recovery authorization, capture identity, the capture bundle write and the
+  pending/unsupported accounting are unchanged (Refs #420).
 - Pass validated Pydantic-model and dataclass arguments to `@tool` functions
   as instances instead of plain dicts. The decorator handler called
   `model_dump()` on the validated arguments, so a tool typed `f: Filter`
   received a `dict` and failed with `AttributeError` while the run still
-  reported `completed`. Scalar, list, enum and date arguments are unchanged.
+  reported `completed`. Scalar, list, enum and date arguments are unchanged
+  (Refs #435).
 
 ## Current package line - 2026-10-26
 
