@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 from typing import Any
+from uuid import uuid4
 
 from openminion.base.constants import STATE_KEY_FINALIZATION_STATUS
 from openminion.modules.llm.providers.base import (
@@ -508,9 +509,13 @@ def llm_response_kwargs(
     prompt_tokens, completion_tokens, total_tokens, _input, _output, cached_tokens = (
         token_usage_values(usage_payload)
     )
+    # Tool transcript events are keyed by (turn, call_id). A provider that
+    # omits call ids must not hand two response batches in one turn the same
+    # "call_1", so each batch gets its own full UUID prefix (#410).
+    batch_id = uuid4().hex
     tool_calls = [
         ToolCall(
-            id=tc.id or f"call_{index + 1}",
+            id=tc.id or f"call_{batch_id}_{index + 1}",
             name=tc.name,
             arguments=tc.arguments,
             batch_index=index,

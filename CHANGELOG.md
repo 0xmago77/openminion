@@ -7,6 +7,15 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Give tool calls that a provider returns without ids a full-UUID batch
+  prefix (`call_<uuid>_<n>`) instead of a bare `call_<n>`. Tool transcript
+  events are keyed by turn and call id, so two id-less response batches in the
+  same turn (for example Ollama with the default `fallback` tool strategy
+  after the closure gate sends the turn back through entry) both produced
+  `call_1` and failed the turn with `session event idempotency conflict`.
+  Provider-supplied ids and batch order are unchanged, and replaying an
+  already-normalized call stays idempotent (#410).
+
 - Let SDK turns complete with an external memory backend that does not
   implement atomic capture bundles, such as the bundled `reference-sqlite`
   adapter. The backend adapter now reports the missing optional

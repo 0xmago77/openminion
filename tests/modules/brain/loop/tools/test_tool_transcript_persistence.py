@@ -14,8 +14,11 @@ from openminion.modules.brain.loop.tools.transcript import (
 )
 from openminion.modules.brain.schemas import ActionError, ActionResult, ArtifactRef
 from openminion.modules.artifact.control import ArtifactCtl
+from openminion.modules.llm.client_call import llm_response_kwargs
+from openminion.modules.llm.providers.contracts import ProviderResponse
 from openminion.modules.llm.schemas import ToolCall
 from openminion.modules.session.storage.sqlite_store import SQLiteSessionStore
+from openminion.modules.tool.contracts import ProviderToolCall
 from tests.artifact.utils import make_config as make_artifact_config
 
 
@@ -395,3 +398,90 @@ def test_structural_profile_tool_event_omits_summary(tmp_path: Path) -> None:
         "tool_name": "file.read",
     }
     assert events[1]["payload"]["structural_only"] is True
+
+
+def _normalized_provider_calls(*provider_calls: ProviderToolCall) -> list[ToolCall]:
+    payload = llm_response_kwargs(
+        resp=ProviderResponse(
+            text="",
+            model="adapter-neutral-model",
+            tool_calls=list(provider_calls),
+        ),
+        req=SimpleNamespace(model="adapter-neutral-model"),
+        client_name="adapter-neutral",
+        structured_fields={},
+        trace_context={},
+    )
+    return list(payload["tool_calls"])
+
+
+def test_missing_id_batches_in_one_turn_persist_without_conflict(
+    tmp_path: Path,
+) -> None:
+    """Regression for #410: two id-less response batches in the same turn."""
+    store = SQLiteSessionStore(tmp_path / "missing-id-batches.db")
+    try:
+        session_id = store.create_session(
+            initial_agent_id="agent.main", profile_version="pv1"
+        )
+        loop_ctx = SimpleNamespace(
+            session_api=SessctlAdapter(store),
+            state=SimpleNamespace(session_id=session_id),
+        )
+        loop_state = SimpleNamespace(scratchpad={})
+        first = _normalized_provider_calls(
+            ProviderToolCall(id="", name="web.fetch", arguments={"url": "a"})
+        )
+        second = _normalized_provider_calls(
+            ProviderToolCall(id="", name="file.read", arguments={"path": "b"}),
+            ProviderToolCall(id="provider-7", name="file.list_dir", arguments={}),
+        )
+        assert second[1].id == "provider-7"
+
+        for batch, output in ((first, "fetched"), (second, "read")):
+            persist_requested_tool_calls(
+                loop_ctx,
+                loop_state=loop_state,
+                turn_scope_id="turn-1",
+                tool_calls=batch,
+            )
+            persist_terminal_tool_result(
+                loop_ctx,
+                loop_state=loop_state,
+                turn_scope_id="turn-1",
+                tool_call=batch[0],
+                action_result=ActionResult(
+                    command_id=batch[0].id,
+                    status="success",
+                    summary=output,
+                    outputs={"content": output},
+                ),
+            )
+
+        events = store.get_tool_transcript(session_id)["events"]
+        requested = [e for e in events if e["event_type"] == "tool.call.requested"]
+        completed = [e for e in events if e["event_type"] == "tool.call.completed"]
+        assert [e["payload"]["call_id"] for e in requested] == [
+            first[0].id,
+            second[0].id,
+            "provider-7",
+        ]
+        by_event_id = {e["event_id"]: e for e in requested}
+        for result in completed:
+            parent = by_event_id[result["parent_event_id"]]
+            assert result["payload"]["call_id"] == parent["payload"]["call_id"]
+        assert [e["payload"]["call_id"] for e in completed] == [
+            first[0].id,
+            second[0].id,
+        ]
+
+        # Replaying an already-normalized batch stays idempotent.
+        persist_requested_tool_calls(
+            loop_ctx,
+            loop_state=loop_state,
+            turn_scope_id="turn-1",
+            tool_calls=second,
+        )
+        assert len(store.get_tool_transcript(session_id)["events"]) == len(events)
+    finally:
+        store.close()
