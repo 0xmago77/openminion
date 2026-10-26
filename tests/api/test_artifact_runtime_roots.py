@@ -5,9 +5,17 @@ from pathlib import Path
 
 import pytest
 
+from sophiagraph.storage import SophiaGraphSqliteStore
+
 from openminion import Agent, APIRuntime
-from openminion.base.config import OpenMinionConfig, save_config
+from openminion.base.config import ConfigManager, OpenMinionConfig, save_config
 from openminion.modules.artifact.control import ArtifactCtl
+from openminion.modules.memory.backends.external import (
+    REFERENCE_SQLITE_ADAPTER_NAME,
+    register_external_backend,
+    register_reference_sqlite_backend,
+)
+from openminion.modules.memory.runtime.assembly import RuntimeMemoryAssembly
 from openminion.modules.memory.storage.audit import SQLiteMemoryAuditSink
 from openminion.modules.memory.storage.sqlite.store import SQLiteMemoryStore
 from openminion.services.runtime import memory as runtime_memory
@@ -34,7 +42,7 @@ def _snapshot(root: Path) -> dict[str, str]:
     }
 
 
-def _echo_runtime(root: Path) -> APIRuntime:
+def _echo_runtime(root: Path, memory_config: dict | None = None) -> APIRuntime:
     config = OpenMinionConfig()
     _csc_install_default_agent(config, provider="echo")
     config.runtime.process_mode = "single-process"
@@ -42,9 +50,15 @@ def _echo_runtime(root: Path) -> APIRuntime:
     config.storage.path = str(root / ".openminion" / "state.db")
     config_path = root / "agents.json"
     save_config(config, str(config_path))
-    return APIRuntime.from_config_path(
+    if memory_config is None:
+        return APIRuntime.from_config_path(
+            str(config_path), home_root=root, data_root=root / ".openminion"
+        )
+    manager = ConfigManager.load(
         str(config_path), home_root=root, data_root=root / ".openminion"
     )
+    manager.register("memory", lambda **kwargs: memory_config)
+    return APIRuntime.from_manager(manager)
 
 
 @pytest.fixture
@@ -241,3 +255,99 @@ def test_runtime_close_closes_the_memory_store_once(
 
     assert [type(store) for store in stores] == [SQLiteMemoryStore]
     assert close_counts == [[1], [1]]
+
+
+class _ClosingReferenceBackend(SophiaGraphSqliteStore):
+    def __init__(self, db_path: Path, closed: list[int]) -> None:
+        super().__init__(db_path)
+        self.closed = closed
+
+    def close(self) -> None:
+        self.closed.append(id(self))
+
+
+@pytest.mark.parametrize("closes", [True, False], ids=["backend_close", "no_close"])
+def test_runtime_close_closes_the_external_memory_backend_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    closes: bool,
+) -> None:
+    backend_closes: list[int] = []
+    artifact_closes: list[int] = []
+    memory_artifact_stores: list[ArtifactCtl] = []
+    created_stores: list[object] = []
+    outcomes: list[str] = []
+    original_artifact_close = ArtifactCtl.close
+    original_assembly_close = RuntimeMemoryAssembly.close
+    create_memory_artifact_store = runtime_memory.create_default_artifactctl
+    resolve_backend = runtime_memory.resolve_memory_backend
+
+    register_reference_sqlite_backend()
+    adapter = REFERENCE_SQLITE_ADAPTER_NAME
+    if closes:
+        adapter = "closing-reference-sqlite"
+        register_external_backend(
+            adapter,
+            factory=lambda *, config, **_: _ClosingReferenceBackend(
+                Path(config.options["db_path"]), backend_closes
+            ),
+        )
+
+    def record_artifact_close(self):
+        artifact_closes.append(id(self))
+        original_artifact_close(self)
+
+    def record_memory_artifact_store(config=None):
+        store = create_memory_artifact_store(config)
+        memory_artifact_stores.append(store)
+        return store
+
+    def record_backend(**kwargs):
+        resolved = resolve_backend(**kwargs)
+        created_stores.append(resolved.store)
+        return resolved
+
+    def record_assembly_close(self):
+        try:
+            result = original_assembly_close(self)
+        except Exception as exc:
+            outcomes.append(f"{type(exc).__name__}: {exc}")
+            raise
+        outcomes.append(result.reason_code)
+        return result
+
+    monkeypatch.setattr(ArtifactCtl, "close", record_artifact_close)
+    monkeypatch.setattr(
+        runtime_memory, "create_default_artifactctl", record_memory_artifact_store
+    )
+    monkeypatch.setattr(runtime_memory, "resolve_memory_backend", record_backend)
+    monkeypatch.setattr(RuntimeMemoryAssembly, "close", record_assembly_close)
+
+    root = tmp_path / "root"
+    runtime = _echo_runtime(
+        root,
+        {
+            "backend": {
+                "provider": "external",
+                "external_adapter": adapter,
+                "options": {"db_path": str(root / "external.sqlite3")},
+            }
+        },
+    )
+    try:
+        [memory_artifact_store] = memory_artifact_stores
+        close_counts: list[tuple[int, int]] = []
+        for _ in range(2):
+            runtime.close()
+            close_counts.append(
+                (artifact_closes.count(id(memory_artifact_store)), len(backend_closes))
+            )
+    finally:
+        runtime.close()
+        for store in memory_artifact_stores:
+            if id(store) not in artifact_closes:
+                original_artifact_close(store)
+
+    assert outcomes == ["closed"]
+    assert close_counts == [(1, int(closes)), (1, int(closes))]
+    assert created_stores == []

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -41,7 +42,7 @@ def _create_test_db(
 ) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     signed_app_id = _to_signed32(app_id)
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn, conn:
         conn.execute(f"PRAGMA application_id={signed_app_id}")
         conn.execute(f"PRAGMA user_version={user_version}")
         conn.execute(
@@ -210,20 +211,20 @@ class TestStorageModuleOps:
 
     def test_restore_from_backup(self, tmp_path: Path) -> None:
         ops = _build_ops(tmp_path)
-        with sqlite3.connect(str(tmp_path / "test.db")) as conn:
+        with closing(sqlite3.connect(str(tmp_path / "test.db"))) as conn, conn:
             conn.execute(
                 "INSERT INTO secrets(key, namespace, value, created_at, updated_at) "
                 "VALUES ('k1', 'default', 'v1', 1.0, 1.0)"
             )
             conn.commit()
         artifact = ops.backup()
-        with sqlite3.connect(str(tmp_path / "test.db")) as conn:
+        with closing(sqlite3.connect(str(tmp_path / "test.db"))) as conn, conn:
             conn.execute("DELETE FROM secrets")
             conn.commit()
         state = ops.restore(snapshot_path=artifact.snapshot_path)
         assert isinstance(state, DbState)
         assert state.exists is True
-        with sqlite3.connect(str(tmp_path / "test.db")) as conn:
+        with closing(sqlite3.connect(str(tmp_path / "test.db"))) as conn:
             row = conn.execute("SELECT value FROM secrets WHERE key='k1'").fetchone()
         assert row is not None
         assert row[0] == "v1"
@@ -459,20 +460,20 @@ class TestRollbackSafety:
     def test_backup_then_restore_preserves_data(self, tmp_path: Path) -> None:
         ops = _build_ops(tmp_path)
         db_path = tmp_path / "test.db"
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn, conn:
             conn.execute(
                 "INSERT INTO secrets(key, namespace, value, created_at, updated_at) "
                 "VALUES ('preserve_me', 'default', 'safe', 1.0, 1.0)"
             )
             conn.commit()
         artifact = ops.backup()
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn, conn:
             conn.execute("DELETE FROM secrets")
             conn.commit()
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn:
             assert conn.execute("SELECT COUNT(*) FROM secrets").fetchone()[0] == 0
         ops.restore(snapshot_path=artifact.snapshot_path)
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn:
             row = conn.execute(
                 "SELECT value FROM secrets WHERE key='preserve_me'"
             ).fetchone()

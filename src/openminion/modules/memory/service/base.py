@@ -61,7 +61,7 @@ class MemoryService(MemoryServiceQueryMixin, MemoryServiceMutationMixin):
                 "MemoryService accepts either store or backend, not both"
             )
         if backend is not None:
-            store = adapt_backend_to_store(backend)
+            store = adapt_backend_to_store(backend, owns_backend=owns_store)
         if store is None:
             raise InvalidArgumentError(
                 "MemoryService requires a store or backend implementation"
