@@ -7,6 +7,14 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Make `storagectl restore` leave the target equal to the snapshot. storagectl
+  now dispatches `restore` before it builds its `StorageEngine`, as it already
+  does for `pool-stats`, `dr-drill` and `a2a-archive-old`, so its SQLite record
+  store no longer holds a connection open on the database file that the
+  restore replaces. On native Windows the restore failed with
+  `PermissionError`; on Linux a restore onto a new path reported `ok` but left
+  a database without most of the snapshot's tables. The restore's validation,
+  progress reporting, JSON output and errors are unchanged (Refs #412).
 - Close what a runtime memory assembly build obtained when the build fails
   partway. The artifact store, and the memory store with its audit sink for
   the built-in backend, are closed once each through their current owner,
