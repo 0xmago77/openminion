@@ -22,7 +22,7 @@ from openminion.modules.memory.service import MemoryService
 
 
 def register_memory_backend_factories(
-    *, audited_store: Any, vector_adapter: Any | None = None
+    *, audited_store: Any | None, vector_adapter: Any | None = None
 ) -> None:
     def build_sophiagraph_backend(**kwargs: Any) -> KnowledgeBackend:
         portability_service = MemoryService(store=audited_store)
@@ -46,7 +46,8 @@ def register_memory_backend_factories(
         )
         return cast(KnowledgeBackend, backend)
 
-    register_backend_factory("sophiagraph", build_sophiagraph_backend)
+    if audited_store is not None:
+        register_backend_factory("sophiagraph", build_sophiagraph_backend)
     register_backend_factory("none", build_none_backend)
     register_backend_factory("external", build_external_backend)
 

@@ -247,15 +247,15 @@ def build_memory_v2_runtime_assembly(
         artifactctl = _runtime_artifactctl(artifactctl_factory, config_manager)
     except Exception:
         artifactctl = None
-    resolved = resolve_memory_backend(
-        config=memory_config,
-        db_path=db_path,
-        artifactctl=artifactctl,
-    )
-    audit_sink = SQLiteMemoryAuditSink(default_memory_audit_db_path(db_path))
-    audited_store = AuditedMemoryStore(
-        resolved.store, sink=audit_sink, owns_store=True, owns_sink=True
-    )
+    audited_store = None
+    if backend_config.provider == "sophiagraph":
+        resolved = resolve_memory_backend(
+            config=memory_config, db_path=db_path, artifactctl=artifactctl
+        )
+        audit_sink = SQLiteMemoryAuditSink(default_memory_audit_db_path(db_path))
+        audited_store = AuditedMemoryStore(
+            resolved.store, sink=audit_sink, owns_store=True, owns_sink=True
+        )
     ranking_config = memory_runtime_configuration.merged_ranking_config(
         memory_config=memory_config,
         retrieve_ctl=retrieve_ctl,

@@ -1,4 +1,8 @@
-"""The runtime disposes the PostgreSQL engine its memory assembly creates."""
+"""The runtime disposes the PostgreSQL engine its memory assembly creates.
+
+With the `external` memory backend provider the assembly creates no memory
+store, so a PostgreSQL store config opens no engine at all.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +23,10 @@ from sqlalchemy import event
 from openminion import Agent, APIRuntime
 from openminion.base.channel import ChannelRegistry
 from openminion.base.config import ConfigManager, OpenMinionConfig, save_config
+from openminion.modules.memory.backends.external import (
+    REFERENCE_SQLITE_ADAPTER_NAME,
+    register_reference_sqlite_backend,
+)
 from openminion.modules.memory.config import from_base_config
 from openminion.modules.memory.models import MemoryRecord
 from openminion.modules.memory.storage import AuditedMemoryStore
@@ -78,7 +86,7 @@ def _settled_connections(server_connections: Callable[[], int]) -> int:
     return count
 
 
-def _postgres_memory_runtime(root: Path, memory_url: str) -> APIRuntime:
+def _memory_runtime(root: Path, memory_config: Callable[..., object]) -> APIRuntime:
     config = OpenMinionConfig()
     _csc_install_default_agent(config, provider="echo")
     config.runtime.process_mode = "single-process"
@@ -89,7 +97,11 @@ def _postgres_memory_runtime(root: Path, memory_url: str) -> APIRuntime:
     manager = ConfigManager.load(
         str(config_path), home_root=root, data_root=root / ".openminion"
     )
+    manager.register("memory", memory_config)
+    return APIRuntime.from_manager(manager)
 
+
+def _postgres_memory_runtime(root: Path, memory_url: str) -> APIRuntime:
     def postgres_memory_config(**kwargs):
         memory_config = from_base_config(**kwargs)
         store = dataclasses.replace(
@@ -97,8 +109,7 @@ def _postgres_memory_runtime(root: Path, memory_url: str) -> APIRuntime:
         )
         return dataclasses.replace(memory_config, store=store)
 
-    manager.register("memory", postgres_memory_config)
-    return APIRuntime.from_manager(manager)
+    return _memory_runtime(root, postgres_memory_config)
 
 
 def test_runtime_close_disposes_the_postgres_memory_engine_once(
@@ -283,3 +294,45 @@ def test_audited_store_leaves_a_borrowed_postgres_store_open(
         assert _settled_connections(server_connections) == 0
     finally:
         engine.dispose()
+
+
+def test_external_memory_provider_opens_no_postgres_memory_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    memory_database: tuple[str, Callable[[], int]],
+) -> None:
+    memory_url, server_connections = memory_database
+    stores: list[object] = []
+    resolve_backend = runtime_memory.resolve_memory_backend
+
+    def record_backend(**kwargs):
+        resolved = resolve_backend(**kwargs)
+        stores.append(resolved.store)
+        return resolved
+
+    monkeypatch.setattr(runtime_memory, "resolve_memory_backend", record_backend)
+    register_reference_sqlite_backend()
+    root = tmp_path / "root"
+    memory_config = {
+        "store": {"backend": "postgres", "postgres": {"url": memory_url}},
+        "backend": {
+            "provider": "external",
+            "external_adapter": REFERENCE_SQLITE_ADAPTER_NAME,
+            "options": {"db_path": str(root / "external.sqlite3")},
+        },
+    }
+
+    runtime = _memory_runtime(root, lambda **kwargs: memory_config)
+    try:
+        open_after_build = server_connections()
+        runtime.close()
+        runtime.close()
+        open_after_close = _settled_connections(server_connections)
+    finally:
+        runtime.close()
+        for store in stores:
+            store._engine.dispose()
+
+    assert [type(store) for store in stores] == []
+    assert open_after_build == 0
+    assert open_after_close == 0
