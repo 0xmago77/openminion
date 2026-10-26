@@ -1,11 +1,13 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-24
+Last updated: 2026-10-26
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+## Current package line - 2026-10-26
 
 - Keep research incomplete when synthesis fails or returns a blank answer,
   even when sources were collected. Retain checkpoint evidence for resumption
