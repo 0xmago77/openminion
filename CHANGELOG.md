@@ -20,8 +20,12 @@ This file tracks package-facing release notes for `openminion`.
   keeps it with the turn's trace id (`turn_evidence`,
   `turn_evidence_trace_id`), so a lookup that would satisfy a direct close
   also satisfies the continuation's text, and a result from another turn is
-  not evidence. Clarify questions, other respond decisions and the tool/judge
-  path are unchanged (Refs #419).
+  not evidence. Every working state saved from this version on contains both
+  fields, and a runtime from before it rejects such a state: upgrade every
+  process that shares the runtime state together and roll back only with the
+  matching pre-upgrade backup (`docs/runtime-database-upgrades.md`). A state
+  saved before this version loads with neither field set. Clarify questions,
+  other respond decisions and the tool/judge path are unchanged (Refs #419).
 - Make `storagectl restore` leave the target equal to the snapshot. storagectl
   now dispatches `restore` before it builds its `StorageEngine`, as it already
   does for `pool-stats`, `dr-drill` and `a2a-archive-old`, so its SQLite record
