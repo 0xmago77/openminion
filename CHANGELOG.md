@@ -22,6 +22,14 @@ This file tracks package-facing release notes for `openminion`.
   also satisfies the continuation's text, and a result from another turn is
   not evidence. Clarify questions, other respond decisions and the tool/judge
   path are unchanged (Refs #419).
+- Make `storagectl restore` leave the target equal to the snapshot. storagectl
+  now dispatches `restore` before it builds its `StorageEngine`, as it already
+  does for `pool-stats`, `dr-drill` and `a2a-archive-old`, so its SQLite record
+  store no longer holds a connection open on the database file that the
+  restore replaces. On native Windows the restore failed with
+  `PermissionError`; on Linux a restore onto a new path reported `ok` but left
+  a database without most of the snapshot's tables. The restore's validation,
+  progress reporting, JSON output and errors are unchanged (Refs #412).
 
 ## Current package line - 2026-10-26
 
