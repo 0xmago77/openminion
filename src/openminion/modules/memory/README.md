@@ -106,6 +106,12 @@ External backends register through the memory backend seam:
 - registry: `openminion.modules.memory.backends.external.register_external_backend`
 - capability report: `openminion.modules.memory.backends.external.ExternalBackendCapabilities`
 
+The runtime owns the backend that the registered factory returns. When the
+runtime closes, the memory service calls the backend's `close()` once if it has
+one; a backend that holds nothing to release needs none. With
+`provider: external` the runtime does not open the `memory.store` store or its
+audit sink, because only the built-in `sophiagraph` backend uses them.
+
 The adapter must map into the canonical `sophiagraph` / OpenMinion record,
 relation, portability, and tier-history contracts. It must not redefine those
 models. Required capability checks run through the external registry before the
