@@ -75,11 +75,13 @@ from tests._session_metadata_filter_scenarios import (
     check_metadata_filters,
 )
 from tests._session_metadata_strings_scenarios import (
+    LEGACY_TARGET,
     assert_rows_match_metadata,
     check_bounded_results,
     check_concurrent_inserts_keep_the_first_rows,
     check_concurrent_metadata_writers,
     check_failed_writes_roll_back,
+    check_filters_against_reference,
     check_forced_digest_collision,
     check_odd_metadata_rows,
     check_postgres_literal_contract,
@@ -1090,7 +1092,7 @@ def test_postgres_metadata_strings_migration_backfills_existing_history() -> Non
             store = SessionStore(record_store)
             assert stored_metadata(store) == before
             assert_rows_match_metadata(store)
-            check_postgres_literal_contract(store)
+            check_filters_against_reference(store, LEGACY_TARGET)
         finally:
             record_store.close()
 

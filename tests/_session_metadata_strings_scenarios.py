@@ -51,56 +51,63 @@ LONG_VALUE = "v" * 100_000
 
 _SESSIONS_MODULE = "openminion.modules.storage.runtime.session_store.sessions"
 _TARGET = "metadata-strings"
+LEGACY_TARGET = "legacy-metadata-strings"
 
 # Metadata that PostgreSQL cannot parse as a whole document, or that a
 # filter must read literally. Session id -> metadata.
 ODD_METADATA: dict[str, dict[Any, Any]] = {
-    "nan-other": {"surface": "acp", "score": NAN},
-    "inf-other": {"surface": "acp", "low": -INF, "high": INF},
-    "nul-other": {"surface": "acp", "note": "a" + NUL + "b"},
-    "surrogate-other": {"surface": "acp", "note": LONE_HIGH + "x" + LONE_LOW},
-    "nul-value": {"surface": "a" + NUL + "b"},
-    "nul-key": {"k" + NUL + "z": "value"},
-    "surrogate-value": {"surface": "x" + LONE_HIGH},
-    "unicode": {CAFE: EMOJI, "surface": CAFE},
-    "brace-value": {"surface": '{"a":1}', "working_dir": "[draft]"},
-    "object-value": {"surface": {"a": 1}, "working_dir": ["draft"]},
-    "path-keys": {"a.b": "literal", "a": {"b": "nested"}, "t[0]": "x", '"q"': "y"},
-    "long": {LONG_KEY: LONG_VALUE, "surface": "acp"},
-    "nan-keys": {NAN: "first", float("nan"): "second"},
-    "non-strings": {"surface": 1, "flag": True, "none": None, "n": 1.5},
-    "empty-string": {"surface": ""},
+    "odd-nan-other": {"surface": "acp", "score": NAN},
+    "odd-inf-other": {"surface": "acp", "low": -INF, "high": INF},
+    "odd-nul-other": {"surface": "acp", "note": "a" + NUL + "b"},
+    "odd-surrogate-other": {"surface": "acp", "note": LONE_HIGH + "x" + LONE_LOW},
+    "odd-nul-value": {"surface": "a" + NUL + "b"},
+    "odd-nul-key": {"k" + NUL + "z": "value"},
+    "odd-surrogate-value": {"surface": "x" + LONE_HIGH},
+    "odd-unicode": {CAFE: EMOJI, "surface": CAFE},
+    "odd-brace-value": {"surface": '{"a":1}', "working_dir": "[draft]"},
+    "odd-object-value": {"surface": {"a": 1}, "working_dir": ["draft"]},
+    "odd-path-keys": {"a.b": "literal", "a": {"b": "nested"}, "t[0]": "x", '"q"': "y"},
+    "odd-long": {LONG_KEY: LONG_VALUE, "surface": "acp"},
+    "odd-nan-keys": {NAN: "first", float("nan"): "second"},
+    "odd-non-strings": {"surface": 1, "flag": True, "none": None, "n": 1.5},
+    "odd-empty-string": {"surface": ""},
 }
 
 # Filter -> the sessions of ODD_METADATA it selects on PostgreSQL.
 POSTGRES_ODD_EXPECTED: list[tuple[dict[str, str], set[str]]] = [
     (
         {"surface": "acp"},
-        {"nan-other", "inf-other", "nul-other", "surrogate-other", "long"},
+        {
+            "odd-nan-other",
+            "odd-inf-other",
+            "odd-nul-other",
+            "odd-surrogate-other",
+            "odd-long",
+        },
     ),
-    ({"surface": "a" + NUL + "b"}, {"nul-value"}),
-    ({"k" + NUL + "z": "value"}, {"nul-key"}),
-    ({"surface": "x" + LONE_HIGH}, {"surrogate-value"}),
-    ({"note": LONE_HIGH + "x" + LONE_LOW}, {"surrogate-other"}),
-    ({CAFE: EMOJI}, {"unicode"}),
-    ({"surface": CAFE}, {"unicode"}),
-    ({"surface": '{"a":1}'}, {"brace-value"}),
-    ({"working_dir": "[draft]"}, {"brace-value"}),
+    ({"surface": "a" + NUL + "b"}, {"odd-nul-value"}),
+    ({"k" + NUL + "z": "value"}, {"odd-nul-key"}),
+    ({"surface": "x" + LONE_HIGH}, {"odd-surrogate-value"}),
+    ({"note": LONE_HIGH + "x" + LONE_LOW}, {"odd-surrogate-other"}),
+    ({CAFE: EMOJI}, {"odd-unicode"}),
+    ({"surface": CAFE}, {"odd-unicode"}),
+    ({"surface": '{"a":1}'}, {"odd-brace-value"}),
+    ({"working_dir": "[draft]"}, {"odd-brace-value"}),
     ({"working_dir": '["draft"]'}, set()),
-    ({"a.b": "literal"}, {"path-keys"}),
+    ({"a.b": "literal"}, {"odd-path-keys"}),
     ({"a.b": "nested"}, set()),
-    ({"t[0]": "x"}, {"path-keys"}),
-    ({'"q"': "y"}, {"path-keys"}),
-    ({LONG_KEY: LONG_VALUE}, {"long"}),
+    ({"t[0]": "x"}, {"odd-path-keys"}),
+    ({'"q"': "y"}, {"odd-path-keys"}),
+    ({LONG_KEY: LONG_VALUE}, {"odd-long"}),
     ({LONG_KEY: LONG_VALUE[:-1]}, set()),
     # json.loads keeps the last of two members with one name.
-    ({"NaN": "second"}, {"nan-keys"}),
+    ({"NaN": "second"}, {"odd-nan-keys"}),
     ({"NaN": "first"}, set()),
     ({"surface": "1"}, set()),
     ({"flag": "true"}, set()),
     ({"none": ""}, set()),
-    ({"surface": ""}, {"empty-string"}),
-    ({"surface": "acp", "note": "a" + NUL + "b"}, {"nul-other"}),
+    ({"surface": ""}, {"odd-empty-string"}),
+    ({"surface": "acp", "note": "a" + NUL + "b"}, {"odd-nul-other"}),
 ]
 
 
@@ -167,6 +174,7 @@ def reference_ids(
     *,
     limit: int,
     newest_first: bool,
+    target: str = _TARGET,
 ) -> list[str]:
     """The ids the PostgreSQL contract selects, read from the stored rows in Python."""
     filters = [
@@ -176,7 +184,7 @@ def reference_ids(
     ]
     rows = sessions._backend.query_dicts(
         "SELECT id, updated_at, metadata_json FROM sessions WHERE target = ?",
-        (_TARGET,),
+        (target,),
     )
     selected = []
     for row in rows:
@@ -188,6 +196,20 @@ def reference_ids(
             selected.append((str(row["updated_at"]), str(row["id"])))
     selected.sort(reverse=newest_first)
     return [session_id for _, session_id in selected[:limit]]
+
+
+def check_filters_against_reference(sessions: SessionStore, target: str) -> None:
+    """PostgreSQL: each `POSTGRES_ODD_EXPECTED` filter returns the reference ids."""
+    for metadata_filter, _ in POSTGRES_ODD_EXPECTED:
+        for limit in (3, 100000):
+            rows = sessions.list_sessions(
+                limit=limit, target=target, metadata_filter=metadata_filter
+            )
+            actual = [row.id for row in rows]
+            expected = reference_ids(
+                sessions, metadata_filter, limit=limit, newest_first=True, target=target
+            )
+            assert actual == expected, (metadata_filter, limit, actual, expected)
 
 
 def check_odd_metadata_rows(sessions: SessionStore) -> None:
@@ -542,7 +564,7 @@ def legacy_session_rows(count: int) -> list[dict[str, Any]]:
     `metadata_json` is written by the store's writer, with members PostgreSQL
     cannot parse, long and non-ASCII members, and non-string values.
     """
-    odd = [metadata for name, metadata in ODD_METADATA.items() if name != "long"]
+    odd = [metadata for name, metadata in ODD_METADATA.items() if name != "odd-long"]
     rows = []
     for index in range(count):
         metadata: dict[Any, Any] = dict(odd[index % len(odd)])
@@ -554,7 +576,7 @@ def legacy_session_rows(count: int) -> list[dict[str, Any]]:
                 "id": f"legacy-{index:05d}",
                 "session_key": f"legacy-key-{index:05d}",
                 "channel": "console",
-                "target": _TARGET,
+                "target": LEGACY_TARGET,
                 "metadata_json": metadata_json(metadata),
                 "created_at": "2026-10-25T00:00:00+00:00",
                 "updated_at": f"2026-10-25T{index // 3600 % 24:02d}:"
@@ -566,8 +588,8 @@ def legacy_session_rows(count: int) -> list[dict[str, Any]]:
             "id": "legacy-long",
             "session_key": "legacy-key-long",
             "channel": "console",
-            "target": _TARGET,
-            "metadata_json": metadata_json(ODD_METADATA["long"]),
+            "target": LEGACY_TARGET,
+            "metadata_json": metadata_json(ODD_METADATA["odd-long"]),
             "created_at": "2026-10-25T00:00:00+00:00",
             "updated_at": "2026-10-25T23:59:59+00:00",
         }
