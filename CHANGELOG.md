@@ -33,6 +33,13 @@ This file tracks package-facing release notes for `openminion`.
   defaults and `Annotated` constraints apply and invalid mappings raise
   `ValidationError`. The shared built-in tool mapping contract is unchanged
   (Refs #435).
+- Let `memctl inspect` run without `--scope`, or with an empty one, as the
+  command intends: it inspects with the default inspection identifiers and
+  reports stats for every scope, instead of exiting with a traceback from the
+  scope parser. A non-empty invalid scope is now reported as
+  `Error: invalid scope: ...` on stderr with exit code 1, as `memctl search`
+  and `memctl list` report one, before the memory service opens. JSON and
+  human output report the same normalized scope (Refs #413).
 
 ## Current package line - 2026-10-26
 
