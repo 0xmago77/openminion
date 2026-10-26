@@ -68,9 +68,14 @@ member named exactly as the filter key whose value is a string equal to the
 filter value. Keys keep the existing `strip()`, and empty keys are skipped.
 Every other character of a key or value is literal, including `.`, `[`, `"`,
 non-ASCII text, NUL and lone surrogates. Numbers, booleans, null, objects,
-arrays and missing members never match, and a filter value that is not a
-string raises `TypeError`. The query returns at most `limit` sessions in the
-usual `updated_at, id` order.
+arrays and missing members never match. The query returns at most `limit`
+sessions in the usual `updated_at, id` order.
+
+Before either backend reads a filter value, `list_sessions` keeps its existing
+normalization: a false value (`None`, `0`, `False`, an empty container) is
+sent as `""`, so `{"surface": None}` matches a session whose `surface` is the
+empty string, on both backends. PostgreSQL then raises `TypeError` for any
+other filter value that is not a string.
 
 The rows store each name and value as its JSON string text (`json.dumps`,
 ASCII without a NUL byte). PostgreSQL compares that text with `COLLATE "C"`,
@@ -92,4 +97,7 @@ literal top-level string:
   and 3.34.1;
 - for a member name stored twice (which the writer produces only for two
   distinct float NaN keys), it reads the first value, where PostgreSQL and
-  `json.loads` read the last.
+  `json.loads` read the last;
+- it compares a filter value that is not a string (other than a false value,
+  which becomes `""`) as an SQL value, so `1` matches a stored `1` or `true`,
+  where PostgreSQL raises `TypeError`.

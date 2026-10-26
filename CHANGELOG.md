@@ -85,8 +85,11 @@ This file tracks package-facing release notes for `openminion`.
   session whose stored metadata, as `SessionRecord.metadata` reads it, has a
   top-level member named exactly as the key whose value is a string equal to
   the filter value. Names and values are literal; numbers, booleans, null,
-  objects and arrays never match; a non-string filter value raises
-  `TypeError`; and at most `limit` sessions are read. SQLite keeps its
+  objects and arrays never match; and at most `limit` sessions are read.
+  `list_sessions` still sends a false filter value (`None`, `0`, `False`, an
+  empty container) as `""`, so `{"surface": None}` matches an empty string as
+  before; PostgreSQL raises `TypeError` for any other filter value that is not
+  a string, where SQLite compares it as an SQL value. SQLite keeps its
   `json_extract` reader, so the backends still differ where it reads more
   than a literal top-level string: keys as JSON paths, objects and arrays by
   their minified text, version-dependent escaped keys and NaN documents, and
