@@ -518,6 +518,7 @@ def build_gateway_service(
         channel_authenticity_policy=channel_authenticity_policy,
         session_context=resolved_session_context,
         agent_memory=resolved_memory,
+        owns_agent_memory=resolved_memory is not agent_memory,
         knowledge_graphs=knowledge_graphs,
         context_token_budget=max(0, int(config.runtime.session_context_token_budget)),
         record_context_selection=resolved_memory.record_context_selection,

@@ -11,6 +11,14 @@ This file tracks package-facing release notes for `openminion`.
   even when sources were collected. Retain checkpoint evidence for resumption
   and project-owned incomplete status; record exception types without provider
   response bodies.
+- Give tool calls that a provider returns without ids a full-UUID batch
+  prefix (`call_<uuid>_<n>`) instead of a bare `call_<n>`. Tool transcript
+  events are keyed by turn and call id, so two id-less response batches in the
+  same turn (for example Ollama with the default `fallback` tool strategy
+  after the closure gate sends the turn back through entry) both produced
+  `call_1` and failed the turn with `session event idempotency conflict`.
+  Provider-supplied ids and batch order are unchanged, and replaying an
+  already-normalized call stays idempotent (#410).
 
 - Let SDK turns complete with an external memory backend that does not
   implement atomic capture bundles, such as the bundled `reference-sqlite`
@@ -20,6 +28,34 @@ This file tracks package-facing release notes for `openminion`.
   capture intent stays pending with `CAPTURE_RECOVERY_UNSUPPORTED`, as it does
   for the local JSONL memory adapter. Backends that implement the method are
   called as before, and their errors still propagate (Refs #397).
+- Select run events with a case-sensitive `run.` type prefix in
+  `list_session_runs` and `list_session_run_events` on SQLite, as on
+  PostgreSQL and as the thread lifecycle, the invocation terminal and every
+  runtime writer already do. SQLite `LIKE` matched the prefix
+  case-insensitively, so on SQLite an event stored with a `RUN.` or `Run.`
+  type was counted in run listings, run event lists and the run status shown
+  by the runs API, `openminion status` and owner diagnostics; it no longer
+  is. No runtime writer emits such a type; it can come from the generic
+  event append APIs or an import. The state is still read from the type
+  suffix in any case (`run.COMPLETED` is completed), stored events are not
+  changed, and the generic `list_events` and `count_events` prefix filters
+  are unchanged (Refs #396).
+- Close the memory store and audit database that a `memctl` command opens
+  when the command ends, whether it succeeds or fails. The command's service
+  now owns the store and audit sink it creates and closes them once, through
+  the command's Click context; a service built by the factory outside a
+  command is closed by its caller with `close()`. The audit database used to
+  stay open until garbage collection, so an in-process caller on Windows
+  (such as typer's `CliRunner`) could not rename or delete it (Refs #403).
+- Keep a turn's freshness contract, obligations and diagnostics on an entry
+  step that has no new user input and no valid typed `freshness` contract,
+  such as the continuation step after the closure freshness guard turns a
+  close into a continue. The step used to replace them with the classifier's
+  default for empty input, which dropped the exact-date, live-data and
+  sources obligations the guard was enforcing. A valid typed contract still
+  replaces them, new user input is still classified, and a first step with
+  neither keeps the default. The step emits `brain.freshness.entry_fallback`
+  with reason `retained_turn_contract` (Refs #395).
 - Report the deepest key history in `memctl inspect` (`history_summary` with
   `--json`, the `Deepest history` line otherwise) for the SQLite store that
   memctl wraps in its audited store; it was always missing there. A store
@@ -75,6 +111,23 @@ This file tracks package-facing release notes for `openminion`.
   creates the memory store and audit sink that only the built-in backend uses,
   so a PostgreSQL `memory.store` setting opens no engine and an unusable
   `memory.store` setting no longer fails the build (#388).
+- Apply memory retention in the runtime session lifecycle with a PostgreSQL
+  memory store. The lifecycle hands the retention helpers the runtime's
+  `AuditedMemoryStore`, so confidence decay, summary compression and deletion,
+  per-scope capacity and stale insight eviction took the SQLite path and failed
+  with `'PostgresMemoryStore' object has no attribute '_connect'`: no retention
+  was applied, every turn logged `memory.session_lifecycle failed`, and the
+  first-turn summary compression failed silently. The helpers now run on the
+  store behind the audit wrapper, as they already did with SQLite, and the
+  lifecycle completes once per session (#392).
+- Close the memory store, audit sink and artifact store that the bootstrap
+  memory fallback creates. When `build_gateway_service` builds the agent memory
+  itself, `GatewayService.close()` now closes it once, and the adapter that
+  `build_agent_memory_service` returns gets a `close()` that closes the runtime
+  memory assembly behind it once, keeping the scheduler boundary. Before, the
+  assembly was dropped and nothing could close them. An `agent_memory` passed
+  to the gateway service stays borrowed, and the SDK runtime's memory gateway
+  still closes nothing itself (#389).
 - Session metadata filters work on PostgreSQL.
   `list_sessions(metadata_filter=...)`, which ACP `session/list` and Focus
   directory sessions use, emitted SQLite's `json_extract` and failed there.

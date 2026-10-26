@@ -142,7 +142,9 @@ def _build_memory_v2_gateway_adapter(
         resolve_runtime_memory_config_fn=resolve_runtime_memory_config_fn,
         artifactctl_factory=artifactctl_factory,
     )
-    return cast(MemoryServiceGatewayAdapter, assembly.gateway)
+    gateway = cast(MemoryServiceGatewayAdapter, assembly.gateway)
+    gateway.close_owner = assembly
+    return gateway
 
 
 def _build_memory_v2_gateway(
