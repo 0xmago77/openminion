@@ -23,6 +23,7 @@ from openminion.modules.storage.runtime.migrations import (
     migrate_record_store,
 )
 from openminion.modules.storage.runtime.session_store import SessionStore
+from openminion.modules.storage.runtime.session_store import metadata_strings
 from openminion.modules.task.run import (
     append_run_state_event,
     list_session_run_events,
@@ -72,6 +73,24 @@ from tests._session_metadata_filter_scenarios import (
     check_backend_reading_differences,
     check_focus_directory_sessions,
     check_metadata_filters,
+)
+from tests._session_metadata_strings_scenarios import (
+    assert_rows_match_metadata,
+    check_bounded_results,
+    check_concurrent_inserts_keep_the_first_rows,
+    check_concurrent_metadata_writers,
+    check_failed_writes_roll_back,
+    check_forced_digest_collision,
+    check_odd_metadata_rows,
+    check_postgres_literal_contract,
+    check_session_delete_cascade,
+    check_update_racing_delete,
+    check_write_paths,
+    failing_extraction,
+    legacy_session_rows,
+    migrations_before,
+    recorded_metadata_backfill_migrations,
+    stored_metadata,
 )
 
 pytestmark = pytest.mark.postgres
@@ -478,7 +497,7 @@ def test_postgres_append_seq_migration_uses_fallback_order_and_moves_tied_bounda
             )
 
             result = migrate_record_store(record_store, backend_type="postgres")
-            assert result.applied_versions == (12, 13, 14)
+            assert result.applied_versions == (12, 13, 14, 15)
 
             seq_rows = record_store.query_dicts(
                 "SELECT body, append_seq FROM messages ORDER BY append_seq"
@@ -765,7 +784,7 @@ def test_postgres_event_facts_migration_backfills_existing_history(
                 backend_type="postgres",
                 migrations=recorded_backfill_migrations(batches),
             )
-            assert result.applied_versions == (13, 14)
+            assert result.applied_versions == (13, 14, 15)
             assert batches == [1000, 1000, 345, 0]
         with _postgres_sessions(tmp_path, url) as sessions:
             check_upgraded_history(
@@ -809,7 +828,7 @@ def test_postgres_event_facts_migration_rolls_back_when_the_backfill_fails(
                 "UPDATE events SET payload_json = '{}' WHERE id = 1400"
             )
             result = migrate_record_store(record_store, backend_type="postgres")
-            assert result.applied_versions == (13, 14)
+            assert result.applied_versions == (13, 14, 15)
             assert record_store.query_dicts(
                 "SELECT COUNT(*) AS facts FROM event_run_facts"
             ) == [{"facts": 1500}]
@@ -916,7 +935,7 @@ def test_postgres_join_seq_migration_numbers_participants_in_pre_upgrade_order(
             }
 
             result = migrate_record_store(record_store, backend_type="postgres")
-            assert result.applied_versions == (14,)
+            assert result.applied_versions == (14, 15)
             assert record_store.query_dicts(
                 "SELECT indexname FROM pg_indexes "
                 "WHERE schemaname = current_schema() "
@@ -964,3 +983,169 @@ def test_postgres_focus_directory_sessions_filter_by_working_dir(
     with _postgres_schema("om369_focus") as url:
         with _postgres_sessions(tmp_path, url) as sessions:
             check_focus_directory_sessions(sessions, tmp_path / "focus")
+
+
+def _postgres_peers(tmp_path: Path, url: str, count: int) -> list[Any]:
+    return [
+        build_runtime_storage(
+            tmp_path / f"state/peer-{index}.db",
+            env={},
+            record_backend="record.postgres",
+            record_backend_options={"url": url},
+        )
+        for index in range(count)
+    ]
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize(
+    "check",
+    [
+        check_postgres_literal_contract,
+        check_odd_metadata_rows,
+        check_bounded_results,
+        check_forced_digest_collision,
+        check_write_paths,
+        check_failed_writes_roll_back,
+        check_session_delete_cascade,
+    ],
+)
+def test_postgres_session_metadata_strings(
+    tmp_path: Path, check: Callable[[SessionStore], None]
+) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om369_strings") as url:
+        with _postgres_sessions(tmp_path, url) as sessions:
+            check(sessions)
+
+
+@pytest.mark.postgres
+def test_postgres_concurrent_metadata_writers_keep_matching_strings(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om369_concurrent") as url:
+        peers = _postgres_peers(tmp_path, url, 4)
+        try:
+            with _postgres_sessions(tmp_path, url) as sessions:
+                writers = [peer.sessions for peer in peers]
+                check_concurrent_metadata_writers(sessions, writers[:2])
+                check_concurrent_inserts_keep_the_first_rows(sessions, writers)
+                check_update_racing_delete(sessions, writers[2], writers[3])
+        finally:
+            for peer in peers:
+                peer.close()
+
+
+@pytest.mark.postgres
+def test_postgres_direct_session_store_construction_filters_metadata(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("sqlalchemy")
+    from openminion.modules.storage.backends.postgres import RecordStorePostgres
+
+    with _postgres_schema("om369_direct") as url:
+        record_store = RecordStorePostgres(url)
+        try:
+            migrate_record_store(record_store, backend_type="postgres")
+            store = SessionStore(record_store)
+            assert store._backend.dialect == "postgres"
+            check_metadata_filters(store)
+            check_postgres_literal_contract(store)
+            assert_rows_match_metadata(store)
+        finally:
+            record_store.close()
+        with _postgres_sessions(tmp_path, url) as sessions:
+            assert sessions._backend.dialect == "postgres"
+
+
+def _legacy_metadata_store(url: str, extra: list[dict[str, str]] | None = None) -> Any:
+    """A Postgres record store at runtime migration 14 with legacy sessions."""
+    from openminion.modules.storage.backends.postgres import RecordStorePostgres
+
+    record_store = RecordStorePostgres(url)
+    migrate_record_store(
+        record_store, backend_type="postgres", migrations=migrations_before(15)
+    )
+    record_store.insert_many("sessions", legacy_session_rows(2345) + list(extra or []))
+    return record_store
+
+
+@pytest.mark.postgres
+def test_postgres_metadata_strings_migration_backfills_existing_history() -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om369_backfill") as url:
+        record_store = _legacy_metadata_store(url)
+        try:
+            before = stored_metadata(SessionStore(record_store))
+            batches: list[int] = []
+            result = migrate_record_store(
+                record_store,
+                backend_type="postgres",
+                migrations=recorded_metadata_backfill_migrations(batches),
+            )
+            assert result.applied_versions == (15,)
+            # 2,346 sessions: three batches of up to 1,000.
+            assert batches == [1000, 1000, 346, 0]
+            store = SessionStore(record_store)
+            assert stored_metadata(store) == before
+            assert_rows_match_metadata(store)
+            check_postgres_literal_contract(store)
+        finally:
+            record_store.close()
+
+
+@pytest.mark.postgres
+def test_postgres_metadata_strings_migration_rolls_back_whole_and_reruns() -> None:
+    pytest.importorskip("sqlalchemy")
+    unreadable = {
+        "id": "legacy-unreadable",
+        "session_key": "legacy-key-unreadable",
+        "channel": "console",
+        "target": "metadata-strings",
+        "metadata_json": '{"surface": ',
+        "created_at": "2026-10-25T00:00:00+00:00",
+        "updated_at": "2026-10-25T00:00:00+00:00",
+    }
+    with _postgres_schema("om369_backfill_fail") as url:
+        record_store = _legacy_metadata_store(url, [unreadable])
+        try:
+            before = stored_metadata(SessionStore(record_store))
+
+            def assert_not_applied() -> None:
+                assert record_store.query_dicts(
+                    "SELECT MAX(version) AS version FROM migrations"
+                ) == [{"version": 14}]
+                assert record_store.query_dicts(
+                    "SELECT to_regclass('session_metadata_strings') IS NULL AS missing"
+                ) == [{"missing": True}]
+                assert stored_metadata(SessionStore(record_store)) == before
+
+            # Unreadable stored metadata, in the last batch.
+            with pytest.raises(MigrationError, match="legacy-unreadable"):
+                migrate_record_store(record_store, backend_type="postgres")
+            assert_not_applied()
+
+            record_store.execute_count(
+                "UPDATE sessions SET metadata_json = '{}' WHERE id = 'legacy-unreadable'"
+            )
+            before = stored_metadata(SessionStore(record_store))
+            # A Python failure in the second batch, after the first batch's rows.
+            with patch.object(
+                metadata_strings,
+                "metadata_string_rows",
+                failing_extraction("legacy-01500"),
+            ):
+                with pytest.raises(
+                    MigrationError, match="extraction failed for legacy-01500"
+                ):
+                    migrate_record_store(record_store, backend_type="postgres")
+            assert_not_applied()
+
+            result = migrate_record_store(record_store, backend_type="postgres")
+            assert result.applied_versions == (15,)
+            store = SessionStore(record_store)
+            assert stored_metadata(store) == before
+            assert_rows_match_metadata(store)
+        finally:
+            record_store.close()
