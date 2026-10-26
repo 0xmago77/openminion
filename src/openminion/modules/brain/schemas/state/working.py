@@ -122,6 +122,9 @@ class WorkingState(BaseModel):
     budgets_remaining: BudgetCounters
     last_command_id: str | None = None
     last_result: ActionResult | None = None
+    # result handed to a same-turn autonomous continuation, with its turn.
+    turn_evidence_trace_id: str | None = None
+    turn_evidence: ActionResult | None = None
     post_action_user_message: str = ""
     step_outputs: list[StepOutputEntry] = Field(default_factory=list)
     adaptive_satisfied_intent_ids: list[str] = Field(default_factory=list)

@@ -119,6 +119,13 @@ def _build_owner(
     )
 
 
+def _same_turn_evidence(state: Any) -> ActionResult | None:
+    trace_id = getattr(state, "trace_id", None)
+    if not trace_id or getattr(state, "turn_evidence_trace_id", None) != trace_id:
+        return None
+    return getattr(state, "turn_evidence", None)
+
+
 def _respond_execute(ctx: ExecutionContext) -> ExecutionResult:
     respond_kind = str(getattr(ctx.decision, "respond_kind", "") or "").strip()
     reason_code = str(getattr(ctx.decision, "reason_code", "") or "").strip()
@@ -156,11 +163,17 @@ def _respond_execute(ctx: ExecutionContext) -> ExecutionResult:
     if reason_code == "entry_text_response":
         # The entry's text answer ends the turn: check it against the turn's
         # freshness obligations as a closing answer is. The candidate is this
-        # text; the only evidence is the action result built from it above.
+        # text; the evidence is the action result built from it above or, on a
+        # continuation, the result this turn handed to it.
+        evidence = action_result or _same_turn_evidence(ctx.state)
         checked = final_close_message(
             state=ctx.state,
             judgment=None,
-            action_result=action_result,
+            action_result=(
+                None
+                if evidence is None
+                else evidence.model_copy(update={"summary": text})
+            ),
             fallback_message=text,
         )
         if checked != text:

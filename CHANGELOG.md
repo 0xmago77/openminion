@@ -14,9 +14,14 @@ This file tracks package-facing release notes for `openminion`.
   kept unchanged, and one without the required live-data or exact-date
   evidence becomes the existing freshness-failure message, with the
   verifier's reasons in the freshness diagnostics. This covers a first entry
-  step that answers in text and a continuation step after the closure
-  freshness guard blocks a close. Clarify questions, other respond decisions
-  and the tool/judge path are unchanged (Refs #419).
+  step that answers in text and a continuation step after the judge or the
+  closure freshness guard continues the turn. A continuation's evidence is
+  the action result the turn's execution handed to it: the working state
+  keeps it with the turn's trace id (`turn_evidence`,
+  `turn_evidence_trace_id`), so a lookup that would satisfy a direct close
+  also satisfies the continuation's text, and a result from another turn is
+  not evidence. Clarify questions, other respond decisions and the tool/judge
+  path are unchanged (Refs #419).
 
 ## Current package line - 2026-10-26
 
