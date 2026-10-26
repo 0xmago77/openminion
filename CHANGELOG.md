@@ -22,6 +22,11 @@ This file tracks package-facing release notes for `openminion`.
   command is closed by its caller with `close()`. The audit database used to
   stay open until garbage collection, so an in-process caller on Windows
   (such as typer's `CliRunner`) could not rename or delete it (Refs #403).
+- Report the deepest key history in `memctl inspect` (`history_summary` with
+  `--json`, the `Deepest history` line otherwise) for the SQLite store that
+  memctl wraps in its audited store; it was always missing there. A store
+  without that summary, such as PostgreSQL, and a database without keyed
+  history still report none (#402).
 - Let PostgreSQL memory retention and purge remove records and candidates
   that carry evidence. The shared evidence decoder now keeps the list that
   PostgreSQL returns for the JSONB `evidence_json` column, instead of parsing
@@ -72,6 +77,15 @@ This file tracks package-facing release notes for `openminion`.
   creates the memory store and audit sink that only the built-in backend uses,
   so a PostgreSQL `memory.store` setting opens no engine and an unusable
   `memory.store` setting no longer fails the build (#388).
+- Let a parsed memory config select the `remote` store backend.
+  `resolve_memory_backend` now reads the `StoreConfig` fields that
+  `load_config` fills (`remote_endpoint`, `remote_timeout_seconds`,
+  `remote_max_retries`) from a `MemctlConfig` or its `store`, so `memctl` with
+  a `store.backend: remote` config file no longer fails with
+  `remote backend requires remote.endpoint`. The configured timeout and retries
+  are kept, including `max_retries: 0`. A nested `remote` mapping in a
+  dictionary config still takes precedence as a whole, with its defaults
+  unchanged (#391).
 
 ## Current package line - 2026-10-24
 
