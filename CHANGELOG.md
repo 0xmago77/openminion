@@ -7,6 +7,25 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Check an entry step's text answer against the turn's typed freshness
+  obligations before it ends the turn, as a judge's closing answer is
+  checked. The respond route now finalizes the entry text with
+  `final_close_message`: an answer whose evidence meets the obligations is
+  kept unchanged, and one without the required live-data or exact-date
+  evidence becomes the existing freshness-failure message, with the
+  verifier's reasons in the freshness diagnostics. This covers a first entry
+  step that answers in text and a continuation step after the judge or the
+  closure freshness guard continues the turn. A continuation's evidence is
+  the action result the turn's execution handed to it: the working state
+  keeps it with the turn's trace id (`turn_evidence`,
+  `turn_evidence_trace_id`), so a lookup that would satisfy a direct close
+  also satisfies the continuation's text, and a result from another turn is
+  not evidence. Every working state saved from this version on contains both
+  fields, and a runtime from before it rejects such a state: upgrade every
+  process that shares the runtime state together and roll back only with the
+  matching pre-upgrade backup (`docs/runtime-database-upgrades.md`). A state
+  saved before this version loads with neither field set. Clarify questions,
+  other respond decisions and the tool/judge path are unchanged (Refs #419).
 - Make `storagectl restore` leave the target equal to the snapshot. storagectl
   now dispatches `restore` before it builds its `StorageEngine`, as it already
   does for `pool-stats`, `dr-drill` and `a2a-archive-old`, so its SQLite record
@@ -31,6 +50,15 @@ This file tracks package-facing release notes for `openminion`.
   `Error: invalid scope: ...` on stderr with exit code 1, as `memctl search`
   and `memctl list` report one, before the memory service opens. JSON and
   human output report the same normalized scope (Refs #413).
+- Let `memctl gc` purge soft-deleted records with a PostgreSQL memory store.
+  memctl runs gc on the `AuditedMemoryStore` it builds, and
+  `purge_soft_deleted` chose its SQL by the wrapper's type, so a PostgreSQL
+  store took the SQLite branch and the command exited with
+  `'PostgresMemoryStore' object has no attribute '_connect'` after the
+  retention pass. The purge now runs on the store the wrapper holds, using
+  the one-level wrapper resolution the retention helpers use since #392,
+  which moves into the purge module. The purge SQL, auditing and errors are
+  unchanged (Refs #401).
 - Close what a runtime memory assembly build obtained when the build fails
   partway. The artifact store, and the memory store with its audit sink for
   the built-in backend, are closed once each through their current owner,
