@@ -7,6 +7,7 @@ from typing import Any, Callable, Iterable, Protocol, Sequence, Tuple
 
 from openminion.modules.storage.record_store import RecordStore
 
+from .session_store.metadata_strings import backfill_session_metadata_strings
 from .session_store.run_facts import backfill_event_run_facts
 from .sqlite import connect_database, resolve_database_path
 
@@ -580,6 +581,34 @@ DEFAULT_MIGRATIONS: Tuple[Migration, ...] = (
             ON room_participants(session_id, join_seq)
             """,
         ),
+    ),
+    Migration(
+        version=15,
+        name="add_session_metadata_strings",
+        statements=(
+            # The string members of each session's metadata, for the
+            # PostgreSQL metadata filter (session_store/metadata_strings.py).
+            # Names and values are stored as their JSON string text; only
+            # the digest is indexed, so long names and values add no index
+            # size limit.
+            """
+            CREATE TABLE session_metadata_strings (
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                entry_digest TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX idx_session_metadata_strings_entry
+            ON session_metadata_strings(entry_digest, session_id)
+            """,
+            """
+            CREATE INDEX idx_session_metadata_strings_session
+            ON session_metadata_strings(session_id)
+            """,
+        ),
+        backfill=backfill_session_metadata_strings,
     ),
 )
 
