@@ -106,6 +106,12 @@ External backends register through the memory backend seam:
 - registry: `openminion.modules.memory.backends.external.register_external_backend`
 - capability report: `openminion.modules.memory.backends.external.ExternalBackendCapabilities`
 
+The runtime owns the backend that the registered factory returns. When the
+runtime closes, the memory service calls the backend's `close()` once if it has
+one; a backend that holds nothing to release needs none. With
+`provider: external` the runtime does not open the `memory.store` store or its
+audit sink, because only the built-in `sophiagraph` backend uses them.
+
 The adapter must map into the canonical `sophiagraph` / OpenMinion record,
 relation, portability, and tier-history contracts. It must not redefine those
 models. Required capability checks run through the external registry before the
@@ -114,6 +120,15 @@ runtime accepts the adapter on the default bootstrap path.
 The reference adapter is
 `openminion.modules.memory.backends.external.reference_sqlite`; capability
 validation remains owned by the external backend registry.
+
+Atomic terminal capture, `apply_capture_bundle(bundle)`, is an optional backend
+method outside the required `KnowledgeBackend` protocol. A backend that
+implements it receives each turn's capture bundle and returns its receipt, as
+the built-in store does, and an error it raises propagates unchanged. A backend
+without it, such as the reference adapter, is reported with
+`CaptureRecoveryUnsupportedError`: the turn completes, its capture intent stays
+pending with `"error_code": "CAPTURE_RECOVERY_UNSUPPORTED"` in
+`memory_capture_bundle_result`, and pending-capture recovery leaves it pending.
 
 ## CLI portability
 

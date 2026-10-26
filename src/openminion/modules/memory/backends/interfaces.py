@@ -42,7 +42,13 @@ MemoryBundleImportResultLike: TypeAlias = MemoryBundleImportResult
 
 
 class KnowledgeBackend(Protocol):
-    """Durable-memory backend contract below the orchestration service."""
+    """Durable-memory backend contract below the orchestration service.
+
+    Optional, outside this protocol: ``apply_capture_bundle(bundle)``, atomic
+    terminal capture. Without it a capture is reported as unsupported
+    (``CaptureRecoveryUnsupportedError``) and stays pending; see "Implementing
+    an external backend" in the memory module README.
+    """
 
     contract_version: ClassVar[str] = KNOWLEDGE_BACKEND_VERSION
 

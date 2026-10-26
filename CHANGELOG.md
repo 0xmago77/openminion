@@ -16,6 +16,19 @@ This file tracks package-facing release notes for `openminion`.
   Provider-supplied ids and batch order are unchanged, and replaying an
   already-normalized call stays idempotent (#410).
 
+- Let SDK turns complete with an external memory backend that does not
+  implement atomic capture bundles, such as the bundled `reference-sqlite`
+  adapter. The backend adapter now reports the missing optional
+  `apply_capture_bundle` with the existing `CaptureRecoveryUnsupportedError`
+  instead of raising `NotImplementedError` out of `Agent.run`, so the turn's
+  capture intent stays pending with `CAPTURE_RECOVERY_UNSUPPORTED`, as it does
+  for the local JSONL memory adapter. Backends that implement the method are
+  called as before, and their errors still propagate (Refs #397).
+- Report the deepest key history in `memctl inspect` (`history_summary` with
+  `--json`, the `Deepest history` line otherwise) for the SQLite store that
+  memctl wraps in its audited store; it was always missing there. A store
+  without that summary, such as PostgreSQL, and a database without keyed
+  history still report none (#402).
 - Let PostgreSQL memory retention and purge remove records and candidates
   that carry evidence. The shared evidence decoder now keeps the list that
   PostgreSQL returns for the JSONB `evidence_json` column, instead of parsing
@@ -24,6 +37,11 @@ This file tracks package-facing release notes for `openminion`.
   promoted or rejected candidates no longer fail with `JSONDecodeError` on an
   item with evidence, and remove its artifact refs. SQLite JSON text, empty
   values and `None` decode as before (#400).
+- Close the SQLite connections that twelve storage and API runtime tests open
+  themselves, and the API runtime one of them builds, before the test removes
+  its temporary directory or restores the database, so these tests pass on
+  native Windows as they do on Linux. Test-only; no package behaviour changes
+  (#408).
 - Resolve postponed (`from __future__ import annotations`) and quoted
   annotations on `@openminion.tool` functions in their own module, keeping
   `Annotated` field descriptions and constraints. Only argument annotations
@@ -52,6 +70,24 @@ This file tracks package-facing release notes for `openminion`.
   `"completed"`. The existing structured `error_code`, `error_message` and
   `error_details` stay in the result metadata. Recoverable tool errors that the
   brain answers without a fatal transition still complete (Refs #384).
+- Close the runtime memory assembly with the `external` memory backend
+  provider: the memory service closes the external backend it owns once,
+  through a new `BackendMemoryStoreAdapter.close()` that does nothing for a
+  backend without `close()` or one it does not own, and the assembly then
+  closes its artifact store. Before, the close raised `AttributeError` and left
+  the artifact store open. With this provider the assembly also no longer
+  creates the memory store and audit sink that only the built-in backend uses,
+  so a PostgreSQL `memory.store` setting opens no engine and an unusable
+  `memory.store` setting no longer fails the build (#388).
+- Let a parsed memory config select the `remote` store backend.
+  `resolve_memory_backend` now reads the `StoreConfig` fields that
+  `load_config` fills (`remote_endpoint`, `remote_timeout_seconds`,
+  `remote_max_retries`) from a `MemctlConfig` or its `store`, so `memctl` with
+  a `store.backend: remote` config file no longer fails with
+  `remote backend requires remote.endpoint`. The configured timeout and retries
+  are kept, including `max_retries: 0`. A nested `remote` mapping in a
+  dictionary config still takes precedence as a whole, with its defaults
+  unchanged (#391).
 
 ## Current package line - 2026-10-24
 
