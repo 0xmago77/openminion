@@ -156,7 +156,17 @@ def _decorate(
         context: Any = None,
     ) -> Any:
         del context
-        values = args.model_dump() if isinstance(args, BaseModel) else dict(args)
+        # Pass the validated field values, not ``model_dump()``: dumping turns
+        # nested BaseModel / dataclass arguments back into plain dicts. The
+        # runtime hands over an already-dumped mapping, so re-validate it.
+        validated = (
+            args
+            if isinstance(args, args_model)
+            else args_model.model_validate(
+                args.model_dump() if isinstance(args, BaseModel) else dict(args)
+            )
+        )
+        values = {name: getattr(validated, name) for name in args_model.model_fields}
         return func(**values)
 
     decl = ToolDecl(

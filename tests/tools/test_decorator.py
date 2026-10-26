@@ -338,3 +338,19 @@ def test_decorator_still_rejects_unresolved_exposed_argument_with_valid_return(
             "def lookup(value: MissingArgType, **kwargs: int) -> int:\n"
             "    return 1\n",
         )
+
+
+
+def test_decorator_handler_passes_model_and_dataclass_args_as_instances() -> None:
+    from tests.tools._postponed_annotation_tools import summarize, summarize_span
+
+    decl = summarize.tool_decl
+    validated = decl.args_model(window="week", span={"start": 1, "end": 4}, label="x")
+    # The validated args model, the dumped mapping the brain runtime passes,
+    # and the raw mapping the MCP server passes all reach the function with a
+    # ``Range`` instance for ``span`` (``span.start`` fails on a dict).
+    assert decl.handler(validated) == "week:1-4:x:5"
+    assert decl.handler(validated.model_dump()) == "week:1-4:x:5"
+    raw = {"window": "week", "span": {"start": 1, "end": 4}, "label": "x"}
+    assert decl.handler(raw) == "week:1-4:x:5"
+    assert summarize_span.tool_decl.handler({"span": {"start": 2, "end": 3}}) == "Span:2-3"
