@@ -15,6 +15,7 @@ from .keys import (
     normalize_session_status,
     utc_now_iso,
 )
+from .metadata_strings import insert_metadata_strings, replace_metadata_strings
 from .models import RoomParticipant, SessionRecord
 from .rows import (
     SESSION_COLUMNS,
@@ -174,10 +175,14 @@ class RuntimeSessionStoreSessions:
         if row is not None:
             if metadata:
                 now = utc_now_iso()
-                self._backend.execute_count(
-                    "UPDATE sessions SET metadata_json = ?, updated_at = ? WHERE id = ?",
-                    (metadata_json(metadata), now, str(row["id"])),
-                )
+                stored = metadata_json(metadata)
+                with self._backend.transaction():
+                    updated = self._backend.execute_count(
+                        "UPDATE sessions SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                        (stored, now, str(row["id"])),
+                    )
+                    if updated > 0:
+                        replace_metadata_strings(self._backend, str(row["id"]), stored)
                 refreshed = self._backend.query_one(
                     f"SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?",
                     (str(row["id"]),),
@@ -346,6 +351,12 @@ class RuntimeSessionStoreSessions:
                 "DELETE FROM sessions WHERE id = ?",
                 (normalized_session_id,),
             )
+            # After the session row, whose lock a concurrent metadata write
+            # takes first; the foreign key cascade has usually removed them.
+            self._backend.execute_count(
+                "DELETE FROM session_metadata_strings WHERE session_id = ?",
+                (normalized_session_id,),
+            )
         return deleted > 0
 
     def update_session_metadata(
@@ -366,10 +377,12 @@ class RuntimeSessionStoreSessions:
             merged = dict(current.metadata)
             merged.update(patch)
             now = utc_now_iso()
-            self._backend.execute_count(
+            stored = metadata_json(merged)
+            if self._backend.execute_count(
                 "UPDATE sessions SET metadata_json = ?, updated_at = ? WHERE id = ?",
-                (metadata_json(merged), now, session_id),
-            )
+                (stored, now, session_id),
+            ):
+                replace_metadata_strings(self._backend, session_id, stored)
             updated = self.get_session(session_id)
             if updated is None:
                 raise RuntimeError(
@@ -390,34 +403,45 @@ class RuntimeSessionStoreSessions:
         active_agent_id: str | None = None,
         ignore_conflict: bool = False,
     ) -> None:
+        """Insert a session row and its metadata string rows in one transaction.
+
+        With `ignore_conflict`, an existing session keeps its row and its
+        metadata string rows: the rows are written only when the session row
+        was inserted.
+        """
         conflict_clause = " ON CONFLICT DO NOTHING" if ignore_conflict else ""
-        self._backend.execute_count(
-            f"""
-            INSERT INTO sessions(
-                id,
-                session_key,
-                channel,
-                target,
-                metadata_json,
-                created_at,
-                updated_at,
-                status,
-                last_activity_at,
-                active_agent_id
+        with self._backend.transaction():
+            inserted = self._backend.execute_count(
+                f"""
+                INSERT INTO sessions(
+                    id,
+                    session_key,
+                    channel,
+                    target,
+                    metadata_json,
+                    created_at,
+                    updated_at,
+                    status,
+                    last_activity_at,
+                    active_agent_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                {conflict_clause}
+                """,
+                (
+                    session_id,
+                    session_key,
+                    channel,
+                    target,
+                    session_metadata_json,
+                    created_at,
+                    updated_at,
+                    "active",
+                    updated_at,
+                    normalize_nullable_text(active_agent_id),
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            {conflict_clause}
-            """,
-            (
-                session_id,
-                session_key,
-                channel,
-                target,
-                session_metadata_json,
-                created_at,
-                updated_at,
-                "active",
-                updated_at,
-                normalize_nullable_text(active_agent_id),
-            ),
-        )
+            if inserted > 0:
+                insert_metadata_strings(
+                    self._backend, session_id, session_metadata_json
+                )

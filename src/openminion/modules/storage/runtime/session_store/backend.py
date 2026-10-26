@@ -4,19 +4,34 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from openminion.modules.storage.record_store import RecordStore
+from openminion.modules.storage.record_store import RecordStore, RecordStoreSQLite
 
+from .metadata_strings import metadata_string_match
 from .models import MessageRecord
 from .rows import MESSAGE_COLUMNS, row_to_message
 
 
+def _sql_dialect(store_or_connection: RecordStore | sqlite3.Connection) -> str | None:
+    from openminion.modules.storage.backends.postgres import RecordStorePostgres
+
+    if isinstance(store_or_connection, (sqlite3.Connection, RecordStoreSQLite)):
+        return "sqlite"
+    if isinstance(store_or_connection, RecordStorePostgres):
+        return "postgres"
+    return None
+
+
 class RuntimeSessionStoreBackend:
-    def __init__(
-        self,
-        store_or_connection: RecordStore | sqlite3.Connection,
-        *,
-        backend_type: str = "sqlite",
-    ) -> None:
+    """The session store's connection: a record store or a raw SQLite connection.
+
+    The SQL dialect comes from the object the store is given: a
+    `sqlite3.Connection` or a `RecordStoreSQLite` is SQLite, a
+    `RecordStorePostgres` is PostgreSQL. Any other `RecordStore` has no known
+    dialect: the shared SQL still runs on it, and a session metadata filter
+    raises `TypeError`.
+    """
+
+    def __init__(self, store_or_connection: RecordStore | sqlite3.Connection) -> None:
         if isinstance(store_or_connection, sqlite3.Connection):
             self._record_store: RecordStore | None = None
             self._conn: sqlite3.Connection | None = store_or_connection
@@ -24,46 +39,42 @@ class RuntimeSessionStoreBackend:
             self._record_store = store_or_connection
             self._conn = None
         self._raw_tx_depth = 0
-        self._backend_type = str(backend_type or "").strip().lower() or "sqlite"
+        self._dialect = _sql_dialect(store_or_connection)
+
+    @property
+    def dialect(self) -> str | None:
+        """`"sqlite"`, `"postgres"`, or `None` for another record store."""
+        return self._dialect
 
     def session_metadata_match(self, key: str, value: str) -> tuple[str, list[str]]:
         """Return SQL and parameters for one session metadata filter condition.
 
-        `list_sessions(metadata_filter=...)` selects the sessions whose
-        `metadata_json` holds `value` at `key`; both are bound as parameters.
-        SQLite compares `json_extract(metadata_json, '$.<key>')` with `value`,
-        as it always has. PostgreSQL compares JSON values instead of text:
-        `CAST(metadata_json AS jsonb) -> key` must equal the JSON string
-        `value`, so a number, a boolean or JSON null is never read as its text.
-        On both, a JSON string equal to `value` matches, and a missing key,
-        JSON null, a number or a boolean does not.
+        SQLite keeps its existing reader, `json_extract(metadata_json,
+        '$.<key>') = value`: it reads `key` as a JSON path and an object or
+        array as its minified JSON text.
 
-        The backends differ where SQLite reads more than a top-level string.
-        `json_extract` returns an object or array as its minified JSON text,
-        which `value` can equal, and reads `key` as a JSON path: `a.b` is `b`
-        inside `a`, `[` starts an array index and a leading `"` quotes the key.
-        PostgreSQL reads `key` as one top-level key and matches strings only.
-        PostgreSQL raises for a stored document that `jsonb` cannot hold: NaN
-        or Infinity, which `json.dumps` writes and SQLite before 3.42 also
-        rejects, an escaped NUL or an unpaired surrogate. It also raises for a
-        NUL in `value` and for a `value` that is not a string, which it does
-        not convert to text.
-
-        `backend_type` is the one `build_runtime_storage` gives
-        `migrate_record_store`.
+        PostgreSQL matches a session whose stored metadata, as
+        `SessionRecord.metadata` reads it, has a top-level member named exactly
+        `key` whose value is a string equal to `value`, using the
+        `session_metadata_strings` rows (see `metadata_strings`). Every name
+        and value is literal, and numbers, booleans, null, objects, arrays and
+        missing members never match. A `value` that is not a string raises
+        `TypeError`.
         """
-        if self._backend_type == "postgres":
+        if self._dialect == "sqlite":
+            return "json_extract(metadata_json, ?) = ?", [f"$.{key}", value]
+        if self._dialect == "postgres":
             if not isinstance(value, str):
                 raise TypeError(
                     "session metadata filter values must be strings, "
                     f"not {type(value).__name__}"
                 )
-            return (
-                "(CAST(metadata_json AS jsonb) -> CAST(? AS text))"
-                " = to_jsonb(CAST(? AS text))",
-                [key, value],
-            )
-        return "json_extract(metadata_json, ?) = ?", [f"$.{key}", value]
+            return metadata_string_match(key, value)
+        raise TypeError(
+            "session metadata filters need a sqlite3.Connection, a "
+            "RecordStoreSQLite or a RecordStorePostgres, not "
+            f"{type(self._record_store).__name__}"
+        )
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
