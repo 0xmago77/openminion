@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pytest
+from sophiagraph.storage import SophiaGraphSqliteStore
 
 from openminion.base.config import OpenMinionConfig
 from openminion.modules.brain.adapters.memory.runtime import MemctlAdapter
+from openminion.modules.memory.backends import BackendMemoryStoreAdapter
+from openminion.modules.memory.backends.external import (
+    REFERENCE_SQLITE_ADAPTER_NAME,
+    register_external_backend,
+    register_reference_sqlite_backend,
+)
 from openminion.modules.memory.smoke import EphemeralMemorySmokeProvider
 from openminion.modules.memory.storage import SQLiteMemoryAuditSink
 from openminion.modules.memory.storage import factory as store_factory
@@ -548,3 +556,105 @@ def test_memory_store_stays_open_while_scheduler_is_live(
     assert assembly.close().closed is True
     assert assembly.close().closed is True
     assert store_closes == ["store.close", "artifactctl.close"]
+
+
+class _ClosingReferenceBackend(SophiaGraphSqliteStore):
+    def __init__(self, db_path: Path, events: list[str]) -> None:
+        super().__init__(db_path)
+        self.events = events
+
+    def close(self) -> None:
+        self.events.append("backend.close")
+
+
+def _external_assembly(
+    tmp_path, events: list[str], *, closes: bool, **overrides
+) -> RuntimeMemoryAssembly:
+    register_reference_sqlite_backend()
+    adapter = REFERENCE_SQLITE_ADAPTER_NAME
+    if closes:
+        adapter = "closing-reference-sqlite"
+        register_external_backend(
+            adapter,
+            factory=lambda *, config, **_: _ClosingReferenceBackend(
+                Path(config.options["db_path"]), events
+            ),
+        )
+    memory_config = {
+        "backend": {
+            "provider": "external",
+            "external_adapter": adapter,
+            "options": {"db_path": str(tmp_path / "external.sqlite3")},
+        }
+    }
+    return _memory_v2_assembly(
+        tmp_path,
+        resolve_runtime_memory_config_fn=lambda **kwargs: memory_config,
+        artifactctl_factory=lambda: _ArtifactStore(events),
+        **overrides,
+    )
+
+
+@pytest.mark.parametrize("closes", [True, False], ids=["backend_close", "no_close"])
+def test_external_assembly_closes_the_backend_it_owns_once(tmp_path, closes) -> None:
+    events: list[str] = []
+    assembly = _external_assembly(tmp_path, events, closes=closes)
+    assert isinstance(assembly.service._store, BackendMemoryStoreAdapter)
+    assert assembly.delegated_store is None
+
+    first = assembly.close()
+    second = assembly.close()
+
+    assert first is second
+    assert first.closed is True
+    backend_closes = ["backend.close"] if closes else []
+    assert events == [*backend_closes, "artifactctl.close"]
+
+
+def test_external_backend_stays_open_while_scheduler_is_live(tmp_path) -> None:
+    events: list[str] = []
+    scheduler = _Scheduler(events, live_after_stop=True)
+    assembly = _external_assembly(tmp_path, events, closes=True, scheduler=scheduler)
+
+    blocked = assembly.close()
+
+    assert blocked.reason_code == "scheduler_still_running"
+    assert events == ["scheduler.stop"]
+
+    scheduler.live = False
+    assert assembly.close().closed is True
+    assert assembly.close().closed is True
+    assert events == [
+        "scheduler.stop",
+        "scheduler.stop",
+        "backend.close",
+        "artifactctl.close",
+    ]
+
+
+@pytest.mark.parametrize("provider", ["sophiagraph", "external"])
+def test_assembly_creates_a_memory_store_only_for_the_builtin_backend(
+    tmp_path, monkeypatch, audit_sinks, provider
+) -> None:
+    stores: list[object] = []
+    resolve_backend = store_factory.resolve_memory_backend
+
+    def record_backend(**kwargs):
+        resolved = resolve_backend(**kwargs)
+        stores.append(resolved.store)
+        return resolved
+
+    monkeypatch.setattr(
+        "openminion.services.runtime.memory.resolve_memory_backend", record_backend
+    )
+    events: list[str] = []
+    if provider == "external":
+        assembly = _external_assembly(tmp_path, events, closes=True)
+    else:
+        assembly = _memory_v2_assembly(
+            tmp_path, artifactctl_factory=lambda: _ArtifactStore(events)
+        )
+    created = 1 if provider == "sophiagraph" else 0
+
+    assert (len(stores), len(audit_sinks)) == (created, created)
+    assert assembly.close().closed is True

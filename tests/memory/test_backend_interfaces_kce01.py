@@ -380,6 +380,40 @@ class TestBuiltinKnowledgeBackend:
         assert target_store.get(source_record.id).content == "Uses fish"  # type: ignore[union-attr]
 
 
+class _ClosingBackendStub(_BackendStub):
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class TestBackendMemoryStoreAdapterClose:
+    def test_owning_service_closes_its_backend_once(self) -> None:
+        backend = _ClosingBackendStub()
+        service = MemoryService(backend=backend, owns_store=True)
+
+        service.close()
+        service.close()
+
+        assert backend.close_calls == 1
+
+    def test_owned_backend_without_close_closes_cleanly(self) -> None:
+        assert not hasattr(_BackendStub, "close")
+        service = MemoryService(backend=_BackendStub(), owns_store=True)
+
+        service.close()
+        service.close()
+
+    def test_borrowed_backend_stays_open(self) -> None:
+        backend = _ClosingBackendStub()
+
+        MemoryService(backend=backend).close()
+        adapt_backend_to_store(backend).close()
+
+        assert backend.close_calls == 0
+
+
 class TestNoneKnowledgeBackend:
     def test_none_backend_returns_empty_reads_and_disabled_writes(self) -> None:
         backend = NoneKnowledgeBackend()

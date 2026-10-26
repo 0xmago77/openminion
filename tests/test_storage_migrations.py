@@ -49,7 +49,7 @@ class StorageMigrationTests(unittest.TestCase):
                 (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14),
             )
 
-            with sqlite3.connect(str(database_path)) as conn:
+            with closing(sqlite3.connect(str(database_path))) as conn:
                 tables = {
                     row[0]
                     for row in conn.execute(
@@ -152,7 +152,7 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertEqual(second.current_version, 14)
             self.assertEqual(second.applied_versions, ())
 
-            with sqlite3.connect(str(database_path)) as conn:
+            with closing(sqlite3.connect(str(database_path))) as conn:
                 migration_count = conn.execute(
                     "SELECT COUNT(*) FROM migrations"
                 ).fetchone()[0]
