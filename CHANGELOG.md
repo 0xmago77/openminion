@@ -36,6 +36,13 @@ This file tracks package-facing release notes for `openminion`.
   suffix in any case (`run.COMPLETED` is completed), stored events are not
   changed, and the generic `list_events` and `count_events` prefix filters
   are unchanged (Refs #396).
+- Close the memory store and audit database that a `memctl` command opens
+  when the command ends, whether it succeeds or fails. The command's service
+  now owns the store and audit sink it creates and closes them once, through
+  the command's Click context; a service built by the factory outside a
+  command is closed by its caller with `close()`. The audit database used to
+  stay open until garbage collection, so an in-process caller on Windows
+  (such as typer's `CliRunner`) could not rename or delete it (Refs #403).
 - Report the deepest key history in `memctl inspect` (`history_summary` with
   `--json`, the `Deepest history` line otherwise) for the SQLite store that
   memctl wraps in its audited store; it was always missing there. A store
