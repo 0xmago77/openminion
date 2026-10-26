@@ -6,18 +6,22 @@ store, so a PostgreSQL store config opens no engine at all.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
+import logging
 import os
 import time
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import sqlalchemy as sa
 from sqlalchemy import event
 
 from openminion import Agent, APIRuntime
+from openminion.base.channel import ChannelRegistry
 from openminion.base.config import ConfigManager, OpenMinionConfig, save_config
 from openminion.modules.memory.backends.external import (
     REFERENCE_SQLITE_ADAPTER_NAME,
@@ -27,7 +31,15 @@ from openminion.modules.memory.config import from_base_config
 from openminion.modules.memory.models import MemoryRecord
 from openminion.modules.memory.storage import AuditedMemoryStore
 from openminion.modules.memory.storage.postgres.store import PostgresMemoryStore
+from openminion.modules.storage.runtime.idempotency_store import IdempotencyStore
+from openminion.modules.storage.runtime.migrations import migrate_database
+from openminion.modules.storage.runtime.session_store import SessionStore
+from openminion.modules.storage.runtime.sqlite import connect_database
 from openminion.services.runtime import memory as runtime_memory
+from openminion.services.runtime.bootstrap import (
+    build_agent_memory_service,
+    build_gateway_service,
+)
 from tests._csc_fixtures import _csc_install_default_agent
 from tests._memory_retention_scenarios import check_session_lifecycle_runs_once
 from tests.storage.postgres_test_utils import schema_url
@@ -131,6 +143,107 @@ def test_runtime_close_disposes_the_postgres_memory_engine_once(
         open_after_close = _settled_connections(server_connections)
     finally:
         runtime.close()
+        for store in stores:
+            store._engine.dispose()
+
+    assert [type(store) for store in stores] == [PostgresMemoryStore]
+    assert open_after_turn >= 1
+    assert dispose_counts == [1, 1]
+    assert open_after_close == 0
+
+
+class _ReplyAgent:
+    async def run_turn(self, message, history=None, **_kwargs):  # noqa: ANN001
+        del history, _kwargs
+        return SimpleNamespace(
+            text="Noted.", channel=message.channel, target=message.target, metadata={}
+        )
+
+
+@pytest.mark.parametrize("owner", ["gateway", "caller"])
+def test_bootstrap_memory_fallback_owner_disposes_the_postgres_engine_once(
+    owner: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    memory_database: tuple[str, Callable[[], int]],
+) -> None:
+    memory_url, server_connections = memory_database
+    stores: list[object] = []
+    disposed: list[object] = []
+    resolve_backend = runtime_memory.resolve_memory_backend
+
+    def record_backend(**kwargs):
+        resolved = resolve_backend(**kwargs)
+        event.listen(resolved.store._engine, "engine_disposed", disposed.append)
+        stores.append(resolved.store)
+        return resolved
+
+    monkeypatch.setattr(runtime_memory, "resolve_memory_backend", record_backend)
+    root = tmp_path / "root"
+    config = OpenMinionConfig()
+    _csc_install_default_agent(config, name="main", provider="echo")
+    config_path = root / "agents.json"
+    save_config(config, str(config_path))
+    manager = ConfigManager.load(
+        str(config_path), home_root=root, data_root=root / "data"
+    )
+    memory_config = {"store": {"backend": "postgres", "postgres": {"url": memory_url}}}
+    manager.register("memory", lambda **kwargs: memory_config)
+    database_path = root / "state" / "openminion.db"
+    migrate_database(database_path)
+    connection = connect_database(database_path)
+    common = {
+        "config": config,
+        "memory_root": root / "memory",
+        "home_root": root,
+        "data_root": root / "data",
+        "config_manager": manager,
+        "logger": logging.getLogger("test.runtime_memory_postgres.fallback"),
+    }
+    try:
+        if owner == "gateway":
+            closer = build_gateway_service(
+                agent_service=_ReplyAgent(),
+                profile_name="main",
+                channels=ChannelRegistry([]),
+                sessions=SessionStore(connection),
+                idempotency=IdempotencyStore(connection),
+                security_policy=None,
+                channel_authenticity_policy=None,
+                config_path=config_path,
+                storage_path=database_path,
+                **common,
+            )
+            asyncio.run(
+                closer.run_once(
+                    channel="console",
+                    target="local-user",
+                    message="Remember: the probe colour is green.",
+                    session_id="s1",
+                    deliver=False,
+                )
+            )
+        else:
+            closer = build_agent_memory_service(
+                agent_id="main", storage_path=database_path, **common
+            )
+            closer.record_turn(
+                session_id="s1",
+                run_id="r1",
+                request_id="q1",
+                channel="console",
+                target="local-user",
+                user_message="Remember: the probe colour is green.",
+                assistant_message="Noted.",
+            )
+        open_after_turn = server_connections()
+        dispose_counts: list[int] = []
+        for _ in range(2):
+            closer.close()
+            dispose_counts.append(len(disposed))
+        open_after_close = _settled_connections(server_connections)
+    finally:
+        connection.close()
         for store in stores:
             store._engine.dispose()
 

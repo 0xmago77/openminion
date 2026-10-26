@@ -79,6 +79,14 @@ This file tracks package-facing release notes for `openminion`.
   first-turn summary compression failed silently. The helpers now run on the
   store behind the audit wrapper, as they already did with SQLite, and the
   lifecycle completes once per session (#392).
+- Close the memory store, audit sink and artifact store that the bootstrap
+  memory fallback creates. When `build_gateway_service` builds the agent memory
+  itself, `GatewayService.close()` now closes it once, and the adapter that
+  `build_agent_memory_service` returns gets a `close()` that closes the runtime
+  memory assembly behind it once, keeping the scheduler boundary. Before, the
+  assembly was dropped and nothing could close them. An `agent_memory` passed
+  to the gateway service stays borrowed, and the SDK runtime's memory gateway
+  still closes nothing itself (#389).
 - Session metadata filters work on PostgreSQL.
   `list_sessions(metadata_filter=...)`, which ACP `session/list` and Focus
   directory sessions use, emitted SQLite's `json_extract` and failed there.
