@@ -495,7 +495,8 @@ class RuntimeSessionStoreLifecycle:
 
         The run is the payload's top-level `run_id` as `_to_run_event` reads it,
         matched exactly through the events' run facts; `run_id` is compared as
-        given.
+        given. A run event has a case-sensitive `run.` type, as in
+        `summarize_thread_events`.
         """
         safe_limit = max(0, min(int(limit), EVENT_PAGE_MAX))
         run_key = encode_key(run_id)
@@ -507,11 +508,11 @@ class RuntimeSessionStoreLifecycle:
             FROM event_run_facts AS f
             JOIN events AS e ON e.id = f.event_id
             WHERE f.session_id = ? AND f.run_key_digest = ? AND f.run_key = ?
-            AND e.event_type LIKE ?
+            AND SUBSTR(e.event_type, 1, 4) = 'run.'
             ORDER BY f.event_id DESC
             LIMIT ?
             """,
-            (session_id, key_digest(run_key), run_key, "run.%", safe_limit),
+            (session_id, key_digest(run_key), run_key, safe_limit),
         )
         return [row_to_event(row) for row in rows]
 
@@ -531,7 +532,8 @@ class RuntimeSessionStoreLifecycle:
         id), and the ids of its latest event (`last_id`), of its latest event
         with a non-empty `step` (`step_id`) or `error` (`error_id`), and of its
         latest event whose state is in `terminal_states` (`terminal_id`). The
-        payload values come from the events' run facts.
+        payload values come from the events' run facts. A run event has a
+        case-sensitive `run.` type, as in `summarize_thread_events`.
         """
         terminal = ", ".join("?" for _ in terminal_states)
         rows = self._backend.query_dicts(
@@ -552,7 +554,8 @@ class RuntimeSessionStoreLifecycle:
                         SELECT w.run_key_digest, w.run_key
                         FROM event_run_facts AS w
                         JOIN events AS we ON we.id = w.event_id
-                        WHERE w.session_id = ? AND we.event_type LIKE ?
+                        WHERE w.session_id = ?
+                        AND SUBSTR(we.event_type, 1, 4) = 'run.'
                         ORDER BY w.event_id DESC
                         LIMIT ?
                     ) AS recent
@@ -563,19 +566,12 @@ class RuntimeSessionStoreLifecycle:
                     AND f.run_key_digest = listed.run_key_digest
                     AND f.run_key = listed.run_key
                 JOIN events AS e ON e.id = f.event_id
-                WHERE e.event_type LIKE ?
+                WHERE SUBSTR(e.event_type, 1, 4) = 'run.'
                 GROUP BY f.run_key
             ) AS runs
             JOIN events AS head ON head.id = runs.first_id
             """,
-            (
-                *terminal_states,
-                session_id,
-                "run.%",
-                max(1, int(scan_limit)),
-                session_id,
-                "run.%",
-            ),
+            (*terminal_states, session_id, max(1, int(scan_limit)), session_id),
         )
         summaries: list[dict[str, Any]] = []
         for row in rows:

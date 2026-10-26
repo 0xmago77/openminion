@@ -24,6 +24,18 @@ This file tracks package-facing release notes for `openminion`.
   capture intent stays pending with `CAPTURE_RECOVERY_UNSUPPORTED`, as it does
   for the local JSONL memory adapter. Backends that implement the method are
   called as before, and their errors still propagate (Refs #397).
+- Select run events with a case-sensitive `run.` type prefix in
+  `list_session_runs` and `list_session_run_events` on SQLite, as on
+  PostgreSQL and as the thread lifecycle, the invocation terminal and every
+  runtime writer already do. SQLite `LIKE` matched the prefix
+  case-insensitively, so on SQLite an event stored with a `RUN.` or `Run.`
+  type was counted in run listings, run event lists and the run status shown
+  by the runs API, `openminion status` and owner diagnostics; it no longer
+  is. No runtime writer emits such a type; it can come from the generic
+  event append APIs or an import. The state is still read from the type
+  suffix in any case (`run.COMPLETED` is completed), stored events are not
+  changed, and the generic `list_events` and `count_events` prefix filters
+  are unchanged (Refs #396).
 - Report the deepest key history in `memctl inspect` (`history_summary` with
   `--json`, the `Deepest history` line otherwise) for the SQLite store that
   memctl wraps in its audited store; it was always missing there. A store
