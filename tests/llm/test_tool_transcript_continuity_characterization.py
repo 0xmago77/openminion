@@ -90,7 +90,11 @@ def test_provider_calls_without_ids_receive_unique_batch_ids() -> None:
         ),
     ]
 
-    assert [call.id for call in calls] == ["call_1", "call_2"]
+    ids = [call.id for call in calls]
+    assert len(set(ids)) == 2
+    assert ids[0].startswith("call_") and ids[0].endswith("_1")
+    assert ids[1].startswith("call_") and ids[1].endswith("_2")
+    assert ids[0].rsplit("_", 1)[0] == ids[1].rsplit("_", 1)[0]
     assert validate_tool_transcript(LLMRequest(messages=messages)) == (
         "canonical_events"
     )

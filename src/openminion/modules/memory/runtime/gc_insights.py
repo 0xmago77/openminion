@@ -5,6 +5,7 @@ from sqlalchemy import text
 
 from openminion.base.time import utc_now
 from openminion.modules.memory.runtime.gc_records import (
+    backing_store,
     parse_when,
     remove_collected_artifact_refs,
     soft_delete_postgres_record,
@@ -19,6 +20,7 @@ def evict_stale_insights(
     *,
     staleness_days: int,
 ) -> int:
+    store = backing_store(store)
     cutoff = utc_now() - datetime.timedelta(days=max(1, int(staleness_days)))
     now_iso = utc_now().isoformat()
 

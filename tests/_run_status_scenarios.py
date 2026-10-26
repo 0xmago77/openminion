@@ -59,6 +59,7 @@ from openminion.modules.task.run import (
     append_run_state_event,
     list_session_run_events,
     list_session_runs,
+    resolve_invocation_terminal,
     resolve_thread_lifecycle,
 )
 from openminion.modules.task.run.status import (
@@ -148,7 +149,7 @@ def append_payload_variants(sessions: SessionStore, session_id: str) -> None:
     `append_run_state_event(payload=...)` stores these as given: text padded
     with any whitespace `str.strip()` removes, JSON null, booleans, numbers, an
     empty object or array, and text that looks like a JSON token. A `RUN.` event
-    type is listed by SQLite `LIKE` but gets no state from its suffix.
+    type is not a run event: the `run.` prefix is matched case-sensitively.
     """
 
     def run(event_state: str, run_id: Any, /, **payload: Any) -> None:
@@ -191,10 +192,16 @@ def _all_events(sessions: SessionStore, session_id: str) -> list[EventRecord]:
 
 
 def _run_events(sessions: SessionStore, session_id: str) -> list[EventRecord]:
-    """The session's `run.` events, selected by the store as the readers select them."""
-    return sessions.list_events(
-        session_id=session_id, limit=1_000_000, event_type_prefix="run."
-    )
+    """The session's run events: a type that starts with lowercase `run.` (#396).
+
+    Selected in Python from all of the session's events, as the thread
+    projection and the invocation terminal select them, not by the store.
+    """
+    return [
+        event
+        for event in _all_events(sessions, session_id)
+        if event.event_type.startswith("run.")
+    ]
 
 
 def expected_runs(
@@ -322,7 +329,7 @@ def append_thread_payload_variants(sessions: SessionStore, session_id: str) -> N
         run_id="t2",
         invocation_id=None,
     )
-    # Not a run event for the thread, although SQLite `LIKE 'run.%'` matches it.
+    # Not a run event: the `run.` prefix is matched case-sensitively.
     event("RUN.running", conversation_id="conv", thread_id="t", run_id="t3")
     # False, 0 and null ids are empty: in every thread of the session's conversation.
     event(
@@ -463,6 +470,79 @@ def check_token_text_ids(
             value,
             event.id,
         ), value
+
+
+def check_run_event_type_case(
+    sessions: SessionStore, new_session: Callable[[str], str]
+) -> None:
+    """A run event's type starts with lowercase `run.`; its suffix is any case (#396).
+
+    The events of the #396 report, plus a run whose only event has a lowercase
+    `run.` prefix and an upper-case suffix. Each expected value is written out
+    here, the same on every backend, and the stored event types stay as given.
+    """
+    session_id = new_session("run-event-type-case")
+    ids = {"conversation_id": "conv", "thread_id": "t"}
+    events = (
+        ("run.queued", {"run_id": "r1", "state": "queued", "invocation_id": "inv1"}),
+        ("run.running", {"run_id": "r1"}),
+        ("RUN.failed", {"run_id": "r1", "state": "failed", "error": "boom"}),
+        ("run.queued", {"run_id": "r2", "state": "queued"}),
+        ("Run.completed", {"run_id": "r2"}),
+        ("run.COMPLETED", {"run_id": "r3", "thread_id": "u"}),
+    )
+    written = [
+        sessions.append_event(
+            session_id=session_id,
+            event_type=event_type,
+            payload={**ids, **payload},
+        )
+        for event_type, payload in events
+    ]
+    assert [event.event_type for event in _all_events(sessions, session_id)] == [
+        "run.queued",
+        "run.running",
+        "RUN.failed",
+        "run.queued",
+        "Run.completed",
+        "run.COMPLETED",
+    ]
+
+    runs = list_session_runs(sessions, session_id=session_id)
+    assert [
+        (run.run_id, run.state, run.event_count, bool(run.ended_at), run.error)
+        for run in runs
+    ] == [
+        ("r3", RUN_STATE_COMPLETED, 1, True, ""),
+        ("r2", RUN_STATE_QUEUED, 1, False, ""),
+        ("r1", RUN_STATE_RUNNING, 2, False, ""),
+    ]
+    r1, r2, r3 = (
+        [
+            (event.id, event.event_type, event.state)
+            for event in list_session_run_events(
+                sessions, session_id=session_id, run_id=run_id
+            )
+        ]
+        for run_id in ("r1", "r2", "r3")
+    )
+    assert r1 == [
+        (written[0].id, "run.queued", RUN_STATE_QUEUED),
+        (written[1].id, "run.running", RUN_STATE_RUNNING),
+    ]
+    assert r2 == [(written[3].id, "run.queued", RUN_STATE_QUEUED)]
+    assert r3 == [(written[5].id, "run.COMPLETED", RUN_STATE_COMPLETED)]
+
+    # The thread projection and the invocation terminal already agree.
+    projection = resolve_thread_lifecycle(sessions, session_id=session_id, **ids)
+    assert (projection.latest_run_id, projection.latest_run_state) == (
+        "r2",
+        RUN_STATE_QUEUED,
+    )
+    terminal = resolve_invocation_terminal(
+        sessions, session_id=session_id, trigger_event=written[2], **ids
+    )
+    assert terminal is None
 
 
 def expected_thread(

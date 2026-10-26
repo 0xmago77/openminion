@@ -13,6 +13,10 @@ from openminion.modules.memory.config import from_base_config
 from openminion.modules.memory.models import MemoryCandidate, MemoryRecord
 from openminion.modules.memory.diagnostics.operability import resolve_trace_file_path
 from openminion.modules.memory.service import MemoryService
+from openminion.modules.memory.storage.audit import (
+    AuditedMemoryStore,
+    InMemoryMemoryAuditSink,
+)
 from openminion.modules.memory.storage.memory import InMemoryRecordStore
 from openminion.modules.memory.storage.sqlite.store import SQLiteMemoryStore
 from openminion.services.agent.memory.gateway_adapter import MemoryServiceGatewayAdapter
@@ -216,7 +220,7 @@ def test_memctl_stats_errors_for_non_sqlite_backend(
     monkeypatch.setattr(
         memory_cli,
         "_get_service",
-        lambda db=None: MemoryService(InMemoryRecordStore()),
+        lambda db=None, ctx=None: MemoryService(InMemoryRecordStore()),
     )
 
     result = runner.invoke(app, ["stats"])
@@ -353,3 +357,109 @@ def test_memctl_trace_list_warns_and_exits_cleanly(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0
     assert "Warning: no trace events found" in result.output
+
+
+def _seed_keyed_history(db_path: Path, *, versions: int) -> None:
+    store = SQLiteMemoryStore(db_path)
+    try:
+        store.put(
+            MemoryRecord(
+                id="indent-v1",
+                scope="agent:history",
+                type="fact",
+                key="pref:indent",
+                title="Prefer tabs",
+                content="I prefer tabs.",
+                created_at="2026-10-01T00:00:00+00:00",
+                updated_at="2026-10-01T00:00:00+00:00",
+            )
+        )
+        for _ in range(versions - 1):
+            store.upsert(
+                "agent:history",
+                "fact",
+                "pref:indent",
+                {"title": "Prefer spaces", "content": "I prefer spaces."},
+            )
+    finally:
+        store.close()
+
+
+def _memctl_inspect(db_path: Path, trace_file: Path, *extra: str) -> str:
+    # memctl's own _get_service wraps the SQLite store in AuditedMemoryStore.
+    result = CliRunner().invoke(
+        memory_cli._build_app(),
+        [
+            "inspect",
+            "--scope",
+            "agent:history",
+            "--trace-file",
+            str(trace_file),
+            "--db",
+            str(db_path),
+            *extra,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    return result.output
+
+
+def test_memctl_inspect_reports_deepest_history_in_json_and_human_output(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "memory.db"
+    trace_file = tmp_path / "memory_trace.jsonl"
+    trace_file.write_text("", encoding="utf-8")
+    _seed_keyed_history(db_path, versions=2)
+
+    summary = json.loads(_memctl_inspect(db_path, trace_file, "--json"))[
+        "history_summary"
+    ]
+    human_lines = [
+        line
+        for line in _memctl_inspect(db_path, trace_file).splitlines()
+        if line.startswith("Deepest history")
+    ]
+    assert {
+        "json": summary and {k: summary[k] for k in ("scope", "type", "key", "depth")},
+        "human": human_lines,
+    } == {
+        "json": {
+            "scope": "agent:history",
+            "type": "fact",
+            "key": "pref:indent",
+            "depth": 2,
+        },
+        "human": ["Deepest history: agent:history fact pref:indent (depth 2)"],
+    }
+
+
+def test_memctl_inspect_without_keyed_history_has_no_history_summary(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "memory.db"
+    trace_file = tmp_path / "memory_trace.jsonl"
+    trace_file.write_text("", encoding="utf-8")
+    _seed_keyed_history(db_path, versions=1)
+
+    payload = json.loads(_memctl_inspect(db_path, trace_file, "--json"))
+    assert payload["history_summary"] is None
+    assert payload["stats"]["active_record_count"] == 1
+    assert "Deepest history" not in _memctl_inspect(db_path, trace_file)
+
+
+@pytest.mark.parametrize("audited", [False, True])
+def test_memctl_inspect_has_no_history_summary_for_a_non_sqlite_store(
+    audited: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = InMemoryRecordStore()
+    service = MemoryService(
+        AuditedMemoryStore(store, sink=InMemoryMemoryAuditSink()) if audited else store
+    )
+    monkeypatch.setattr(memory_cli, "_get_service", lambda db=None, ctx=None: service)
+    trace_file = tmp_path / "memory_trace.jsonl"
+    trace_file.write_text("", encoding="utf-8")
+
+    payload = json.loads(_memctl_inspect(tmp_path / "memory.db", trace_file, "--json"))
+    assert payload["history_summary"] is None
+    assert payload["stats"] is None

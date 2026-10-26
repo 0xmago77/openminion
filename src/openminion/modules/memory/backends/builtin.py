@@ -5,7 +5,10 @@ from typing import Any, Callable, Iterable, cast
 from sophiagraph.models import MemoryEmbedding
 from sophiagraph.query import EmbeddingListOptions, ListQueryOptions
 
-from openminion.modules.memory.errors import InvalidArgumentError
+from openminion.modules.memory.errors import (
+    CaptureRecoveryUnsupportedError,
+    InvalidArgumentError,
+)
 from openminion.modules.memory.portability.models import (
     MemoryBundleExportOptions,
     MemoryBundleImportOptions,
@@ -298,8 +301,18 @@ class BuiltinKnowledgeBackend(KnowledgeBackend):
 class BackendMemoryStoreAdapter(MemoryStore):
     """Adapt a knowledge backend to the legacy ``MemoryStore`` contract."""
 
-    def __init__(self, backend: KnowledgeBackend) -> None:
+    def __init__(
+        self, backend: KnowledgeBackend, *, owns_backend: bool = False
+    ) -> None:
         self._backend = backend
+        self._owns_backend = owns_backend
+
+    def close(self) -> None:
+        if not self._owns_backend:
+            return
+        self._owns_backend = False
+        if callable(close_backend := getattr(self._backend, "close", None)):
+            close_backend()
 
     def put(self, record):
         return self._backend.put_record(record)
@@ -451,13 +464,28 @@ class BackendMemoryStoreAdapter(MemoryStore):
         return _call_backend_extra(self._backend, "list_all")
 
     def apply_capture_bundle(self, bundle: Any) -> Any:
-        return _call_backend_extra(self._backend, "apply_capture_bundle", bundle)
+        """Apply an atomic capture bundle, which external backends may not offer.
+
+        A backend without a callable ``apply_capture_bundle`` is reported with
+        ``CaptureRecoveryUnsupportedError``, as the memory service reports a
+        store without one, so the capture stays pending. An error raised by a
+        backend's own ``apply_capture_bundle`` propagates unchanged.
+        """
+        handler = getattr(self._backend, "apply_capture_bundle", None)
+        if not callable(handler):
+            raise CaptureRecoveryUnsupportedError(
+                f"memory backend {type(self._backend).__name__} does not support "
+                "atomic capture bundles"
+            )
+        return handler(bundle)
 
 
-def adapt_backend_to_store(backend: KnowledgeBackend) -> MemoryStore:
+def adapt_backend_to_store(
+    backend: KnowledgeBackend, *, owns_backend: bool = False
+) -> MemoryStore:
     if isinstance(backend, BuiltinKnowledgeBackend):
         return backend.store
-    return BackendMemoryStoreAdapter(backend)
+    return BackendMemoryStoreAdapter(backend, owns_backend=owns_backend)
 
 
 def _call_backend_extra(

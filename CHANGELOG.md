@@ -1,11 +1,180 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-24
+Last updated: 2026-10-26
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+## Current package line - 2026-10-26
+
+- Keep research incomplete when synthesis fails or returns a blank answer,
+  even when sources were collected. Retain checkpoint evidence for resumption
+  and project-owned incomplete status; record exception types without provider
+  response bodies.
+- Give tool calls that a provider returns without ids a full-UUID batch
+  prefix (`call_<uuid>_<n>`) instead of a bare `call_<n>`. Tool transcript
+  events are keyed by turn and call id, so two id-less response batches in the
+  same turn (for example Ollama with the default `fallback` tool strategy
+  after the closure gate sends the turn back through entry) both produced
+  `call_1` and failed the turn with `session event idempotency conflict`.
+  Provider-supplied ids and batch order are unchanged, and replaying an
+  already-normalized call stays idempotent (#410).
+
+- Let SDK turns complete with an external memory backend that does not
+  implement atomic capture bundles, such as the bundled `reference-sqlite`
+  adapter. The backend adapter now reports the missing optional
+  `apply_capture_bundle` with the existing `CaptureRecoveryUnsupportedError`
+  instead of raising `NotImplementedError` out of `Agent.run`, so the turn's
+  capture intent stays pending with `CAPTURE_RECOVERY_UNSUPPORTED`, as it does
+  for the local JSONL memory adapter. Backends that implement the method are
+  called as before, and their errors still propagate (Refs #397).
+- Select run events with a case-sensitive `run.` type prefix in
+  `list_session_runs` and `list_session_run_events` on SQLite, as on
+  PostgreSQL and as the thread lifecycle, the invocation terminal and every
+  runtime writer already do. SQLite `LIKE` matched the prefix
+  case-insensitively, so on SQLite an event stored with a `RUN.` or `Run.`
+  type was counted in run listings, run event lists and the run status shown
+  by the runs API, `openminion status` and owner diagnostics; it no longer
+  is. No runtime writer emits such a type; it can come from the generic
+  event append APIs or an import. The state is still read from the type
+  suffix in any case (`run.COMPLETED` is completed), stored events are not
+  changed, and the generic `list_events` and `count_events` prefix filters
+  are unchanged (Refs #396).
+- Close the memory store and audit database that a `memctl` command opens
+  when the command ends, whether it succeeds or fails. The command's service
+  now owns the store and audit sink it creates and closes them once, through
+  the command's Click context; a service built by the factory outside a
+  command is closed by its caller with `close()`. The audit database used to
+  stay open until garbage collection, so an in-process caller on Windows
+  (such as typer's `CliRunner`) could not rename or delete it (Refs #403).
+- Keep a turn's freshness contract, obligations and diagnostics on an entry
+  step that has no new user input and no valid typed `freshness` contract,
+  such as the continuation step after the closure freshness guard turns a
+  close into a continue. The step used to replace them with the classifier's
+  default for empty input, which dropped the exact-date, live-data and
+  sources obligations the guard was enforcing. A valid typed contract still
+  replaces them, new user input is still classified, and a first step with
+  neither keeps the default. The step emits `brain.freshness.entry_fallback`
+  with reason `retained_turn_contract` (Refs #395).
+- Report the deepest key history in `memctl inspect` (`history_summary` with
+  `--json`, the `Deepest history` line otherwise) for the SQLite store that
+  memctl wraps in its audited store; it was always missing there. A store
+  without that summary, such as PostgreSQL, and a database without keyed
+  history still report none (#402).
+- Let PostgreSQL memory retention and purge remove records and candidates
+  that carry evidence. The shared evidence decoder now keeps the list that
+  PostgreSQL returns for the JSONB `evidence_json` column, instead of parsing
+  its Python text form, so confidence decay, summary retention, scope
+  capacity, stale insight eviction and the purge of soft-deleted records and
+  promoted or rejected candidates no longer fail with `JSONDecodeError` on an
+  item with evidence, and remove its artifact refs. SQLite JSON text, empty
+  values and `None` decode as before (#400).
+- Close the SQLite connections that twelve storage and API runtime tests open
+  themselves, and the API runtime one of them builds, before the test removes
+  its temporary directory or restores the database, so these tests pass on
+  native Windows as they do on Linux. Test-only; no package behaviour changes
+  (#408).
+- Resolve postponed (`from __future__ import annotations`) and quoted
+  annotations on `@openminion.tool` functions in their own module, keeping
+  `Annotated` field descriptions and constraints. Only argument annotations
+  exposed in the args schema are evaluated (return, `self`/`cls` and
+  `*args`/`**kwargs` annotations are left alone), and decoration fails with a
+  clear `TypeError` when an exposed argument annotation cannot be resolved.
+- Keep room participants that join with the same timestamp in join order, with
+  a per-session join sequence that runtime migration 14 adds on SQLite and
+  Postgres. `list_participants`, and the agent selected when the active agent
+  leaves, no longer depend on random participant row ids. A participant added
+  again while active keeps its place and join time; one that leaves and
+  rejoins takes a new place after every earlier join. Explicit active-agent
+  selection is unchanged. On upgrade, existing participants keep the order
+  they listed in before, so participants that already share a timestamp keep
+  their row id order (#364).
+- Upgrade note for runtime migration 14 (#364): as for migration 13, upgrade
+  every process that shares a runtime database together, keep a pre-upgrade
+  backup, and do not run a binary from before this change against the
+  upgraded database. An older writer stores no join place: the first
+  participant it adds to a session after the upgrade lists before other joins
+  with the same timestamp, adding a second one to that session fails, and a
+  participant it rejoins keeps its earlier place.
+- Report an internal brain runtime failure (the state machine's `fatal_error`
+  path, such as a tool returning a value that cannot be JSON-serialized) as
+  `run_state="failed"` on `AgentRunResult` and in the persisted run, instead of
+  `"completed"`. The existing structured `error_code`, `error_message` and
+  `error_details` stay in the result metadata. Recoverable tool errors that the
+  brain answers without a fatal transition still complete (Refs #384).
+- Close the runtime memory assembly with the `external` memory backend
+  provider: the memory service closes the external backend it owns once,
+  through a new `BackendMemoryStoreAdapter.close()` that does nothing for a
+  backend without `close()` or one it does not own, and the assembly then
+  closes its artifact store. Before, the close raised `AttributeError` and left
+  the artifact store open. With this provider the assembly also no longer
+  creates the memory store and audit sink that only the built-in backend uses,
+  so a PostgreSQL `memory.store` setting opens no engine and an unusable
+  `memory.store` setting no longer fails the build (#388).
+- Apply memory retention in the runtime session lifecycle with a PostgreSQL
+  memory store. The lifecycle hands the retention helpers the runtime's
+  `AuditedMemoryStore`, so confidence decay, summary compression and deletion,
+  per-scope capacity and stale insight eviction took the SQLite path and failed
+  with `'PostgresMemoryStore' object has no attribute '_connect'`: no retention
+  was applied, every turn logged `memory.session_lifecycle failed`, and the
+  first-turn summary compression failed silently. The helpers now run on the
+  store behind the audit wrapper, as they already did with SQLite, and the
+  lifecycle completes once per session (#392).
+- Close the memory store, audit sink and artifact store that the bootstrap
+  memory fallback creates. When `build_gateway_service` builds the agent memory
+  itself, `GatewayService.close()` now closes it once, and the adapter that
+  `build_agent_memory_service` returns gets a `close()` that closes the runtime
+  memory assembly behind it once, keeping the scheduler boundary. Before, the
+  assembly was dropped and nothing could close them. An `agent_memory` passed
+  to the gateway service stays borrowed, and the SDK runtime's memory gateway
+  still closes nothing itself (#389).
+- Session metadata filters work on PostgreSQL.
+  `list_sessions(metadata_filter=...)`, which ACP `session/list` and Focus
+  directory sessions use, emitted SQLite's `json_extract` and failed there.
+  Runtime migration 15 adds `session_metadata_strings`: one row for each
+  top-level member of a session's stored metadata whose value is a string,
+  written by the session store in the same transaction as every session
+  insert, metadata update and delete, on SQLite and PostgreSQL. The migration
+  backfills existing sessions in batches inside its transaction, reading each
+  stored `metadata_json` with `json.loads`, so metadata PostgreSQL cannot parse
+  (NaN, Infinity, an escaped NUL or a lone surrogate) is covered; stored
+  metadata is not changed, and a session whose metadata is not JSON rolls the
+  migration back and is named in the error. On PostgreSQL a filter selects a
+  session whose stored metadata, as `SessionRecord.metadata` reads it, has a
+  top-level member named exactly as the key whose value is a string equal to
+  the filter value. Names and values are literal; numbers, booleans, null,
+  objects and arrays never match; and at most `limit` sessions are read.
+  `list_sessions` still sends a false filter value (`None`, `0`, `False`, an
+  empty container) as `""`, so `{"surface": None}` matches an empty string as
+  before; PostgreSQL raises `TypeError` for any other filter value that is not
+  a string, where SQLite compares it as an SQL value. SQLite keeps its
+  `json_extract` reader, so the backends still differ where it reads more
+  than a literal top-level string: keys as JSON paths, objects and arrays by
+  their minified text, version-dependent escaped keys and NaN documents, and
+  the first of two members with one name. A `SessionStore` built directly on a
+  `RecordStorePostgres` now uses the PostgreSQL reader: the SQL comes from the
+  record store's type, with no SQLite default. See
+  `docs/runtime-database-upgrades.md` (#369).
+- Upgrade note for runtime migration 15 (#369): stop every process that writes
+  the runtime database, keep a pre-upgrade backup, upgrade all of them
+  together, and never run a binary from before this change against the
+  migrated database. Rolling back requires restoring the matching pre-upgrade
+  backup. An older writer does not maintain `session_metadata_strings`: a
+  session it creates has no rows, so a PostgreSQL metadata filter misses it,
+  and a session whose metadata it changes keeps the rows of its earlier
+  metadata, so a filter can return it for a value it no longer has (a stale
+  match) or miss it for its new value.
+- Let a parsed memory config select the `remote` store backend.
+  `resolve_memory_backend` now reads the `StoreConfig` fields that
+  `load_config` fills (`remote_endpoint`, `remote_timeout_seconds`,
+  `remote_max_retries`) from a `MemctlConfig` or its `store`, so `memctl` with
+  a `store.backend: remote` config file no longer fails with
+  `remote backend requires remote.endpoint`. The configured timeout and retries
+  are kept, including `max_retries: 0`. A nested `remote` mapping in a
+  dictionary config still takes precedence as a whole, with its defaults
+  unchanged (#391).
 
 ## Current package line - 2026-10-24
 

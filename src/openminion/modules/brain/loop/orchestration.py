@@ -185,6 +185,12 @@ def _apply_entry_freshness(
         _apply_freshness_result(state=state, logger=logger, result=result)
         return
 
+    if not str(user_input or "").strip() and state.freshness_contract is not None:
+        # Same turn, no new input, no typed contract: keep the turn's freshness.
+        payload = {"llm_call_id": llm_call_id, "reason": "retained_turn_contract"}
+        logger.emit("brain.freshness.entry_fallback", payload, trace_id=state.trace_id)
+        return
+
     fallback_call_id = new_uuid()
     result = classify_request_freshness(
         runner,

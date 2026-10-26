@@ -12,6 +12,7 @@ from openminion.modules.memory.config import (
     MEMORY_GC_SUMMARY_DELETE_AFTER_DAYS,
 )
 from openminion.modules.memory.runtime.gc_records import (
+    backing_store,
     parse_when,
     remove_collected_artifact_refs,
     soft_delete_postgres_record,
@@ -29,6 +30,7 @@ def compress_old_summaries(
     delete_age_days: int = MEMORY_GC_SUMMARY_DELETE_AFTER_DAYS,
     max_summary_chars: int = MEMORY_GC_SUMMARY_COMPRESS_MAX_CHARS,
 ) -> tuple[int, int]:
+    store = backing_store(store)
     now = utc_now()
     compress_before = now - datetime.timedelta(days=max(1, int(max_age_days)))
     delete_before = now - datetime.timedelta(days=max(1, int(delete_age_days)))

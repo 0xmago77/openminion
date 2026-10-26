@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import os
+from collections.abc import Callable
 from pathlib import Path
 import uuid
 
@@ -12,6 +13,11 @@ from openminion.modules.memory.config import RetentionConfig
 from openminion.modules.memory.runtime.gc import evict_stale_insights, run_gc
 from openminion.modules.memory.models import MemoryCandidate, MemoryRecord
 from openminion.modules.memory.storage.postgres.store import PostgresMemoryStore
+from tests._memory_retention_scenarios import (
+    GC_TARGETS,
+    RETENTION_SCENARIOS,
+    gc_target,
+)
 from tests.storage.postgres_test_utils import schema_url
 
 pytestmark = pytest.mark.postgres
@@ -187,3 +193,15 @@ def test_postgres_gc_and_retention_paths_round_trip(
     assert postgres_store.get("stale-insight") is None
     assert postgres_store.get("purge-me") is None
     assert postgres_store.candidate_get("cand-rejected") is None
+
+
+@pytest.mark.parametrize("kind", GC_TARGETS)
+@pytest.mark.parametrize("scenario", RETENTION_SCENARIOS)
+def test_retention_helper_changes_seeded_postgres_records(
+    scenario: Callable[..., None],
+    kind: str,
+    postgres_store: PostgresMemoryStore,
+) -> None:
+    # The runtime session lifecycle passes its AuditedMemoryStore (#392).
+    target, sink = gc_target(kind, postgres_store)
+    scenario(target, postgres_store, sink)

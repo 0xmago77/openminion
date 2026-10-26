@@ -9,7 +9,21 @@ from openminion.modules.memory.runtime.purge import (
     decode_evidence_ref_values,
     remove_artifact_refs,
 )
+from openminion.modules.memory.storage.audit import AuditedMemoryStore
 from openminion.modules.memory.storage.base import MemoryStore
+
+
+def backing_store(store: MemoryStore) -> MemoryStore:
+    """Return the store the retention helpers run their SQL on.
+
+    The runtime passes its ``AuditedMemoryStore``; the helpers use the store it
+    wraps (one level), which the SQLite path already reached through attribute
+    forwarding. Their writes are not audited on either backend, and closing
+    stays with the wrapper's owner.
+    """
+    if isinstance(store, AuditedMemoryStore):
+        return store._store
+    return store
 
 
 def parse_when(value: str | None) -> datetime.datetime | None:

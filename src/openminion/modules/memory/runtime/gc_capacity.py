@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from openminion.base.time import utc_now
 from openminion.modules.memory.runtime.gc_records import (
+    backing_store,
     remove_collected_artifact_refs,
     soft_delete_postgres_record,
     soft_delete_sqlite_record,
@@ -20,6 +21,7 @@ def enforce_scope_capacity(
     max_records: int,
     exempt_types: list[str] | tuple[str, ...] = ("pin",),
 ) -> dict[str, int]:
+    store = backing_store(store)
     exempt = {str(item) for item in exempt_types}
     now_iso = utc_now().isoformat()
 

@@ -19,7 +19,10 @@ class GCResult:
     compressed_summaries: int = 0
 
 
-def decode_evidence_ref_values(raw_json: str | None) -> list[Any]:
+def decode_evidence_ref_values(raw_json: str | list[Any] | None) -> list[Any]:
+    # PostgreSQL returns the JSONB column already decoded; SQLite returns text.
+    if isinstance(raw_json, list):
+        return raw_json
     payload = json.loads(str(raw_json or "[]"))
     return payload if isinstance(payload, list) else []
 
