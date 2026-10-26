@@ -43,6 +43,15 @@ This file tracks package-facing release notes for `openminion`.
   command is closed by its caller with `close()`. The audit database used to
   stay open until garbage collection, so an in-process caller on Windows
   (such as typer's `CliRunner`) could not rename or delete it (Refs #403).
+- Keep a turn's freshness contract, obligations and diagnostics on an entry
+  step that has no new user input and no valid typed `freshness` contract,
+  such as the continuation step after the closure freshness guard turns a
+  close into a continue. The step used to replace them with the classifier's
+  default for empty input, which dropped the exact-date, live-data and
+  sources obligations the guard was enforcing. A valid typed contract still
+  replaces them, new user input is still classified, and a first step with
+  neither keeps the default. The step emits `brain.freshness.entry_fallback`
+  with reason `retained_turn_contract` (Refs #395).
 - Report the deepest key history in `memctl inspect` (`history_summary` with
   `--json`, the `Deepest history` line otherwise) for the SQLite store that
   memctl wraps in its audited store; it was always missing there. A store
