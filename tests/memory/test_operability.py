@@ -456,7 +456,7 @@ def test_memctl_inspect_has_no_history_summary_for_a_non_sqlite_store(
     service = MemoryService(
         AuditedMemoryStore(store, sink=InMemoryMemoryAuditSink()) if audited else store
     )
-    monkeypatch.setattr(memory_cli, "_get_service", lambda db=None: service)
+    monkeypatch.setattr(memory_cli, "_get_service", lambda db=None, ctx=None: service)
     trace_file = tmp_path / "memory_trace.jsonl"
     trace_file.write_text("", encoding="utf-8")
 
