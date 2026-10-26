@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 import pytest
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from openminion.modules.tool.framework import (
     ToolDecl,
@@ -355,3 +357,37 @@ def test_decorator_handler_passes_model_and_dataclass_args_as_instances() -> Non
     assert (
         summarize_span.tool_decl.handler({"span": {"start": 2, "end": 3}}) == "Span:2-3"
     )
+
+
+def test_decorator_handler_accepts_alias_and_canonical_mappings() -> None:
+    @tool
+    def show(value: Annotated[int, Field(alias="external_value", ge=0)]) -> str:
+        """Show value."""
+        return str(value)
+
+    validated = show.tool_args_model.model_validate({"external_value": 3})
+    assert show.tool_decl.handler(validated) == "3"
+    assert show.tool_decl.handler(validated.model_dump()) == "3"
+    assert show.tool_decl.handler(validated.model_dump(by_alias=True)) == "3"
+    assert show.tool_decl.handler({"external_value": 4}) == "4"
+    assert show.tool_decl.handler({"value": 5}) == "5"
+    # The args model the runtime validates model output with is unchanged.
+    with pytest.raises(ValidationError):
+        show.tool_args_model.model_validate({"value": 3})
+    with pytest.raises(ValidationError):
+        show.tool_decl.handler({"value": -1})
+    with pytest.raises(ValidationError):
+        show.tool_decl.handler({"value": 1, "other": 2})
+    with pytest.raises(ValidationError):
+        show.tool_decl.handler({})
+
+
+def test_decorator_handler_rejects_invalid_structured_arguments() -> None:
+    from tests.tools._postponed_annotation_tools import summarize, summarize_span
+
+    with pytest.raises(ValidationError):
+        summarize.tool_decl.handler(
+            {"window": "week", "span": {"start": "x", "end": 4}, "label": "x"}
+        )
+    with pytest.raises(ValidationError):
+        summarize_span.tool_decl.handler({"span": {"start": 1}})

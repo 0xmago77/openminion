@@ -1,6 +1,6 @@
 import inspect
 import types
-from typing import Any, Optional, get_type_hints, overload
+from typing import Any, Optional, cast, get_type_hints, overload
 from collections.abc import Callable, Mapping
 
 from pydantic import BaseModel, ConfigDict, create_model
@@ -65,6 +65,42 @@ def _build_args_model(func: Callable[..., Any], model_name: str) -> type[BaseMod
         __config__=ConfigDict(extra="forbid"),
         **fields,
     )
+
+
+# ``model_validate(..., by_alias=True, by_name=True)`` exists from pydantic
+# 2.11; the package floor is ``pydantic>=2``.
+_MODEL_VALIDATE_ACCEPTS_BY_NAME = (
+    "by_name" in inspect.signature(BaseModel.model_validate).parameters
+)
+
+
+def _alias_or_name_validator(
+    args_model: type[BaseModel],
+) -> Callable[[Mapping[str, Any]], BaseModel]:
+    """Validate a handler mapping keyed by declared aliases or field names.
+
+    The args model itself is unchanged; only the decorator handler accepts
+    both key forms. Pydantic releases before 2.11 get the same behavior from
+    a handler-only subclass with ``populate_by_name``.
+    """
+    if _MODEL_VALIDATE_ACCEPTS_BY_NAME:
+
+        def _validate(values: Mapping[str, Any]) -> BaseModel:
+            return args_model.model_validate(values, by_alias=True, by_name=True)
+
+        return _validate
+    by_name_model = cast(
+        type[BaseModel],
+        type(
+            args_model.__name__,
+            (args_model,),
+            {
+                "model_config": ConfigDict(populate_by_name=True),
+                "__module__": args_model.__module__,
+            },
+        ),
+    )
+    return by_name_model.model_validate
 
 
 def _infer_description(func: Callable[..., Any]) -> str:
@@ -151,6 +187,8 @@ def _decorate(
     ).strip()
     args_model = _build_args_model(func, f"{resolved_name.replace('.', '_')}Args")
 
+    validate_args = _alias_or_name_validator(args_model)
+
     def _handler(
         args: BaseModel | Mapping[str, Any],
         context: Any = None,
@@ -158,11 +196,12 @@ def _decorate(
         del context
         # Pass the validated field values, not ``model_dump()``: dumping turns
         # nested BaseModel / dataclass arguments back into plain dicts. The
-        # runtime hands over an already-dumped mapping, so re-validate it.
+        # runtime hands over an already-dumped mapping (canonical field names)
+        # and callers may pass declared aliases, so re-validate accepting both.
         validated = (
             args
             if isinstance(args, args_model)
-            else args_model.model_validate(
+            else validate_args(
                 args.model_dump() if isinstance(args, BaseModel) else dict(args)
             )
         )

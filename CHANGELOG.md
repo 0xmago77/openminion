@@ -26,9 +26,12 @@ This file tracks package-facing release notes for `openminion`.
   pending/unsupported accounting are unchanged (Refs #420).
 - Pass validated Pydantic-model and dataclass arguments to `@tool` functions
   as instances instead of plain dicts. The decorator handler called
-  `model_dump()` on the validated arguments, so a tool typed `f: Filter`
-  received a `dict` and failed with `AttributeError` while the run still
-  reported `completed`. Scalar, list, enum and date arguments are unchanged
+  `model_dump()` on the validated arguments, so a tool typed `span: Range`
+  received a `dict` and failed with `AttributeError`. The handler now
+  validates mappings with the tool's args model, accepting both declared
+  aliases and canonical field names, and passes the validated field values;
+  defaults and `Annotated` constraints apply and invalid mappings raise
+  `ValidationError`. The shared built-in tool mapping contract is unchanged
   (Refs #435).
 
 ## Current package line - 2026-10-26
