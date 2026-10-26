@@ -7,6 +7,16 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Let memory consolidation cron runs recover pending terminal capture intents
+  and then submit their scheduled turn. The cron executor passed the agent
+  service's keyword-only capture candidate extractor to the recovery's
+  positional callback, with the runtime session store as its session API, so
+  every consolidation run with a pending intent failed with `TypeError` before
+  its turn. A small adapter at the cron call site now calls the extractor by
+  keyword with the brain session API that the agent's runner uses for turns.
+  Recovery authorization, capture identity, the capture bundle write and the
+  pending/unsupported accounting are unchanged (Refs #420).
+
 ## Current package line - 2026-10-26
 
 - Keep research incomplete when synthesis fails or returns a blank answer,
