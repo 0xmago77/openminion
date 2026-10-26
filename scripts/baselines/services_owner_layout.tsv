@@ -60,7 +60,11 @@ scope	max_python_files	max_loc
 # close owner of the gateway adapter it returns, closed once by the gateway
 # service or direct caller that built it (+11 LOC over dev b670bbb6 at 41782;
 # file count unchanged at 208).
-services	208	41793
+# Issue 420 (2026-10-26) fits the agent's keyword-only capture extractor to
+# the capture recovery callback at the existing cron call site, with the
+# brain session API the agent's runner uses for turns (+26 LOC over dev
+# 8c0568f7 at 41793; file count unchanged at 208).
+services	208	41819
 services/security	6	187
 services/stats	1	25
 services/tool	3	50
