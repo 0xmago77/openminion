@@ -204,7 +204,7 @@ def test_memctl_stats_inspect_and_gc_support_postgres_backend(
     monkeypatch.setattr(
         memory_cli,
         "_get_service",
-        lambda db=None: service,
+        lambda db=None, ctx=None: service,
     )
     monkeypatch.setattr(
         memory_cli,

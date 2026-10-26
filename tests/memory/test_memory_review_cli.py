@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 
 from typer.main import get_command
@@ -10,19 +11,19 @@ from openminion.modules.memory.models import MemoryRecord
 
 
 def _seed(db: Path) -> None:
-    service = _get_service(str(db))
-    service._store.put(  # noqa: SLF001
-        MemoryRecord(
-            id="review-record",
-            scope="agent:source",
-            type="fact",
-            key="fact:review",
-            content="private memory body",
-            source="user_said",
-            created_at="2026-07-20T00:00:00+00:00",
-            updated_at="2026-07-20T00:00:00+00:00",
+    with closing(_get_service(str(db))) as service:
+        service._store.put(  # noqa: SLF001
+            MemoryRecord(
+                id="review-record",
+                scope="agent:source",
+                type="fact",
+                key="fact:review",
+                content="private memory body",
+                source="user_said",
+                created_at="2026-07-20T00:00:00+00:00",
+                updated_at="2026-07-20T00:00:00+00:00",
+            )
         )
-    )
 
 
 def test_review_cli_full_approve_flow(tmp_path, monkeypatch) -> None:
@@ -118,7 +119,8 @@ def test_review_cli_full_approve_flow(tmp_path, monkeypatch) -> None:
     )
     assert result.exit_code == 0, result.output
     assert "applied: True" in result.output
-    imported = _get_service(str(target_db)).get("review-record")
+    with closing(_get_service(str(target_db))) as service:
+        imported = service.get("review-record")
     assert imported.scope == "agent:target"
     assert imported.namespace.agent_id == "target"
 

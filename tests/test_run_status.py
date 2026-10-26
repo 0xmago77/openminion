@@ -37,6 +37,7 @@ from tests._run_status_scenarios import (
     check_nonstandard_probe_cases,
     check_nonstandard_values,
     check_review_cases,
+    check_run_event_type_case,
     check_run_readers,
     check_token_text_ids,
     stepping_clock,
@@ -573,6 +574,21 @@ def test_run_readers_normalize_payload_values_as_the_python_readers(tmp_path) ->
 
         check_review_cases(sessions, new_session)
         check_token_text_ids(sessions, new_session)
+    finally:
+        connection.close()
+
+
+def test_run_readers_match_the_run_prefix_case_sensitively(tmp_path) -> None:
+    connection, sessions, _session = _build_sessions(tmp_path)
+    try:
+        check_run_event_type_case(
+            sessions,
+            lambda target: (
+                sessions.resolve_session(
+                    agent_id="main", channel="console", target=target
+                ).id
+            ),
+        )
     finally:
         connection.close()
 

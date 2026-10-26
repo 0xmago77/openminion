@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -72,7 +73,8 @@ def test_utility_plan_dry_run_does_not_stage_candidates(tmp_path: Path) -> None:
     )
 
     payload = json.loads(result.output)
-    candidates = _get_service(str(db)).candidate_list(CandidateListOptions())
+    with closing(_get_service(str(db))) as service:
+        candidates = service.candidate_list(CandidateListOptions())
     assert result.exit_code == 0, result.output
     assert payload["schema_version"] == "memory-utility-plan.v1"
     assert payload["dry_run"] is True
@@ -105,9 +107,10 @@ def test_utility_plan_stage_writes_review_candidates(tmp_path: Path) -> None:
     )
 
     payload = json.loads(result.output)
-    candidates = _get_service(str(db)).candidate_list(
-        CandidateListOptions(proposed_scope="session:canary-run")
-    )
+    with closing(_get_service(str(db))) as service:
+        candidates = service.candidate_list(
+            CandidateListOptions(proposed_scope="session:canary-run")
+        )
     assert result.exit_code == 0, result.output
     assert payload["dry_run"] is False
     assert payload["staged"] is True
