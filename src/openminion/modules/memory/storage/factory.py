@@ -138,16 +138,30 @@ def resolve_memory_backend(
         return _resolved_backend("mock", store)
 
     if backend == "remote":
+        # A nested ``remote`` mapping (top level, then ``store.remote``) is used
+        # as a whole, as before. Without one, read the typed ``StoreConfig``
+        # fields that ``load_config`` fills and validates, from ``config.store``
+        # or from the store config itself, keeping their timeout and retries.
         remote_cfg = _read_nested_mapping(config, "remote")
         if not remote_cfg:
             store_cfg = _read_nested_mapping(config, "store")
             remote_cfg = _read_nested_mapping(store_cfg, "remote")
-        endpoint = str(remote_cfg.get("endpoint", "")).strip()
+        typed_store = getattr(config, "store", None) or config
+        endpoint = str(
+            remote_cfg.get("endpoint", "")
+            if remote_cfg
+            else getattr(typed_store, "remote_endpoint", "") or ""
+        ).strip()
         if not endpoint:
             raise InvalidArgumentError("remote backend requires remote.endpoint")
-        timeout_seconds = float(remote_cfg.get("timeout_seconds", 5.0) or 5.0)
-        max_retries = int(remote_cfg.get("max_retries", 1) or 1)
-        auth_token = str(remote_cfg.get("auth_token", "") or "")
+        if remote_cfg:
+            timeout_seconds = float(remote_cfg.get("timeout_seconds", 5.0) or 5.0)
+            max_retries = int(remote_cfg.get("max_retries", 1) or 1)
+            auth_token = str(remote_cfg.get("auth_token", "") or "")
+        else:
+            timeout_seconds = float(getattr(typed_store, "remote_timeout_seconds", 5.0))
+            max_retries = int(getattr(typed_store, "remote_max_retries", 1))
+            auth_token = ""
         transport = RemoteMemoryTransport(
             endpoint=endpoint,
             timeout_seconds=timeout_seconds,
