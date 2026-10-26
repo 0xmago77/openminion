@@ -340,7 +340,6 @@ def test_decorator_still_rejects_unresolved_exposed_argument_with_valid_return(
         )
 
 
-
 def test_decorator_handler_passes_model_and_dataclass_args_as_instances() -> None:
     from tests.tools._postponed_annotation_tools import summarize, summarize_span
 
@@ -353,4 +352,6 @@ def test_decorator_handler_passes_model_and_dataclass_args_as_instances() -> Non
     assert decl.handler(validated.model_dump()) == "week:1-4:x:5"
     raw = {"window": "week", "span": {"start": 1, "end": 4}, "label": "x"}
     assert decl.handler(raw) == "week:1-4:x:5"
-    assert summarize_span.tool_decl.handler({"span": {"start": 2, "end": 3}}) == "Span:2-3"
+    assert (
+        summarize_span.tool_decl.handler({"span": {"start": 2, "end": 3}}) == "Span:2-3"
+    )

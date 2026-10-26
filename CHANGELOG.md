@@ -7,6 +7,12 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Pass validated Pydantic-model and dataclass arguments to `@tool` functions
+  as instances instead of plain dicts. The decorator handler called
+  `model_dump()` on the validated arguments, so a tool typed `f: Filter`
+  received a `dict` and failed with `AttributeError` while the run still
+  reported `completed`. Scalar, list, enum and date arguments are unchanged.
+
 ## Current package line - 2026-10-26
 
 - Keep research incomplete when synthesis fails or returns a blank answer,
