@@ -78,6 +78,42 @@ This file tracks package-facing release notes for `openminion`.
   assembly was dropped and nothing could close them. An `agent_memory` passed
   to the gateway service stays borrowed, and the SDK runtime's memory gateway
   still closes nothing itself (#389).
+- Session metadata filters work on PostgreSQL.
+  `list_sessions(metadata_filter=...)`, which ACP `session/list` and Focus
+  directory sessions use, emitted SQLite's `json_extract` and failed there.
+  Runtime migration 15 adds `session_metadata_strings`: one row for each
+  top-level member of a session's stored metadata whose value is a string,
+  written by the session store in the same transaction as every session
+  insert, metadata update and delete, on SQLite and PostgreSQL. The migration
+  backfills existing sessions in batches inside its transaction, reading each
+  stored `metadata_json` with `json.loads`, so metadata PostgreSQL cannot parse
+  (NaN, Infinity, an escaped NUL or a lone surrogate) is covered; stored
+  metadata is not changed, and a session whose metadata is not JSON rolls the
+  migration back and is named in the error. On PostgreSQL a filter selects a
+  session whose stored metadata, as `SessionRecord.metadata` reads it, has a
+  top-level member named exactly as the key whose value is a string equal to
+  the filter value. Names and values are literal; numbers, booleans, null,
+  objects and arrays never match; and at most `limit` sessions are read.
+  `list_sessions` still sends a false filter value (`None`, `0`, `False`, an
+  empty container) as `""`, so `{"surface": None}` matches an empty string as
+  before; PostgreSQL raises `TypeError` for any other filter value that is not
+  a string, where SQLite compares it as an SQL value. SQLite keeps its
+  `json_extract` reader, so the backends still differ where it reads more
+  than a literal top-level string: keys as JSON paths, objects and arrays by
+  their minified text, version-dependent escaped keys and NaN documents, and
+  the first of two members with one name. A `SessionStore` built directly on a
+  `RecordStorePostgres` now uses the PostgreSQL reader: the SQL comes from the
+  record store's type, with no SQLite default. See
+  `docs/runtime-database-upgrades.md` (#369).
+- Upgrade note for runtime migration 15 (#369): stop every process that writes
+  the runtime database, keep a pre-upgrade backup, upgrade all of them
+  together, and never run a binary from before this change against the
+  migrated database. Rolling back requires restoring the matching pre-upgrade
+  backup. An older writer does not maintain `session_metadata_strings`: a
+  session it creates has no rows, so a PostgreSQL metadata filter misses it,
+  and a session whose metadata it changes keeps the rows of its earlier
+  metadata, so a filter can return it for a value it no longer has (a stale
+  match) or miss it for its new value.
 - Let a parsed memory config select the `remote` store backend.
   `resolve_memory_backend` now reads the `StoreConfig` fields that
   `load_config` fills (`remote_endpoint`, `remote_timeout_seconds`,
