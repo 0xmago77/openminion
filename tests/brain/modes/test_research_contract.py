@@ -1427,7 +1427,9 @@ def test_build_pause_response_message_does_not_phrase_police_findings() -> None:
     assert "Research complete for 'What is WebAssembly?'" not in message
 
 
+@pytest.mark.parametrize("source_urls", [[], ["https://example.test/source"]])
 def test_synthesize_and_finalize_pauses_without_model_synthesis(
+    source_urls: list[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with tempfile.TemporaryDirectory() as tmp:
@@ -1453,6 +1455,7 @@ def test_synthesize_and_finalize_pauses_without_model_synthesis(
                     source_tool="act",
                     source_query="q1",
                     content="Collected raw finding.",
+                    source_urls=source_urls,
                 ).model_dump(mode="python")
             ],
         )
@@ -1911,3 +1914,86 @@ def test_execute_progress_phase_reflects_iterations() -> None:
         progress_phase = record.metadata.get("progress", {}).get("phase", "")
         # Last reported phase is iteration_1 (zero-indexed, second iteration).
         assert progress_phase == "iteration_1"
+
+
+@pytest.mark.parametrize("project_owned", [False, True])
+@pytest.mark.parametrize(
+    "response",
+    [
+        RuntimeError,
+        TypeError,
+        ValueError,
+        {},
+        {"answer": " \n\t", "status": "complete"},
+    ],
+    ids=[
+        "runtime-error",
+        "type-error",
+        "value-error",
+        "invalid-schema",
+        "blank-answer",
+    ],
+)
+def test_synthesis_failure_with_sources_cannot_complete_research(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    project_owned: bool,
+    response,
+) -> None:
+    tm = TaskManager.for_lifecycle_db(db_path=tmp_path / "tasks.db")
+    ctx, services = _ctx(tm)
+    mode = _make_mode(max_iterations=1)
+    record = tm.create_task(
+        session_id=ctx.state.session_id,
+        mode_name="project" if project_owned else RESEARCH_MODE,
+        goal=ctx.state.goal,
+        agent_id=ctx.state.agent_id,
+    )
+    if not project_owned:
+        ctx.state.task_backed_task_id = record.task_id
+    finding = ResearchFinding(
+        iteration=0,
+        source_tool="web.search",
+        source_query=ctx.state.goal,
+        content="Retrieved evidence.",
+        source_urls=["https://example.test/source"],
+    ).model_dump(mode="python")
+    mode._findings = [finding]
+    mode._query = ctx.state.goal
+
+    def synthesize(**kwargs):
+        if isinstance(response, type):
+            raise response("private-provider-response")
+        return response
+
+    events = []
+    ctx.logger.emit = lambda event, payload, **kwargs: events.append((event, payload))
+    monkeypatch.setattr(services.runner.llm_api, "call_structured", synthesize)
+    result = mode._synthesize_and_finalize(
+        ctx,
+        task_id="" if project_owned else record.task_id,
+        query=ctx.state.goal,
+        findings=[finding],
+        project_owned=project_owned,
+    )
+
+    assert "did not produce a usable synthesized answer" in result.message
+    assert "private-provider-response" not in result.message
+    assert "private-provider-response" not in repr(events)
+    if isinstance(response, type):
+        assert (
+            "brain.research.synthesis_failed",
+            {"error_type": response.__name__},
+        ) in events
+    if project_owned:
+        assert (
+            result.action_result.outputs["adaptive.finalization_status"]["status"]
+            == "incomplete"
+        )
+        assert tm.get_task(record.task_id).state == TaskLifecycleState.ACTIVE
+        assert tm.list_checkpoints(record.task_id) == []
+    else:
+        assert result.status == "waiting_user"
+        assert tm.get_task(record.task_id).state == TaskLifecycleState.PAUSED
+        checkpoint = tm.get_latest_checkpoint(record.task_id)
+        assert checkpoint[1]["payload"]["findings"] == [finding]

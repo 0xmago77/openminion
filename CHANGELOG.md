@@ -7,6 +7,11 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Keep research incomplete when synthesis fails or returns a blank answer,
+  even when sources were collected. Retain checkpoint evidence for resumption
+  and project-owned incomplete status; record exception types without provider
+  response bodies.
+
 - Let SDK turns complete with an external memory backend that does not
   implement atomic capture bundles, such as the bundled `reference-sqlite`
   adapter. The backend adapter now reports the missing optional
