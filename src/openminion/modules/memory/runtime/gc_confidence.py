@@ -6,6 +6,7 @@ from sqlalchemy import text
 from openminion.base.time import utc_now
 from openminion.modules.memory.models import MemoryScope
 from openminion.modules.memory.runtime.gc_records import (
+    backing_store,
     parse_when,
     remove_collected_artifact_refs,
     soft_delete_postgres_record,
@@ -25,6 +26,7 @@ def apply_confidence_decay(
     disuse_decay_multiplier: float = 1.0,
     exempt_types: list[str] | tuple[str, ...] = ("pin",),
 ) -> tuple[int, int]:
+    store = backing_store(store)
     now = utc_now()
     cutoff = now - datetime.timedelta(days=max(1, int(interval_days)))
     exempt = {str(item) for item in exempt_types}

@@ -29,6 +29,7 @@ from openminion.modules.memory.storage import AuditedMemoryStore
 from openminion.modules.memory.storage.postgres.store import PostgresMemoryStore
 from openminion.services.runtime import memory as runtime_memory
 from tests._csc_fixtures import _csc_install_default_agent
+from tests._memory_retention_scenarios import check_session_lifecycle_runs_once
 from tests.storage.postgres_test_utils import schema_url
 
 pytestmark = pytest.mark.postgres
@@ -223,3 +224,16 @@ def test_external_memory_provider_opens_no_postgres_memory_store(
     assert [type(store) for store in stores] == []
     assert open_after_build == 0
     assert open_after_close == 0
+
+
+def test_sdk_session_lifecycle_applies_retention_once_on_postgres(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    memory_database: tuple[str, Callable[[], int]],
+) -> None:
+    # The lifecycle used to fail on `_connect` on every turn (#392).
+    memory_url, _server_connections = memory_database
+    check_session_lifecycle_runs_once(
+        tmp_path / "root", monkeypatch, caplog, memory_url
+    )
