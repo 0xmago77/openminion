@@ -7,12 +7,64 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Let SDK turns complete with an external memory backend that does not
+  implement atomic capture bundles, such as the bundled `reference-sqlite`
+  adapter. The backend adapter now reports the missing optional
+  `apply_capture_bundle` with the existing `CaptureRecoveryUnsupportedError`
+  instead of raising `NotImplementedError` out of `Agent.run`, so the turn's
+  capture intent stays pending with `CAPTURE_RECOVERY_UNSUPPORTED`, as it does
+  for the local JSONL memory adapter. Backends that implement the method are
+  called as before, and their errors still propagate (Refs #397).
+- Let PostgreSQL memory retention and purge remove records and candidates
+  that carry evidence. The shared evidence decoder now keeps the list that
+  PostgreSQL returns for the JSONB `evidence_json` column, instead of parsing
+  its Python text form, so confidence decay, summary retention, scope
+  capacity, stale insight eviction and the purge of soft-deleted records and
+  promoted or rejected candidates no longer fail with `JSONDecodeError` on an
+  item with evidence, and remove its artifact refs. SQLite JSON text, empty
+  values and `None` decode as before (#400).
+- Close the SQLite connections that twelve storage and API runtime tests open
+  themselves, and the API runtime one of them builds, before the test removes
+  its temporary directory or restores the database, so these tests pass on
+  native Windows as they do on Linux. Test-only; no package behaviour changes
+  (#408).
 - Resolve postponed (`from __future__ import annotations`) and quoted
   annotations on `@openminion.tool` functions in their own module, keeping
   `Annotated` field descriptions and constraints. Only argument annotations
   exposed in the args schema are evaluated (return, `self`/`cls` and
   `*args`/`**kwargs` annotations are left alone), and decoration fails with a
   clear `TypeError` when an exposed argument annotation cannot be resolved.
+- Keep room participants that join with the same timestamp in join order, with
+  a per-session join sequence that runtime migration 14 adds on SQLite and
+  Postgres. `list_participants`, and the agent selected when the active agent
+  leaves, no longer depend on random participant row ids. A participant added
+  again while active keeps its place and join time; one that leaves and
+  rejoins takes a new place after every earlier join. Explicit active-agent
+  selection is unchanged. On upgrade, existing participants keep the order
+  they listed in before, so participants that already share a timestamp keep
+  their row id order (#364).
+- Upgrade note for runtime migration 14 (#364): as for migration 13, upgrade
+  every process that shares a runtime database together, keep a pre-upgrade
+  backup, and do not run a binary from before this change against the
+  upgraded database. An older writer stores no join place: the first
+  participant it adds to a session after the upgrade lists before other joins
+  with the same timestamp, adding a second one to that session fails, and a
+  participant it rejoins keeps its earlier place.
+- Report an internal brain runtime failure (the state machine's `fatal_error`
+  path, such as a tool returning a value that cannot be JSON-serialized) as
+  `run_state="failed"` on `AgentRunResult` and in the persisted run, instead of
+  `"completed"`. The existing structured `error_code`, `error_message` and
+  `error_details` stay in the result metadata. Recoverable tool errors that the
+  brain answers without a fatal transition still complete (Refs #384).
+- Close the runtime memory assembly with the `external` memory backend
+  provider: the memory service closes the external backend it owns once,
+  through a new `BackendMemoryStoreAdapter.close()` that does nothing for a
+  backend without `close()` or one it does not own, and the assembly then
+  closes its artifact store. Before, the close raised `AttributeError` and left
+  the artifact store open. With this provider the assembly also no longer
+  creates the memory store and audit sink that only the built-in backend uses,
+  so a PostgreSQL `memory.store` setting opens no engine and an unusable
+  `memory.store` setting no longer fails the build (#388).
 - Session metadata filters work on PostgreSQL.
   `list_sessions(metadata_filter=...)`, which ACP `session/list` and Focus
   directory sessions use, emitted SQLite's `json_extract` and failed there.

@@ -4,14 +4,21 @@ This opt-in profile runs one approved direct command against an operator-owned
 synthetic Docker target. It does not authorize remote, production,
 authenticated, destructive, or persistent testing.
 
-Before use, replace the worker image placeholder with an already-local image
-reference pinned by digest. Prepare a disposable target named
+Keep your normal provider configuration and default agent. Copy the `identity`
+block, `runtime.security_lab` block, and `security-researcher-local-lab` agent
+entry from [profile.json](profile.json) into that configuration. Replace the
+example echo provider with your configured provider. Keep
+`structural_tool_results=true` so saved tool-result metadata contains structural
+facts and canonical references rather than command arguments or output bodies.
+Canonical artifacts retain the execution evidence.
+
+Before use, configure your local Unix Docker socket and replace the worker image
+placeholder with an already-local image reference pinned by digest. Prepare a disposable target named
 `openminion-security-target` with `network_mode=none`, a read-only root,
 non-root user, dropped capabilities, no mounts or ports, and bounded CPU,
 memory, and PIDs.
 
-Load and admit the matching skill and identity, then start Focus without
-project context:
+Stage the matching skill:
 
 ```bash
 openminion skill ingest \
@@ -20,6 +27,23 @@ openminion skill ingest \
   --scope agent \
   --agent-id security-researcher-local-lab \
   --trust trusted_local
+```
+
+Record the returned `version_hash` and admit that exact version. Use `none`
+only for first admission; otherwise supply the current active version hash.
+
+```bash
+openminion skill admit \
+  --skill-id security-researcher-local-lab \
+  --version-hash <version-hash> \
+  --expected-active-version-hash none \
+  --target-status verified \
+  --reason "Approved synthetic local lab procedure"
+```
+
+Load the identity and start Focus without project context:
+
+```bash
 openminion identity upsert examples/identity/security-researcher-local-lab.yaml
 openminion --profile security-researcher-local-lab --no-context
 ```
