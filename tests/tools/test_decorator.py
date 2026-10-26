@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 import pytest
-from pydantic import Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from openminion.modules.tool.framework import (
     ToolDecl,
@@ -12,6 +12,7 @@ from openminion.modules.tool.framework import (
 )
 from openminion.modules.tool.registry import ToolRegistry
 from openminion.tools import tool
+from openminion.tools.decorator import _MODEL_VALIDATE_ACCEPTS_BY_NAME
 
 
 def test_decorator_bare_form_preserves_callability() -> None:
@@ -391,3 +392,38 @@ def test_decorator_handler_rejects_invalid_structured_arguments() -> None:
         )
     with pytest.raises(ValidationError):
         summarize_span.tool_decl.handler({"span": {"start": 1}})
+
+
+class _AliasedInner(BaseModel):
+    value: int = Field(alias="external", ge=0)
+    note: str = "none"
+
+
+def test_decorator_handler_accepts_nested_alias_model_mappings() -> None:
+    @tool
+    def report(inner: _AliasedInner, label: str = "all") -> str:
+        """Report inner."""
+        assert type(inner) is _AliasedInner
+        return f"{inner.value}:{inner.note}:{label}"
+
+    validated = report.tool_args_model.model_validate({"inner": {"external": 7}})
+    assert report.tool_decl.handler(validated) == "7:none:all"
+    assert report.tool_decl.handler(validated.model_dump(by_alias=True)) == "7:none:all"
+    # The runtime passes the canonical (field-name) dump of the args model.
+    # Pydantic before 2.11 cannot validate a nested model's field names
+    # without changing that model's own configuration (#436 review).
+    if _MODEL_VALIDATE_ACCEPTS_BY_NAME:
+        assert report.tool_decl.handler(validated.model_dump()) == "7:none:all"
+    else:
+        with pytest.raises(ValidationError):
+            report.tool_decl.handler(validated.model_dump())
+    # Validation, extra-key and default controls on the nested model.
+    with pytest.raises(ValidationError):
+        report.tool_decl.handler({"inner": {"external": -1}})
+    with pytest.raises(ValidationError):
+        report.tool_decl.handler({"inner": {"external": 1}, "other": 2})
+    with pytest.raises(ValidationError):
+        report.tool_decl.handler({"inner": {}})
+    assert report.tool_decl.handler({"inner": {"external": 2}, "label": "x"}) == (
+        "2:none:x"
+    )

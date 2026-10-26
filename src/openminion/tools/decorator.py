@@ -80,8 +80,10 @@ def _alias_or_name_validator(
     """Validate a handler mapping keyed by declared aliases or field names.
 
     The args model itself is unchanged; only the decorator handler accepts
-    both key forms. Pydantic releases before 2.11 get the same behavior from
-    a handler-only subclass with ``populate_by_name``.
+    both key forms. Pydantic releases before 2.11 have no per-call
+    ``by_name``; a handler-only subclass with ``populate_by_name`` covers the
+    args model's own fields, but not the field names of a nested model that
+    declares aliases, whose configuration belongs to the caller.
     """
     if _MODEL_VALIDATE_ACCEPTS_BY_NAME:
 

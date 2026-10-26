@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Event, Thread
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from openminion import Agent, APIRuntime, Handoff, tool
 from openminion.modules.tool.framework import build_registrar
@@ -447,3 +447,40 @@ def test_sdk_tool_receives_structured_arguments_as_instances(sdk_tools):
     assert type(received[0][0]) is _Window
     assert type(received[0][1]) is _Limits
     assert "WINDOW 1-4 max=3 all" in result.text
+
+
+class _AliasedFilter(BaseModel):
+    min_total: int = Field(alias="minTotal", ge=0)
+    status: str = "open"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Shared runtime, not the @tool handler: tool-command sanitizing "
+        "replaces the model's arguments with the args model's canonical "
+        "model_dump(), and the brain tool adapter then re-validates that "
+        "mapping alias-only, so an aliased argument is rejected as "
+        "INVALID_ARGUMENT before the handler runs (#436 review)."
+    ),
+)
+def test_sdk_tool_receives_nested_alias_model_argument(sdk_tools):
+    runtime, _requests, state = sdk_tools
+    runtime.config.action_policy.rules = []
+    state.update(
+        tool_name="filter_orders",
+        echo_tool_result=True,
+        tool_arguments={"query": {"minTotal": 7}},
+    )
+    received = []
+
+    @tool(name="filter_orders", min_scope="READ_ONLY", idempotent=True)
+    def filter_orders(query: _AliasedFilter) -> str:
+        received.append(query)
+        return f"FILTER min={query.min_total} status={query.status}"
+
+    result = Agent(runtime=runtime, tools=[filter_orders]).run("Filter.")
+
+    assert received == [_AliasedFilter(minTotal=7)]
+    assert type(received[0]) is _AliasedFilter
+    assert "FILTER min=7 status=open" in result.text
