@@ -12,14 +12,17 @@ from __future__ import annotations
 import collections
 import dataclasses
 import datetime
+import json
 import logging
 from pathlib import Path
 from typing import Any
 
 import pytest
+from typer.testing import CliRunner, Result
 
 from openminion import Agent, APIRuntime
 from openminion.base.config import ConfigManager, OpenMinionConfig, save_config
+from openminion.modules.memory import cli as memory_cli
 from openminion.modules.memory.config import from_base_config
 from openminion.modules.memory.models import MemoryRecord
 from openminion.modules.memory.runtime import session_lifecycle
@@ -29,6 +32,7 @@ from openminion.modules.memory.runtime.gc import (
     enforce_scope_capacity,
     evict_stale_insights,
 )
+from openminion.modules.memory.runtime.purge import purge_soft_deleted
 from openminion.modules.memory.storage.audit import (
     AuditedMemoryStore,
     InMemoryMemoryAuditSink,
@@ -285,12 +289,85 @@ def check_stale_insight_eviction(
     )
 
 
+def check_purge_soft_deleted(
+    target: Any, store: Any, sink: InMemoryMemoryAuditSink
+) -> None:
+    # memctl gc purges through the AuditedMemoryStore it builds (#401).
+    store.put(_record("kept"))
+    store.put(_record("purged"))
+    store.delete("purged")
+
+    result = purge_soft_deleted(target)
+
+    kept = store.get("kept")
+    _check(
+        (
+            (result.deleted_records, result.deleted_candidates),
+            kept is not None and not kept.is_deleted,
+            store.get("purged"),
+            sink.events,
+        ),
+        ((1, 0), True, None, []),
+    )
+
+
 RETENTION_SCENARIOS = (
     pytest.param(check_confidence_decay, id="decay"),
     pytest.param(check_summary_compression, id="summaries"),
     pytest.param(check_scope_capacity, id="capacity"),
     pytest.param(check_stale_insight_eviction, id="insights"),
+    pytest.param(check_purge_soft_deleted, id="purge"),
 )
+
+
+def seed_memctl_gc_records(store: Any) -> None:
+    """A fact that decays from 0.8 to 0.6 and a soft-deleted one to purge."""
+    store.put(_record("old", scope="agent:a", confidence=0.8, age_days=28))
+    store.put(_record("deleted", scope="agent:a", confidence=0.8, age_days=28))
+    store.delete("deleted")
+
+
+MEMCTL_SECTIONS: dict[str, Any] = {
+    "defaults": {
+        "confidence": {
+            "user_said": 0.7,
+            "tool_output": 0.8,
+            "agent_inferred": 0.4,
+            "validated": 0.95,
+            "imported": 0.9,
+        }
+    },
+    "promotion": {
+        "require_approval_for_global": True,
+        "auto_promote_agent_procedures": True,
+        "allowlisted_auto_rules": [],
+    },
+    "retrieval": {"max_results": 25, "min_confidence_default": 0.55, "pin_first": True},
+    "retention": {"enable_soft_delete": True, "gc_enabled": True, "gc_batch_size": 500},
+}
+
+
+def run_memctl_gc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, store_config: dict[str, Any]
+) -> Result:
+    """Run the real `memctl gc` with a typed memctl config file for its store.
+
+    No `--db`: memctl's `_get_service` builds the store from the config, wraps
+    it in its `AuditedMemoryStore`, and `gc` runs the retention pass too.
+    """
+    config_path = tmp_path / "memory.yaml"
+    config = {"version": 1, "memctl": {**MEMCTL_SECTIONS, "store": store_config}}
+    config_path.write_text(json.dumps(config), encoding="utf-8")  # JSON is YAML
+    monkeypatch.setenv("MEMCTL_CONFIG", str(config_path))
+    return CliRunner().invoke(memory_cli._build_app(), ["gc"])
+
+
+def memctl_gc_rows(store: Any) -> dict[str, Any]:
+    old = store.get("old")
+    return {
+        "old": (round(old.confidence, 3), old.is_deleted),
+        "deleted": store.get("deleted"),
+    }
 
 
 def _lifecycle_runtime(root: Path, memory_url: str | None) -> APIRuntime:
