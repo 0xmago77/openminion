@@ -7,6 +7,18 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Document what `openminion storage backup` covers in a SQLite runtime home.
+  The command snapshots one file and refuses the module databases that carry
+  their own `application_id` (artifact, authored tools, brain, identity,
+  memory, policy, retrieve, skill and telemetry). The upgrade guide now lists
+  the files of a default runtime home with the command's result for each,
+  backs up the refused ones with SQLite's backup API while every writer is
+  stopped, and restores them for a rollback. It also states where the brain
+  working state gets `turn_evidence` and `turn_evidence_trace_id`: the typed
+  save adds them, while the turn-start reset rewrites the stored state with
+  its existing keys, so the first row a runtime turn writes after the upgrade
+  can lack both. The working state lives in the brain's session store, not in
+  the runtime database (`docs/runtime-database-upgrades.md`, Refs #419).
 - Close what a runtime memory assembly build obtained when the build fails
   partway. The artifact store, and the memory store with its audit sink for
   the built-in backend, are closed once each through their current owner,

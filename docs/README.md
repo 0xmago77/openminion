@@ -26,8 +26,8 @@ package source and release surface.
   retired dashboard areas, and resource-command boundaries.
 - [`runtime-database-upgrades.md`](runtime-database-upgrades.md): coordinated
   upgrades for runtime migrations that add derived data and for new brain
-  working state fields, and session metadata filter behavior on SQLite and
-  PostgreSQL.
+  working state fields, backup and rollback of every database in a SQLite
+  runtime home, and session metadata filter behavior on SQLite and PostgreSQL.
 - [`memory-namespace-queries.md`](memory-namespace-queries.md): typed memory
   list/search filters across `memctl` and the local HTTP API.
 - [`memory-review-workflow.md`](memory-review-workflow.md): digest-bound
