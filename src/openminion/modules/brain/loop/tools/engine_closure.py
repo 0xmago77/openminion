@@ -21,7 +21,13 @@ from .duplicate_batch import (
     _eligible_duplicate_batch_execution_facts,
     _force_duplicate_batch_answer_only_closure,
 )
-from .plan_control import completable_active_plan_id, unresolved_active_plan_step_ids
+from .plan_control import (
+    PLAN_ACTION_COMPLETE,
+    PLAN_TOOL_NAME,
+    completable_active_plan_id,
+    plan_tool_call_advances_active_plan,
+    unresolved_active_plan_step_ids,
+)
 from .status import emit_adaptive_status
 from .telemetry import _emit_iteration_event
 
@@ -120,6 +126,13 @@ class AdaptiveLoopRunnerClosureMixin:
         prepared: Any,
     ) -> tuple[bool, AdaptiveToolLoopOutcome | None]:
         if signature not in set(self.loop_state.seen_signatures):
+            return False, None
+        if all(
+            call.name == PLAN_TOOL_NAME
+            and call.arguments.get("action") == PLAN_ACTION_COMPLETE
+            and plan_tool_call_advances_active_plan(self.loop_ctx, call.arguments)
+            for call in tool_calls
+        ):
             return False, None
         duplicate_retry_counts = _duplicate_batch_retry_counts(self.loop_state)
         duplicate_retry_count = int(duplicate_retry_counts.get(signature, 0) or 0)

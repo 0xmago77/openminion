@@ -350,3 +350,56 @@ def test_sdk_session_lifecycle_applies_retention_once_on_postgres(
     check_session_lifecycle_runs_once(
         tmp_path / "root", monkeypatch, caplog, memory_url
     )
+
+
+def test_failed_memory_assembly_build_disposes_its_postgres_engine_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    memory_database: tuple[str, Callable[[], int]],
+) -> None:
+    """A build that raises after the store exists closes it (#390)."""
+    memory_url, server_connections = memory_database
+    stores: list[object] = []
+    disposed: list[object] = []
+    resolve_backend = runtime_memory.resolve_memory_backend
+
+    def record_backend(**kwargs):
+        resolved = resolve_backend(**kwargs)
+        event.listen(resolved.store._engine, "engine_disposed", disposed.append)
+        stores.append(resolved.store)
+        return resolved
+
+    def unavailable_gateway(*_args, **_kwargs):
+        raise RuntimeError("gateway unavailable")
+
+    monkeypatch.setattr(runtime_memory, "resolve_memory_backend", record_backend)
+    memory_config = {"store": {"backend": "postgres", "postgres": {"url": memory_url}}}
+    config = OpenMinionConfig()
+    config.runtime.memory_enabled = True
+    config.runtime.memory_provider = "memory_v2"
+    try:
+        with pytest.raises(RuntimeError, match="gateway unavailable"):
+            runtime_memory.build_memory_v2_runtime_assembly(
+                config=config,
+                agent_id="alpha",
+                memory_root=tmp_path,
+                logger=logging.getLogger("test.memory.postgres"),
+                config_manager=None,
+                home_root=None,
+                data_root=None,
+                session_context=None,
+                retrieve_ctl=None,
+                storage_path=None,
+                adapter_cls=unavailable_gateway,
+                resolve_runtime_memory_config_fn=lambda **kwargs: memory_config,
+                artifactctl_factory=lambda: None,
+            )
+        disposals_after_failure = len(disposed)
+        open_after_failure = _settled_connections(server_connections)
+    finally:
+        for store in stores:
+            store._engine.dispose()
+
+    assert [type(store) for store in stores] == [PostgresMemoryStore]
+    assert disposals_after_failure == 1
+    assert open_after_failure == 0

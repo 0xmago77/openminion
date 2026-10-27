@@ -1,3 +1,4 @@
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable, cast
 
@@ -243,72 +244,104 @@ def build_memory_v2_runtime_assembly(
         adapter.disabled_reason = "backend_none"
         return RuntimeMemoryAssembly(gateway=adapter)
     db_path = memory_root / SERVICES_MEMORY_DB_FILENAME
-    try:
-        artifactctl = _runtime_artifactctl(artifactctl_factory, config_manager)
-    except Exception:
-        artifactctl = None
-    audited_store = None
-    if backend_config.provider == "sophiagraph":
-        resolved = resolve_memory_backend(
-            config=memory_config, db_path=db_path, artifactctl=artifactctl
+    with _MemoryBuildOwners(artifactctl_factory, config_manager) as owners:
+        artifactctl = owners.artifactctl
+        audited_store = None
+        if backend_config.provider == "sophiagraph":
+            audited_store = owners.audited_store(memory_config, db_path)
+        ranking_config = memory_runtime_configuration.merged_ranking_config(
+            memory_config=memory_config,
+            retrieve_ctl=retrieve_ctl,
         )
+        candidate_learning_config = (
+            memory_runtime_configuration.merged_candidate_learning_config(
+                memory_config=memory_config
+            )
+        )
+        memory_runtime_configuration.register_memory_backend_factories(
+            audited_store=audited_store,
+            vector_adapter=vector_adapter,
+        )
+        backend = instantiate_backend(config=backend_config)
+        service = owners.store_owner = MemoryService(
+            backend=backend,
+            ranking_config=ranking_config,
+            vector_adapter=vector_adapter,
+            owns_store=True,
+        )
+        memory_runtime_configuration.configure_memory_service_runtime(
+            service=service,
+            memory_config=memory_config,
+            retrieve_ctl=retrieve_ctl,
+            ranking_config=ranking_config,
+            candidate_learning_config=candidate_learning_config,
+        )
+        gateway = _build_memory_v2_gateway(
+            adapter_cls=adapter_cls,
+            service=service,
+            agent_id=agent_id,
+            config=config,
+            config_manager=config_manager,
+            session_context=session_context,
+            logger=logger,
+            retrieve_ctl=retrieve_ctl,
+            memory_config=memory_config,
+            ranking_config=ranking_config,
+            candidate_learning_config=candidate_learning_config,
+            backend=backend,
+            backend_provider=backend_config.provider,
+            storage_path=storage_path,
+            vector_adapter=vector_adapter,
+        )
+        return active_runtime_memory_assembly(
+            gateway=gateway,
+            service=service,
+            agent_id=agent_id,
+            vector_adapter=vector_adapter,
+            scheduler=scheduler,
+            delegated_store=backend
+            if backend_config.provider == "sophiagraph"
+            else None,
+            artifactctl=artifactctl,
+        )
+
+
+class _MemoryBuildOwners:
+    """Close what a failed memory assembly build obtained, keeping its error.
+
+    `store_owner` is the one current closer of the memory store: the raw
+    store, then the audited store, then the service. A successful build hands
+    it and the artifact store to the assembly.
+    """
+
+    def __init__(self, artifactctl_factory: Any, config_manager: Any) -> None:
+        try:
+            self.artifactctl = _runtime_artifactctl(artifactctl_factory, config_manager)
+        except Exception:
+            self.artifactctl = None
+        self.store_owner: Any = None
+
+    def audited_store(self, memory_config: Any, db_path: Path) -> AuditedMemoryStore:
+        resolved = resolve_memory_backend(
+            config=memory_config, db_path=db_path, artifactctl=self.artifactctl
+        )
+        self.store_owner = resolved.store
         audit_sink = SQLiteMemoryAuditSink(default_memory_audit_db_path(db_path))
-        audited_store = AuditedMemoryStore(
+        self.store_owner = AuditedMemoryStore(
             resolved.store, sink=audit_sink, owns_store=True, owns_sink=True
         )
-    ranking_config = memory_runtime_configuration.merged_ranking_config(
-        memory_config=memory_config,
-        retrieve_ctl=retrieve_ctl,
-    )
-    candidate_learning_config = (
-        memory_runtime_configuration.merged_candidate_learning_config(
-            memory_config=memory_config
-        )
-    )
-    memory_runtime_configuration.register_memory_backend_factories(
-        audited_store=audited_store,
-        vector_adapter=vector_adapter,
-    )
-    backend = instantiate_backend(config=backend_config)
-    service = MemoryService(
-        backend=backend,
-        ranking_config=ranking_config,
-        vector_adapter=vector_adapter,
-        owns_store=True,
-    )
-    memory_runtime_configuration.configure_memory_service_runtime(
-        service=service,
-        memory_config=memory_config,
-        retrieve_ctl=retrieve_ctl,
-        ranking_config=ranking_config,
-        candidate_learning_config=candidate_learning_config,
-    )
-    gateway = _build_memory_v2_gateway(
-        adapter_cls=adapter_cls,
-        service=service,
-        agent_id=agent_id,
-        config=config,
-        config_manager=config_manager,
-        session_context=session_context,
-        logger=logger,
-        retrieve_ctl=retrieve_ctl,
-        memory_config=memory_config,
-        ranking_config=ranking_config,
-        candidate_learning_config=candidate_learning_config,
-        backend=backend,
-        backend_provider=backend_config.provider,
-        storage_path=storage_path,
-        vector_adapter=vector_adapter,
-    )
-    return active_runtime_memory_assembly(
-        gateway=gateway,
-        service=service,
-        agent_id=agent_id,
-        vector_adapter=vector_adapter,
-        scheduler=scheduler,
-        delegated_store=backend if backend_config.provider == "sophiagraph" else None,
-        artifactctl=artifactctl,
-    )
+        return cast(AuditedMemoryStore, self.store_owner)
+
+    def __enter__(self) -> "_MemoryBuildOwners":
+        return self
+
+    def __exit__(self, exc_type: Any, *_exc: Any) -> None:
+        if exc_type is None:
+            return
+        for owner in (self.store_owner, self.artifactctl):
+            if owner is not None:
+                with suppress(Exception):
+                    owner.close()
 
 
 def _runtime_artifactctl(

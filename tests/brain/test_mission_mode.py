@@ -980,6 +980,72 @@ def test_turn_closure_rejects_mutation_claim_without_mutation_tool_evidence(
     assert "mutation_claim_without_tool_evidence" in judgment.reason
 
 
+@pytest.mark.parametrize(
+    ("mutation_claimed", "file_written", "expected_close"),
+    [(False, False, True), (True, False, False), (True, True, True)],
+)
+def test_turn_closure_distinguishes_publication_from_workspace_edits(
+    tmp_path: Path, mutation_claimed: bool, file_written: bool, expected_close: bool
+) -> None:
+    review_ref = (
+        "artifact://sha256/"
+        "e2877ae41ece206e92ceac56b4ef78b02291b4811715053cab376d71ba1f317a"
+    )
+    tool_results = [
+        {"tool_name": "file.read", "ok": True},
+        {
+            "tool_name": "security.review_report",
+            "ok": True,
+            "verified": True,
+            "data": {
+                "review_kind": "follow_up",
+                "review_status": "resolved",
+                "review_ref": review_ref,
+                "artifact_refs": [review_ref],
+            },
+        },
+    ]
+    if file_written:
+        tool_results.append({"tool_name": "file.write", "ok": True})
+    final_answer = f"Published the resolved follow-up review: {review_ref}. " + (
+        "I also updated app.py in this turn."
+        if mutation_claimed
+        else "I verified another actor's earlier app.py repair; I made no source edits."
+    )
+    judgment = _evaluate_closure_case(
+        tmp_path,
+        session_id="s-publication-workspace-claim",
+        goal="Review the prior repair, publish the follow-up review, then stop.",
+        closure_payload={
+            "satisfied": True,
+            "reason": "The follow-up review was published successfully.",
+            "next_action": "close",
+            "final_answer": final_answer,
+            "mutation_claimed": mutation_claimed,
+        },
+        action_result=ActionResult(
+            command_id="call_042c7d06b0d54389bac83114",
+            status="success",
+            summary="Published security review with status=resolved",
+            outputs={
+                "adaptive.finalization_status": {
+                    "status": "final_answer",
+                    "reasoning": "The follow-up review is published and resolved.",
+                },
+                "tool_results": tool_results,
+            },
+        ),
+        completion_reason="research_final_text",
+    )
+
+    assert judgment.satisfied is expected_close
+    assert judgment.next_action == ("close" if expected_close else "continue")
+    assert judgment.final_answer == (final_answer if expected_close else None)
+    assert ("mutation_claim_without_tool_evidence" in judgment.reason) is (
+        not expected_close
+    )
+
+
 def test_turn_closure_rejects_typed_incomplete_status(tmp_path: Path) -> None:
     judgment = _evaluate_closure_case(
         tmp_path,
