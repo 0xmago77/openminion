@@ -7,6 +7,20 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Close what a runtime memory assembly build obtained when the build fails
+  partway. The artifact store, and the memory store with its audit sink for
+  the built-in backend, are closed once each through their current owner,
+  and the build's own error reaches the caller even when a close fails. A
+  PostgreSQL memory store disposes its engine instead of keeping a server
+  connection. Successful builds hand both to the assembly as before
+  (Refs #390).
+
+## Current package line - 2026-10-26 update
+
+- Raise the default tool budgets for longer real-world tasks to 160 calls per
+  run, 80 calls per tool, 320 weighted tool-cost units, and 64 adaptive tool
+  calls. Explicit saved limits and independent client timeouts remain
+  unchanged (Refs #438).
 - Check an entry step's text answer against the turn's typed freshness
   obligations before it ends the turn, as a judge's closing answer is
   checked. The respond route now finalizes the entry text with
@@ -59,13 +73,6 @@ This file tracks package-facing release notes for `openminion`.
   the one-level wrapper resolution the retention helpers use since #392,
   which moves into the purge module. The purge SQL, auditing and errors are
   unchanged (Refs #401).
-- Close what a runtime memory assembly build obtained when the build fails
-  partway. The artifact store, and the memory store with its audit sink for
-  the built-in backend, are closed once each through their current owner,
-  and the build's own error reaches the caller even when a close fails. A
-  PostgreSQL memory store disposes its engine instead of keeping a server
-  connection. Successful builds hand both to the assembly as before
-  (Refs #390).
 
 ## Current package line - 2026-10-26
 
