@@ -266,7 +266,7 @@ def test_operator_reads_full_canonical_evidence_and_complete_handoff(
             in approved["delivery"]
         )
         assert (
-            "the runtime then verifies and creates the child artifact"
+            "do not execute commands and leave verification to the runtime"
             in approved["delivery"]
         )
         assert "returned by task.delegate" in approved["delivery"]
