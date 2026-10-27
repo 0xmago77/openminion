@@ -399,7 +399,7 @@ def _handoff(
             "verification_timeout_seconds": DEFAULT_PROJECT_VERIFICATION_TIMEOUT_SECONDS,
             "failing_before_exit_code": 1,
             "operator_approved": True,
-            "delivery": f"Use exactly three task.delegate calls: one mode=sync to {_IMPLEMENTER}, one mode=review, then one mode=accept; parent must not edit app.py. "
+            "delivery": f"Use exactly three task.delegate calls: one code-bearing mode=sync to {_IMPLEMENTER}, one mode=review, then one mode=accept; parent must not edit app.py. "
             "Instruct that child to edit only app.py using the existing file.write allowance and return a change summary; the runtime then verifies and creates the child artifact. "
             f"Use task.delegate mode=review with distinct {_CODE_REVIEWER}; instruct the reviewer to assess the supplied diff and verifier evidence without tools. "
             "After a passing review, accept the same full record_alias and target_digest returned by task.delegate; never ask the child to create them or abbreviate them. "
