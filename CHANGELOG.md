@@ -22,8 +22,11 @@ This file tracks package-facing release notes for `openminion`.
   aliases and canonical field names, and passes the validated field values;
   defaults and `Annotated` constraints apply and invalid mappings raise
   `ValidationError`. With Pydantic before 2.11, a nested model that declares
-  aliases is accepted by alias only. The shared built-in tool mapping
-  contract is unchanged (Refs #435).
+  aliases is accepted by alias only. This changes the decorator handler
+  only: the shared built-in tool mapping contract is unchanged, so a normal
+  SDK `Agent.run` call with an aliased argument, top-level or nested, is
+  still rejected before the handler runs, as it is without this change. That
+  runtime alias bug is tracked separately (Refs #435).
 
 ## Current package line - 2026-10-26 update
 
