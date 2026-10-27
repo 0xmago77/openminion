@@ -461,7 +461,10 @@ class _AliasedFilter(BaseModel):
         "replaces the model's arguments with the args model's canonical "
         "model_dump(), and the brain tool adapter then re-validates that "
         "mapping alias-only, so an aliased argument is rejected as "
-        "INVALID_ARGUMENT before the handler runs (#436 review)."
+        "INVALID_ARGUMENT before the handler runs. Pre-existing on dev; "
+        "tracked in https://github.com/openminion/openminion/issues/454 "
+        "(#454). A pass here does not mean the SDK alias path is fixed "
+        "until #454 is resolved."
     ),
 )
 def test_sdk_tool_receives_nested_alias_model_argument(sdk_tools):

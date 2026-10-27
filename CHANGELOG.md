@@ -26,7 +26,7 @@ This file tracks package-facing release notes for `openminion`.
   only: the shared built-in tool mapping contract is unchanged, so a normal
   SDK `Agent.run` call with an aliased argument, top-level or nested, is
   still rejected before the handler runs, as it is without this change. That
-  runtime alias bug is tracked separately (Refs #435).
+  runtime alias bug is tracked in #454 (Refs #435).
 
 ## Current package line - 2026-10-26 update
 
