@@ -27,6 +27,16 @@ This file tracks package-facing release notes for `openminion`.
   SDK `Agent.run` call with an aliased argument, top-level or nested, is
   still rejected before the handler runs, as it is without this change. That
   runtime alias bug is tracked in #454 (Refs #435).
+- Start `APIRuntime` with PostgreSQL runtime storage (`storage.backend:
+  postgres`). The start read the runtime record store's SQLite connection for
+  every backend and failed with `runtime record_store does not expose sqlite
+  connection`, so commands such as `openminion room create` exited with a
+  startup error. `APIRuntime.storage_connection`, and the compatibility
+  wrapper's `OpenMinionRuntime.storage`, are now the SQLite connection on
+  SQLite, unchanged, and `None` for other backends; sessions and rooms go
+  through `runtime.sessions` on either backend. A SQLite record store without
+  a connection still fails the start with the same error. What is covered on
+  PostgreSQL is listed in `docs/runtime-database-upgrades.md` (Refs #437).
 
 ## Current package line - 2026-10-26 update
 
