@@ -19,7 +19,7 @@ This file tracks package-facing release notes for `openminion`.
   already does. A command that prints `"ok": false` and returns 2, such as
   `pool-stats` without a PostgreSQL URL, now exits 2 instead of 0. The
   printed output is unchanged, and a command that raises still exits 1
-  (Refs #412).
+  (Refs #450, #412).
 
 ## Current package line - 2026-10-26 update
 
