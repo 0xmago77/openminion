@@ -88,7 +88,10 @@ review admission. Before launch or resumed mutation:
    limits. Do not activate security tools for coding.
 6. Require an isolated code-bearing child, passing verifier, independent
    readonly child review of the exact patch and allowed paths, then explicit
-   parent accept/reject. Do not integrate before these pass. A correction needs
+   parent accept/reject. Ask the child for edits and a change summary; the runtime
+   verifies and creates the artifact after the child returns. Use the full
+   `record_alias` and `target_digest` returned by `task.delegate` for review and
+   acceptance. Do not ask the child to create them. Do not integrate before these pass. A correction needs
    a new reviewed artifact. Commit the accepted patch and record its new clean
    full revision.
 

@@ -400,9 +400,9 @@ def _handoff(
             "failing_before_exit_code": 1,
             "operator_approved": True,
             "delivery": f"Delegate exactly one code-bearing child to {_IMPLEMENTER}; parent must not edit app.py. "
-            "Instruct that child to edit only app.py using the existing file.write allowance; leave verification to the runtime. "
+            "Instruct that child to edit only app.py using the existing file.write allowance and return a change summary; the runtime then verifies and creates the child artifact. "
             f"Use task.delegate mode=review with distinct {_CODE_REVIEWER}; instruct the reviewer to assess the supplied diff and verifier evidence without tools. "
-            "After a passing review, accept the same full record_alias and target_digest returned by the child; never abbreviate them. "
+            "After a passing review, accept the same full record_alias and target_digest returned by task.delegate; never ask the child to create them or abbreviate them. "
             "No security tools, network, installation, push or PR. Do not commit; operator commits accepted patch. "
             "Use the configured verifier and git.status. Call plan directly, not through tool.request. "
             "Mark each work step completed, then complete the public task plan once.",
