@@ -107,6 +107,13 @@ def publish_security_audit(
         redaction_count=redaction_count,
         evidence_refs=[item.evidence_ref for item in args.check_evidence],
     )
+    try:
+        report = SecurityAuditReport.model_validate(report.model_dump())
+    except ValidationError as exc:
+        raise ToolRuntimeError(
+            "INVALID_ARGUMENT",
+            "redacted report exceeds field limits; shorten the prose",
+        ) from exc
     artifact = ctx.write_artifact(
         f"security/audit-{assessment_id}.json",
         report.model_dump_json(exclude_none=True, indent=2).encode(),

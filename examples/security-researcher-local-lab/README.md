@@ -12,11 +12,47 @@ example echo provider with your configured provider. Keep
 facts and canonical references rather than command arguments or output bodies.
 Canonical artifacts retain the execution evidence.
 
-Before use, configure your local Unix Docker socket and replace the worker image
-placeholder with an already-local image reference pinned by digest. Prepare a disposable target named
-`openminion-security-target` with `network_mode=none`, a read-only root,
-non-root user, dropped capabilities, no mounts or ports, and bounded CPU,
-memory, and PIDs.
+## Prepare the synthetic target
+
+Use an already-local digest-pinned image containing `python3` and its standard
+library, supporting numeric UID/GID `10001:10001`, and declaring no volumes.
+Set `lab_socket` to the same local Unix socket as `runtime.security_lab.daemon_socket`.
+Replace the image placeholder before running this example; it never pulls an
+image. Keep the separately configured worker image pinned and already local too.
+
+```bash
+lab_socket='unix:///absolute/path/to/docker.sock'
+lab_target_image='target-repository@sha256:APPROVED_DIGEST'
+lab_target_id=$(docker --host "$lab_socket" run --detach \
+  --name openminion-security-target --pull=never --network=none \
+  --read-only --user=10001:10001 --cap-drop=ALL \
+  --security-opt=no-new-privileges --pids-limit=32 --cpus=0.5 \
+  --memory=67108864 --restart=no --no-healthcheck \
+  --entrypoint=python3 "$lab_target_image" -B -u -c '
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"synthetic authorization bypass: guest received fixture data"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+server = HTTPServer(("0.0.0.0", 8080), Handler)
+print("fixture ready", flush=True)
+server.serve_forever()
+')
+docker --host "$lab_socket" logs "$lab_target_id"
+```
+
+Confirm `fixture ready` before activation. This deliberately defective HTTP
+fixture contains synthetic data only. No host ports or directories are mounted;
+`http://127.0.0.1:8080/defect` is reachable by the approved worker sharing the
+target network namespace, not by a host browser. An existing target with this
+name must be inspected separately; do not replace it blindly.
+
+## Activate the profile
 
 Stage the matching skill:
 
@@ -62,4 +98,9 @@ findings whose evidence belongs to the same live activation.
 If a host crash leaves a worker, inspect its
 `openminion.security_lab.session` label and remove that exact container with
 `docker rm --force <container-id>` before approving another run. Deactivate
-the profile when the bounded test is complete.
+the profile when the bounded test is complete. Then remove only the target ID
+returned by your setup command:
+
+```bash
+docker --host "$lab_socket" rm --force --volumes "$lab_target_id"
+```

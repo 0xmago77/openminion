@@ -33,6 +33,7 @@ from openminion.tools.security.schemas import (
     LocalScanArgs,
     ScanError,
     SecurityAuditPublishArgs,
+    SecurityAuditReport,
     SecurityConfigurationIdentity,
     SecurityFinding,
     SecurityScanResult,
@@ -589,7 +590,9 @@ def test_report_validates_scanner_finding_links_and_redacts_text(audit_context) 
         ),
         ctx,
     )
-    report = json.loads(ctx.artifactctl.read_bytes(result["report_ref"]))
+    report = SecurityAuditReport.model_validate_json(
+        ctx.artifactctl.read_bytes(result["report_ref"])
+    ).model_dump()
 
     assert result["candidate_count"] == 1
     assert result["redaction_count"] == 4
@@ -608,6 +611,40 @@ def test_report_validates_scanner_finding_links_and_redacts_text(audit_context) 
             ),
             ctx,
         )
+
+
+@pytest.mark.parametrize("field,limit", [("title", 300), ("objective", 2000)])
+def test_report_rejects_redaction_expansion_before_publication(
+    audit_context, field, limit
+) -> None:
+    ctx, revision = audit_context
+    ref = _store_scan(ctx, _scan(check="code", revision=revision, finding=True))
+    stored_before = {item.sha256 for item in ctx.artifactctl.list_recent()}
+    finding = {
+        "finding_id": "candidate-1",
+        "basis": "scanner",
+        "disposition": "candidate",
+        "title": "Candidate issue",
+        "category": "credential",
+        "severity": "high",
+        "confidence": "high",
+        "description": "Review the scanner evidence.",
+        "locations": [{"path": "app.py", "line": 1}],
+        "evidence_ref": ref,
+        "scanner_finding_ids": ["scanner-finding-1"],
+    }
+    payload = _publish_args(revision=revision, refs={"code": ref}, findings=[finding])
+    target = payload["scope"] if field == "objective" else finding
+    target[field] = "x" * (limit - 11) + " password=x"
+    SecurityAuditPublishArgs.model_validate(payload)
+
+    with pytest.raises(ToolRuntimeError, match="shorten the prose") as error:
+        _h_publish_report(payload, ctx)
+
+    assert error.value.code == "INVALID_ARGUMENT"
+    assert "password=x" not in str(error.value)
+    assert {item.sha256 for item in ctx.artifactctl.list_recent()} == stored_before
+    assert ctx.artifacts == []
 
 
 def test_report_schema_rejects_absolute_manual_evidence_and_review_override(
