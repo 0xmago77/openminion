@@ -338,9 +338,12 @@ def _build_closure_hints(
                 "final_answer must preserve that requested shape. Do not close with a "
                 "progress note, future-work narration, raw tool transcript, or a prose "
                 "summary that omits required headings. Set mutation_claimed=true only "
-                "when final_answer says that files or other artifacts in the current "
-                "workspace changed. External service, account, or network state changes "
-                "do not count as workspace mutations."
+                "when final_answer claims the current turn changed files in the user workspace. "
+                "Publishing result, report, or review artifacts alone does not count, nor does "
+                "describing or verifying another actor's earlier edits. If the answer also "
+                "claims current-turn workspace file edits, set mutation_claimed=true; those "
+                "edits still require successful file-write or file-edit evidence. External "
+                "service, account, or network state changes do not count as workspace mutations."
             )
         },
     }
