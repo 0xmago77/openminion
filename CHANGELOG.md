@@ -14,6 +14,12 @@ This file tracks package-facing release notes for `openminion`.
   PostgreSQL memory store disposes its engine instead of keeping a server
   connection. Successful builds hand both to the assembly as before
   (Refs #390).
+- Make `python -m openminion.modules.storage` exit with the status that
+  storagectl's `main()` returns, as `python -m openminion.modules.storage.cli`
+  already does. A command that prints `"ok": false` and returns 2, such as
+  `pool-stats` without a PostgreSQL URL, now exits 2 instead of 0. The
+  printed output is unchanged, and a command that raises still exits 1
+  (Refs #412).
 
 ## Current package line - 2026-10-26 update
 
