@@ -18,7 +18,7 @@ This file tracks package-facing release notes for `openminion`.
   save adds them, while the turn-start reset rewrites the stored state with
   its existing keys, so the first row a runtime turn writes after the upgrade
   can lack both. The working state lives in the brain's session store, not in
-  the runtime database (`docs/runtime-database-upgrades.md`, Refs #419).
+  the runtime database (`docs/runtime-database-upgrades.md`, Refs #452, #419).
 - Close what a runtime memory assembly build obtained when the build fails
   partway. The artifact store, and the memory store with its audit sink for
   the built-in backend, are closed once each through their current owner,
