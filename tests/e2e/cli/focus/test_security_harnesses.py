@@ -265,7 +265,11 @@ def test_operator_reads_full_canonical_evidence_and_complete_handoff(
             "edit only app.py using the existing file.write allowance"
             in approved["delivery"]
         )
-        assert "leave verification to the runtime" in approved["delivery"]
+        assert (
+            "do not execute commands and leave verification to the runtime"
+            in approved["delivery"]
+        )
+        assert "returned by task.delegate" in approved["delivery"]
         large = review.model_copy(deep=True)
         large.remediation_brief[0].verification_criteria = ["criterion" * 500]
         with pytest.raises(AssertionError, match="does not fit"):

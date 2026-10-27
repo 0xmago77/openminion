@@ -40,9 +40,12 @@ allowed-roots setting is absent, scans stay inside the current OpenMinion
 workspace.
 
 Trivy runs with database and checks-bundle updates disabled. Prepare an
-approved local database outside OpenMinion before vulnerability scanning. A
-missing scanner, rule configuration, or local database is reported as
-`unavailable`; it is never converted to a clean scan.
+approved local database outside OpenMinion before vulnerability scanning.
+Missing executables or rule configuration are reported as `unavailable`.
+If Trivy exits unsuccessfully without a report, including when its database is absent, the
+result is `failed` with `EXEC_ERROR` and its bounded, redacted diagnostic.
+Prepare the required database in the scanner's configured cache and retry the
+scan explicitly. A setup failure is never converted to a clean scan.
 
 ## Focus workflow
 
@@ -127,6 +130,11 @@ bundles.
 
 ## Safety and proof boundaries
 
+Readonly scanners run as host processes against trusted local source and
+operator-controlled scanner configuration; approved roots are not a sandbox
+for hostile repositories. The output cap limits returned results after
+collection, not peak scanner or host memory usage.
+
 The local MVP does not:
 
 - install scanners or download rule/vulnerability databases,
@@ -180,6 +188,36 @@ identities are resolved from trusted evidence. Reports remain unreviewed and
 sensitive local evidence.
 
 ## Opt-in live validation
+
+Installed scanner checks can run without a model provider. The Semgrep check
+uses `OPENMINION_TEST_INSTALLED_SECURITY=1`. The Trivy check uses the separate
+`OPENMINION_TEST_INSTALLED_TRIVY=1` opt-in and exercises dependency, IaC and
+synthetic-secret findings, canonical redacted evidence, and a missing-database
+failure. An explicit opt-in fails if its required scanner/assets are missing.
+
+Prepare an approved Trivy vulnerability database outside OpenMinion, then
+point the tests at that cache. For example, this operator-run preparation step
+downloads the official database into the selected cache:
+
+```bash
+trivy image --download-db-only --cache-dir /absolute/path/to/trivy-cache
+```
+
+Then run the offline checks; the tests disable dependency-identification API
+requests and the adapters keep database/check updates disabled:
+
+```bash
+export TRIVY_CACHE_DIR=/absolute/path/to/trivy-cache
+export OPENMINION_TEST_INSTALLED_SECURITY=1
+export OPENMINION_TEST_INSTALLED_TRIVY=1
+.venv/bin/python3.11 -m pytest -q \
+  tests/tools/security/test_installed_lifecycle.py \
+  --basetemp=/absolute/path/to/fresh/scanner-evidence
+```
+
+Retain the Trivy version and cache `db/metadata.json` with the test result;
+database age affects vulnerability coverage. This proves the selected local
+scanner/assets, not every package ecosystem or vulnerability class.
 
 Three tests exercise the external workflows independently. They stay outside
 ordinary hosted CI. Run from a development checkout with a fresh evidence

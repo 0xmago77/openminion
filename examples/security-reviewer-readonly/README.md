@@ -88,9 +88,78 @@ review admission. Before launch or resumed mutation:
    limits. Do not activate security tools for coding.
 6. Require an isolated code-bearing child, passing verifier, independent
    readonly child review of the exact patch and allowed paths, then explicit
-   parent accept/reject. Do not integrate before these pass. A correction needs
+   parent accept/reject. Ask the child for edits and a change summary; the runtime
+   verifies and creates the artifact after the child returns. Use the full
+   `record_alias` and `target_digest` returned by `task.delegate` for review and
+   acceptance. Do not ask the child to create them. Do not integrate before these pass. A correction needs
    a new reviewed artifact. Commit the accepted patch and record its new clean
    full revision.
+
+### Example handoff and launch
+
+For a synthetic `app.py` authorization repair, save this as `handoff.json`
+**outside the repository** so the base stays clean. Replace every placeholder
+with the inspected artifact facts and copy the complete selected accepted brief
+verbatim; the sample brief below illustrates its shape, not an approval.
+Use the real failing-before result and an operator-approved verifier/timeout.
+
+```json
+{
+  "report_ref": "artifact://sha256/<report-hash>",
+  "review_ref": "artifact://sha256/<review-hash>",
+  "review_id": "<review-id>",
+  "finding_id": "F-1",
+  "base_revision": "<40-character-original-revision>",
+  "allowed_paths": ["app.py"],
+  "remediation_brief": {
+    "finding_id": "F-1",
+    "title": "Unconditional authorization",
+    "category": "authorization",
+    "severity": "high",
+    "confidence": "high",
+    "locations": [{"path": "app.py", "line": 1}],
+    "evidence_ref": "artifact://sha256/<scan-hash>",
+    "scanner_finding_ids": ["<scanner-finding-id>"],
+    "evidence_summary": "The approved fixture authorizes both admin and guest.",
+    "remediation_objective": "Authorize admin and reject guest without changing other files.",
+    "verification_criteria": ["The approved verifier passes at the patched revision."]
+  },
+  "failing_before_result": "<exact command, nonzero exit and observed assertion>",
+  "verification_commands": ["python3 -B verify.py"],
+  "verification_timeout_seconds": 20,
+  "delivery_expectations": "Use one isolated repair child, runtime verification, independent readonly child review, then explicit parent acceptance. Do not inspect the parent tree as if the pending child patch were applied. Commit the accepted patch; report its clean revision and canonical proof. No push or merge is approved.",
+  "operator_approval": "<operator and explicit approval of this exact repair>"
+}
+```
+
+Keep the completed file within 4,000 characters; check it before launch:
+
+```bash
+python3 -c 'from pathlib import Path; text = Path("/path/to/handoff.json").read_text(); print(len(text)); assert len(text) <= 4000'
+```
+
+After completing the checklist, run the existing project CLI with the same
+configuration/data root used for the artifacts. Select the configured coding
+agent, not the reviewer: replace `CODING_AGENT_ID` below. The example bounds
+include the approval/resume cycles; adjust them only within the operator's
+authorization.
+
+```bash
+openminion --config /path/to/config.json autonomy start \
+  --agent CODING_AGENT_ID --session security-repair \
+  --workspace /path/to/repository --repository /path/to/repository \
+  --goal-file /path/to/handoff.json \
+  --verify-command "python3 -B verify.py" --verification-timeout-seconds 20 \
+  --max-iterations 6 --max-tool-calls 28 --max-wall-clock-ms 600000 \
+  --unattended
+```
+
+`--goal-file` passes the full handoff through the existing goal/source-request
+field. `--unattended` schedules bounded cycles through the existing daemon;
+it does not waive operation approvals. Record the returned run ID and use
+Focus with the same configuration/data root and coding profile for the controls
+below. This is a command example, not a claim that the synthetic repair has
+been executed.
 
 If the project pauses for an operation approval, use `/project show <run-id>`
 to read its current `input_request_id` and inspect the pending action. Approve

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from openminion.base.redaction import redact_sensitive_text
 from openminion.tools.security.config import SecurityConfig, display_target
 from openminion.tools.security.interfaces import (
     TOOL_SECURITY_SCAN_ARTIFACT,
@@ -190,7 +191,7 @@ def _parse_trivy_result(
     started_at: str,
     started: float,
 ) -> SecurityScanResult:
-    if process.timed_out:
+    if process.timed_out or process.cancelled:
         return _trivy_result(
             capability_id=capability_id,
             target=target_name,
@@ -198,26 +199,14 @@ def _parse_trivy_result(
             started=started,
             scanner_version=scanner_version,
             configuration_identity=configuration_identity,
-            status="timed_out",
+            status="timed_out" if process.timed_out else "cancelled",
             truncated=process.truncated,
             error=ScanError(
-                code="TIMEOUT", message="Trivy scan timed out", exit_code=124
-            ),
-        )
-    if process.cancelled:
-        return _trivy_result(
-            capability_id=capability_id,
-            target=target_name,
-            started_at=started_at,
-            started=started,
-            scanner_version=scanner_version,
-            configuration_identity=configuration_identity,
-            status="cancelled",
-            truncated=process.truncated,
-            error=ScanError(
-                code="EXEC_ERROR",
-                message="Trivy scan was cancelled",
-                exit_code=process.return_code,
+                code="TIMEOUT" if process.timed_out else "EXEC_ERROR",
+                message="Trivy scan timed out"
+                if process.timed_out
+                else "Trivy scan was cancelled",
+                exit_code=124 if process.timed_out else process.return_code,
             ),
         )
     try:
@@ -229,6 +218,13 @@ def _parse_trivy_result(
             raise TypeError("Results must contain objects")
         findings = _findings(results, scanner_kind=scanner_kind, target=target)
     except (json.JSONDecodeError, AttributeError, TypeError) as exc:
+        execution_failed = process.return_code != 0 and not process.stdout.strip()
+        message = (
+            process.stderr or f"Trivy exited with status {process.return_code}"
+            if execution_failed
+            else f"Trivy returned invalid JSON: {exc}"
+        )
+        message, _ = redact_sensitive_text(message)
         return _trivy_result(
             capability_id=capability_id,
             target=target_name,
@@ -239,8 +235,8 @@ def _parse_trivy_result(
             status="failed",
             truncated=process.truncated,
             error=ScanError(
-                code="INVALID_RESPONSE",
-                message=f"Trivy returned invalid JSON: {exc}",
+                code="EXEC_ERROR" if execution_failed else "INVALID_RESPONSE",
+                message=bounded_message(message),
                 exit_code=process.return_code,
             ),
         )
@@ -328,6 +324,7 @@ def _vulnerability(row: dict[str, Any], path: str) -> SecurityFinding:
         path=path,
         component=component,
         installed_version=str(row.get("InstalledVersion") or ""),
+        package_path=str(row.get("PkgPath") or ""),
         fixed_version=str(row.get("FixedVersion") or ""),
         references=references,
     )
@@ -383,12 +380,14 @@ def _trivy_finding(
     end_line: int | None = None,
     component: str = "",
     installed_version: str = "",
+    package_path: str = "",
     fixed_version: str = "",
     references: list[Any] | None = None,
 ) -> SecurityFinding:
-    finding_id = hashlib.sha256(
-        f"{rule_id}:{path}:{line or 0}:{component}".encode()
-    ).hexdigest()[:24]
+    identity = f"{rule_id}:{path}:{line or 0}:{component}"
+    if category == "dependency":
+        identity += json.dumps([installed_version, package_path], separators=(",", ":"))
+    finding_id = hashlib.sha256(identity.encode()).hexdigest()[:24]
     return SecurityFinding(
         finding_id=finding_id,
         rule_id=rule_id,

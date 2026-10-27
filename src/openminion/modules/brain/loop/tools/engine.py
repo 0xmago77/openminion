@@ -38,6 +38,7 @@ from .postprocess.engine import (
 from .postprocess.evidence_closeout import tool_evidence_closeout_outcome
 from .postprocess.rules import _is_empty_plan_lookup_diversion
 from .plan_control import (
+    PLAN_ACTION_COMPLETE,
     PLAN_TOOL_ACTIONS,
     PLAN_TOOL_NAME,
     is_plan_family_tool_name,
@@ -269,9 +270,14 @@ def _repeated_plan_only_without_substantive_work(
         return False
     if loop_ctx is not None and any(
         str(getattr(call, "name", "") or "").strip() == PLAN_TOOL_NAME
-        and plan_tool_call_advances_active_plan(
-            loop_ctx,
-            dict(getattr(call, "arguments", {}) or {}),
+        and (
+            # Completion validation supplies unresolved step IDs for correction.
+            dict(getattr(call, "arguments", {}) or {}).get("action")
+            == PLAN_ACTION_COMPLETE
+            or plan_tool_call_advances_active_plan(
+                loop_ctx,
+                dict(getattr(call, "arguments", {}) or {}),
+            )
         )
         for call in tool_calls
     ):
