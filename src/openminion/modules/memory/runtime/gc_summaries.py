@@ -11,8 +11,8 @@ from openminion.modules.memory.config import (
     MEMORY_GC_SUMMARY_COMPRESS_MAX_CHARS,
     MEMORY_GC_SUMMARY_DELETE_AFTER_DAYS,
 )
+from openminion.modules.memory.runtime.purge import backing_store
 from openminion.modules.memory.runtime.gc_records import (
-    backing_store,
     parse_when,
     remove_collected_artifact_refs,
     soft_delete_postgres_record,

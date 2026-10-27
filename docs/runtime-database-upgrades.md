@@ -31,6 +31,25 @@ the derived data and leaves it wrong.
 If a migration fails, it raises, and the database stays at the previous
 version. Fix the cause it reports and start again.
 
+## Brain working state fields
+
+The brain saves each session's working state as JSON: in the runtime
+database's `working_state` table, or in `working_state.json` with the local
+session store. The working state rejects fields it does not define.
+
+Packages with `turn_evidence` and `turn_evidence_trace_id` write both fields
+in every working state they save, as `null` when no same-turn continuation
+ran. They read a working state saved before the fields, with both unset. A
+package from before the fields rejects any working state saved with them:
+validation fails with `extra_forbidden` for both.
+
+Upgrade the processes that share the runtime state as in
+[Coordinated upgrade](#coordinated-upgrade): stop them, keep a pre-upgrade
+backup (with the local session store, a copy of its `sessions` directory),
+upgrade them together, and never run an older process against working state
+saved by the newer package. Rolling back means restoring the matching
+pre-upgrade backup with the matching older package.
+
 ## Runtime migration 15: session metadata string rows
 
 Migration 15 adds `session_metadata_strings`, one row for each top-level member

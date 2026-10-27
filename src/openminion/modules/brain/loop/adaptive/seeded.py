@@ -295,6 +295,8 @@ class ActLoopSeededMixin:
         adaptive_modes.transition(ctx.state, transition_name, logger=ctx.logger)
         if continuation_guidance:
             ctx.state.post_action_user_message = continuation_guidance
+        ctx.state.turn_evidence_trace_id = ctx.state.trace_id
+        ctx.state.turn_evidence = action_result
         ctx.state.status = BRAIN_STATE_ACTIVE
         return active_mode_result(
             host=ctx, state=ctx.state, action_result=action_result
