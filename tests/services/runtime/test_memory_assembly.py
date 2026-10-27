@@ -9,6 +9,7 @@ from sophiagraph.storage import SophiaGraphSqliteStore
 from openminion.base.config import OpenMinionConfig
 from openminion.modules.brain.adapters.memory.runtime import MemctlAdapter
 from openminion.modules.memory.backends import BackendMemoryStoreAdapter
+from openminion.modules.memory.errors import InvalidArgumentError
 from openminion.modules.memory.backends.external import (
     REFERENCE_SQLITE_ADAPTER_NAME,
     register_external_backend,
@@ -658,3 +659,151 @@ def test_assembly_creates_a_memory_store_only_for_the_builtin_backend(
 
     assert (len(stores), len(audit_sinks)) == (created, created)
     assert assembly.close().closed is True
+
+
+# A build that raises closes what it obtained, once, and its own error reaches
+# the caller (#390). The store_closes fixture records every memory store close.
+
+
+class _GatewayUnavailable(RuntimeError):
+    """A failure after the memory service exists: building the gateway."""
+
+
+def _failing_gateway(*_args, **_kwargs):
+    raise _GatewayUnavailable("gateway unavailable")
+
+
+class _ClosableVectorAdapter(_SnapshotVectorAdapter):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self.events = events
+
+    def close(self) -> None:
+        self.events.append("vector.close")
+
+
+def test_store_resolution_failure_closes_the_artifact_store(
+    tmp_path, store_closes, audit_sinks
+) -> None:
+    memory_config = {"store": {"backend": "remote"}}
+
+    with pytest.raises(InvalidArgumentError, match="requires remote.endpoint"):
+        _memory_v2_assembly(
+            tmp_path,
+            resolve_runtime_memory_config_fn=lambda **kwargs: memory_config,
+            artifactctl_factory=lambda: _ArtifactStore(store_closes),
+        )
+
+    assert store_closes == ["artifactctl.close"]
+    assert audit_sinks == []
+
+
+def test_audit_sink_failure_closes_the_store_it_created_once(
+    tmp_path, monkeypatch, store_closes
+) -> None:
+    def unavailable_audit_sink(db_path):
+        raise OSError("audit database unavailable")
+
+    monkeypatch.setattr(
+        "openminion.services.runtime.memory.SQLiteMemoryAuditSink",
+        unavailable_audit_sink,
+    )
+
+    with pytest.raises(OSError, match="audit database unavailable"):
+        _memory_v2_assembly(
+            tmp_path, artifactctl_factory=lambda: _ArtifactStore(store_closes)
+        )
+
+    assert store_closes == ["store.close", "artifactctl.close"]
+
+
+@pytest.mark.parametrize(
+    "memory_config",
+    [
+        None,
+        {"store": {"backend": "mock"}},
+        {"store": {"backend": "remote", "remote": {"endpoint": "http://127.0.0.1:9"}}},
+    ],
+    ids=["sqlite", "mock", "remote"],
+)
+def test_later_failure_closes_the_store_through_the_service_once(
+    tmp_path, store_closes, audit_sinks, memory_config
+) -> None:
+    overrides: dict[str, object] = {
+        "artifactctl_factory": lambda: _ArtifactStore(store_closes),
+        "adapter_cls": _failing_gateway,
+    }
+    if memory_config is not None:
+        overrides["resolve_runtime_memory_config_fn"] = lambda **kwargs: memory_config
+
+    with pytest.raises(_GatewayUnavailable, match="gateway unavailable"):
+        _memory_v2_assembly(tmp_path, **overrides)
+
+    assert store_closes == ["store.close", "artifactctl.close"]
+    [sink] = audit_sinks
+    assert sink.close_calls == 1
+
+
+def test_unregistered_external_adapter_closes_the_artifact_store(
+    tmp_path, store_closes, audit_sinks
+) -> None:
+    memory_config = {
+        "backend": {"provider": "external", "external_adapter": "not_registered"}
+    }
+
+    with pytest.raises(InvalidArgumentError, match="No external backend registered"):
+        _memory_v2_assembly(
+            tmp_path,
+            resolve_runtime_memory_config_fn=lambda **kwargs: memory_config,
+            artifactctl_factory=lambda: _ArtifactStore(store_closes),
+        )
+
+    assert store_closes == ["artifactctl.close"]
+    assert audit_sinks == []
+
+
+def test_failed_build_keeps_its_error_when_a_close_fails(
+    tmp_path, store_closes
+) -> None:
+    with pytest.raises(_GatewayUnavailable, match="gateway unavailable"):
+        _memory_v2_assembly(
+            tmp_path,
+            artifactctl_factory=lambda: _FailingArtifactStore(store_closes),
+            adapter_cls=_failing_gateway,
+        )
+
+    assert store_closes == ["store.close", "artifactctl.close"]
+
+
+def test_failed_build_leaves_borrowed_runtime_objects_open(
+    tmp_path, store_closes
+) -> None:
+    scheduler = _Scheduler(store_closes)
+    vector_adapter = _ClosableVectorAdapter(store_closes)
+
+    with pytest.raises(_GatewayUnavailable, match="gateway unavailable"):
+        _memory_v2_assembly(
+            tmp_path,
+            scheduler=scheduler,
+            vector_adapter=vector_adapter,
+            artifactctl_factory=lambda: _ArtifactStore(store_closes),
+            adapter_cls=_failing_gateway,
+        )
+
+    # The caller's scheduler and vector adapter are neither stopped nor closed.
+    assert store_closes == ["store.close", "artifactctl.close"]
+
+
+def test_successful_build_hands_what_it_obtained_to_the_assembly(
+    tmp_path, store_closes, audit_sinks
+) -> None:
+    assembly = _memory_v2_assembly(
+        tmp_path, artifactctl_factory=lambda: _ArtifactStore(store_closes)
+    )
+    [sink] = audit_sinks
+    assert store_closes == []
+    assert sink.close_calls == 0
+
+    assert assembly.close().closed is True
+    assert store_closes == ["store.close", "artifactctl.close"]
+    assert sink.close_calls == 1
