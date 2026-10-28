@@ -120,6 +120,8 @@ def _trace_proves_file_read(
     session_id: str,
     relative_path: str,
 ) -> bool:
+    expected_file = (trace_root.parent / relative_path).resolve()
+
     def matching_call(node: object, *, within_arguments: bool = False) -> bool:
         if isinstance(node, dict):
             calls = None if within_arguments else node.get("tool_calls")
@@ -142,11 +144,16 @@ def _trace_proves_file_read(
                             arguments = json.loads(arguments)
                         except json.JSONDecodeError:
                             continue
-                    if (
-                        isinstance(arguments, dict)
-                        and arguments.get("path") == relative_path
-                    ):
-                        return True
+                    if isinstance(arguments, dict):
+                        observed = str(arguments.get("path") or "").strip()
+                        if observed == relative_path:
+                            return True
+                        observed_path = Path(observed)
+                        if (
+                            observed_path.is_absolute()
+                            and observed_path.resolve() == expected_file
+                        ):
+                            return True
             return any(
                 matching_call(
                     value, within_arguments=within_arguments or key == "arguments"
@@ -175,6 +182,51 @@ def _trace_proves_file_read(
         if matching_call(payload):
             return True
     return False
+
+
+def test_trace_file_read_matches_exact_workspace_file_identity(tmp_path: Path) -> None:
+    trace_root = tmp_path / "traces"
+    trace_root.mkdir()
+    trace_path = trace_root / "trace.json"
+
+    def write_trace(path: str) -> None:
+        trace_path.write_text(
+            json.dumps(
+                {
+                    "trace": {"session_id": "watch:1::conv:1"},
+                    "response": {
+                        "tool_calls": [
+                            {
+                                "name": "file.read",
+                                "arguments": {"path": path},
+                            }
+                        ]
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_trace("release-status.json")
+    assert _trace_proves_file_read(
+        trace_root,
+        session_id="watch:1",
+        relative_path="release-status.json",
+    )
+
+    write_trace(str(tmp_path / "release-status.json"))
+    assert _trace_proves_file_read(
+        trace_root,
+        session_id="watch:1",
+        relative_path="release-status.json",
+    )
+
+    write_trace(str(tmp_path / "other.json"))
+    assert not _trace_proves_file_read(
+        trace_root,
+        session_id="watch:1",
+        relative_path="release-status.json",
+    )
 
 
 @pytest.mark.skipif(not _CONFIG.exists(), reason=f"missing live config: {_CONFIG}")
