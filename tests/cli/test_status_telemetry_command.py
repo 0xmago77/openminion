@@ -101,7 +101,45 @@ def test_status_telemetry_text_and_json_share_latest_selection(
     text = capsys.readouterr().out
     assert "telemetry: ready" in text
     assert "invocation: invocation-b status=completed" in text
+    assert "next: openminion status tokens --recent 10" in text
     assert _snapshot(_db_path(tmp_path)) == before
+
+
+def test_status_telemetry_uses_explicit_config_and_shows_empty_posture(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "custom-agents.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime": {
+                    "env": {"OPENMINION_TRACE_REQUESTS": "1"},
+                    "telemetry_exporter": {
+                        "enabled": True,
+                        "endpoint": "http://collector.internal:4318",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = ["--config", str(config_path), *_args(tmp_path)]
+
+    assert main(args) == 0
+
+    text = capsys.readouterr().out
+    assert "No model invocations recorded yet." in text
+    assert (
+        "external export: configured (http/protobuf); live health unavailable" in text
+    )
+    assert "exact payload capture: enabled" in text
+    assert "collector.internal" not in text
+
+    assert main([*args, "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["export_health"]["enabled"] is True
+    assert payload["export_health"]["endpoint_configured"] is True
 
 
 def test_status_telemetry_failed_and_opaque_lookup(

@@ -130,8 +130,13 @@ def load_telemetry_report(
     invocation_id: str | None,
 ) -> TelemetryDebugReport:
     session_id = _runtime_session_id(runtime)
+    exporter_config = _runtime_exporter_config(runtime)
     if not session_id:
-        return build_telemetry_debug_error("ACTIVE_SESSION_UNAVAILABLE", "internal")
+        return build_telemetry_debug_error(
+            "ACTIVE_SESSION_UNAVAILABLE",
+            "internal",
+            exporter_config=exporter_config,
+        )
     try:
         data_root = _runtime_data_root(runtime)
         with open_telemetry_inspection(
@@ -142,7 +147,7 @@ def load_telemetry_report(
                 selector_kind=selector_kind,
                 invocation_id=invocation_id,
                 trace_root=data_root / "traces",
-                exporter_config=_runtime_exporter_config(runtime),
+                exporter_config=exporter_config,
                 live_queue_stats=_runtime_export_queue_stats(runtime),
                 session_id=session_id,
             )
@@ -150,6 +155,7 @@ def load_telemetry_report(
         return build_telemetry_debug_error(
             telemetry_storage_error_code(exc),
             "storage",
+            exporter_config=exporter_config,
         )
 
 
@@ -221,7 +227,15 @@ def _render_card(
     exact_capture_enabled: bool,
 ) -> str:
     if report.error:
-        return f"telemetry: error\nerror: {report.error.code}"
+        return "\n".join(
+            (
+                "telemetry: error",
+                f"error: {report.error.code}",
+                _export_health_line(report),
+                *_capture_lines(exact_capture_enabled),
+                "next: telemetryctl doctor",
+            )
+        )
     invocation = report.invocation
     if invocation is None:
         no_failed = any(
@@ -355,8 +369,7 @@ def _next_actions(report: TelemetryDebugReport) -> str:
         actions.append(f"/telemetry invocation {invocation_id}")
     if report.links.trace_paths:
         actions.append("/trace list")
-    if not actions:
-        actions.append("/telemetry latest")
+    actions.extend(("/tokens", "/tokens recent 10"))
     lines = ["next: " + " | ".join(actions)]
     if report.links.commands:
         lines.append("shell: " + report.links.commands[0])

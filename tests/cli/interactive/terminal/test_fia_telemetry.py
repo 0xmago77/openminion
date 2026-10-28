@@ -170,7 +170,8 @@ def test_terminal_telemetry_labels_latest_completed_invocation(
     assert "latest failed invocation" not in output
     assert (
         "next: /telemetry events | /telemetry failed | "
-        "/telemetry invocation invocation-completed" in output
+        "/telemetry invocation invocation-completed | /tokens | /tokens recent 10"
+        in output
     )
     assert "shell: telemetryctl invocation show invocation-completed" in output
     assert "next: telemetryctl" not in output
@@ -312,6 +313,33 @@ def test_terminal_telemetry_shows_runtime_export_posture(tmp_path: Path) -> None
     assert "live health unavailable" in output
     assert "Capture setup: restart with OPENMINION_TRACE_REQUESTS=1" in output
     assert "collector.internal" not in output
+
+
+def test_terminal_telemetry_error_keeps_runtime_posture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_inspection(**_kwargs):
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(
+        "openminion.cli.presentation.telemetry.open_telemetry_inspection",
+        fail_inspection,
+    )
+
+    output = _run_slash(
+        "/telemetry",
+        _Runtime(tmp_path, exporter_enabled=True, trace_requests=True),
+        tmp_path,
+    )
+
+    assert "telemetry: error" in output
+    assert "error: TELEMETRY_STORAGE_UNAVAILABLE" in output
+    assert (
+        "external export: configured (http/protobuf); live health unavailable" in output
+    )
+    assert "Exact payload capture: enabled" in output
+    assert "next: telemetryctl doctor" in output
 
 
 def test_terminal_telemetry_stays_in_the_active_session(tmp_path: Path) -> None:
