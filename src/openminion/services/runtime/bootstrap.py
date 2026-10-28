@@ -639,7 +639,6 @@ def _mapping_policy(value: object) -> Mapping[str, Any] | None:
 
 
 def build_brain_runner_bundle(service: Any) -> Any:
-    """BBSE-02: canonical bootstrap path for the bridge's runner bundle."""
     import openminion.services.brain.service as bridge_module
     from openminion.base.config import configured_agent_ids
     from openminion.modules.session.storage.repository import (
@@ -802,6 +801,7 @@ def build_brain_runner_bundle(service: Any) -> Any:
         scheduler_readiness=getattr(runtime_handle, "scheduler_readiness", None),
         telemetryctl=service._telemetryctl,
         artifactctl=artifactctl,
+        retrieve_ctl=service._retrieve_service,
         sandbox_runner=service._sandbox_runner,
         security_lab_runner=service._security_lab_runner,
         identity_security_lab_facts=service._identity_security_lab_facts,

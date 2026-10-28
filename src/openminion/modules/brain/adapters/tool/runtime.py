@@ -36,6 +36,7 @@ from openminion.modules.tool.runtime.routing import build_runtime_tool_routing_m
 from .command_metadata import (
     _confirmation_replay_metadata,
     _extract_runtime_message_ref,
+    _first_non_empty,
     _inject_runtime_message_ref,
     _merge_orchestration_context_metadata,
     _orchestration_metadata_from_command,
@@ -153,6 +154,7 @@ class ToolAdapter:
         sandbox_runner: Any | None = None,
         security_lab_runner: Any | None = None,
         identity_security_lab_facts: Callable[[], dict[str, Any]] | None = None,
+        retrieve_ctl: Any | None = None,
     ) -> None:
         self.workspace_root = workspace_root
         policy_from_none = policy is None
@@ -173,6 +175,7 @@ class ToolAdapter:
         self.task_manager = task_manager
         self.scheduler_readiness = scheduler_readiness
         self.telemetryctl = telemetryctl
+        self.retrieve_ctl = retrieve_ctl
         self.sandbox_runner = sandbox_runner
         self.security_lab_runner = security_lab_runner
         self.security_lab_config = getattr(runtime_config, "security_lab", None)
@@ -568,8 +571,7 @@ class ToolAdapter:
                 },
             )
         background_write_authorized = _background_write_authorized(inputs)
-        raw_project_task_id = orchestration_metadata.get("project_task_id")
-        project_task_id = str(raw_project_task_id or "").strip()
+        project_task_id = _first_non_empty(orchestration_metadata, ("project_task_id",))
         auto_confirm = _resolve_auto_confirm(
             tool_name=tool_name,
             args=validated_args,
@@ -619,6 +621,7 @@ class ToolAdapter:
             subject_id="local",
             telemetryctl=self.telemetryctl,
             artifactctl=self.artifactctl,
+            retrieve_ctl=self.retrieve_ctl,
             memory_service=self.memory_service,
             knowledge_graph_service=self.knowledge_graph_service,
             ops_service=self.ops_service,

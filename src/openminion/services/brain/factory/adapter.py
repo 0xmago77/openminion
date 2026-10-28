@@ -55,6 +55,7 @@ def create_tool_api(
     scheduler_readiness: Callable[[], dict[str, Any]] | None = None,
     telemetryctl: Any | None = None,
     artifactctl: Any | None = None,
+    retrieve_ctl: Any | None = None,
     sandbox_runner: Any | None = None,
     security_lab_runner: Any | None = None,
     identity_security_lab_facts: Callable[[], dict[str, Any]] | None = None,
@@ -84,6 +85,7 @@ def create_tool_api(
         scheduler_readiness=scheduler_readiness,
         telemetryctl=telemetryctl,
         artifactctl=artifactctl,
+        retrieve_ctl=retrieve_ctl,
         sandbox_runner=sandbox_runner,
         security_lab_runner=security_lab_runner,
         identity_security_lab_facts=identity_security_lab_facts,
@@ -201,11 +203,7 @@ def create_compress_api(
     db_dir: Path,
     telemetryctl: Any | None = None,
 ) -> Any:
-    return create_compress_adapter(
-        mode=mode,
-        db_path=db_dir,
-        telemetryctl=telemetryctl,
-    )
+    return create_compress_adapter(mode=mode, db_path=db_dir, telemetryctl=telemetryctl)
 
 
 def create_skill_api(

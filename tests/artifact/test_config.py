@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from openminion.modules.artifact.config import ArtifactCtlConfig, load_config
 from openminion.modules.artifact.control import ArtifactCtl
+from openminion.modules.artifact.errors import ArtifactCtlError
 
 from .utils import make_config, write_config_file
 
@@ -93,3 +95,83 @@ def test_load_config_preserves_empty_auto_generate_list(tmp_path: Path) -> None:
     )
 
     assert cfg.views.auto_generate == []
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["keep_days", "delete_unreferenced_after_days", "purge_grace_days"],
+)
+@pytest.mark.parametrize("value", [-1, -0.5])
+@pytest.mark.parametrize("source_kind", ["mapping", "file"])
+def test_negative_retention_config_fails_before_store_construction(
+    tmp_path: Path,
+    field_name: str,
+    value: float,
+    source_kind: str,
+) -> None:
+    overrides = {"artifactctl": {"retention": {field_name: value}}}
+    config = (
+        make_config(tmp_path, overrides)
+        if source_kind == "mapping"
+        else write_config_file(tmp_path, overrides)
+    )
+
+    with (
+        patch(
+            "openminion.modules.artifact.control.FileSystemCASBlobStore"
+        ) as blob_store,
+        patch("openminion.modules.artifact.control.SQLiteArtifactIndex") as index,
+        pytest.raises(ArtifactCtlError) as exc_info,
+    ):
+        ArtifactCtl(config)
+
+    assert exc_info.value.code == "INVALID_CONFIG"
+    blob_store.assert_not_called()
+    index.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["keep_days", "delete_unreferenced_after_days", "purge_grace_days"],
+)
+@pytest.mark.parametrize("value", [-1, -0.5])
+def test_negative_prebuilt_config_fails_before_store_construction(
+    field_name: str,
+    value: float,
+) -> None:
+    config = ArtifactCtlConfig()
+    setattr(config.retention, field_name, value)
+
+    with (
+        patch(
+            "openminion.modules.artifact.control.FileSystemCASBlobStore"
+        ) as blob_store,
+        patch("openminion.modules.artifact.control.SQLiteArtifactIndex") as index,
+        pytest.raises(ArtifactCtlError) as exc_info,
+    ):
+        ArtifactCtl(config)
+
+    assert exc_info.value.code == "INVALID_CONFIG"
+    blob_store.assert_not_called()
+    index.assert_not_called()
+
+
+def test_non_negative_retention_coercion_remains_compatible(tmp_path: Path) -> None:
+    config = load_config(
+        make_config(
+            tmp_path,
+            {
+                "artifactctl": {
+                    "retention": {
+                        "keep_days": 1.5,
+                        "delete_unreferenced_after_days": 0.5,
+                        "purge_grace_days": 0,
+                    }
+                }
+            },
+        )
+    )
+
+    assert config.retention.keep_days == 1
+    assert config.retention.delete_unreferenced_after_days == 0
+    assert config.retention.purge_grace_days == 0

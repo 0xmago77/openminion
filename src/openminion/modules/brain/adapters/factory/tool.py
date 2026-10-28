@@ -31,6 +31,7 @@ def create_tool_adapter(
     sandbox_runner: Any | None = None,
     security_lab_runner: Any | None = None,
     identity_security_lab_facts: Callable[[], dict[str, Any]] | None = None,
+    retrieve_ctl: Any | None = None,
 ) -> Any:
     from openminion.modules.brain.adapters.tool import LocalToolAdapter
 
@@ -61,6 +62,7 @@ def create_tool_adapter(
             scheduler_readiness=scheduler_readiness,
             telemetryctl=telemetryctl,
             artifactctl=artifactctl,
+            retrieve_ctl=retrieve_ctl,
             sandbox_runner=sandbox_runner,
             security_lab_runner=security_lab_runner,
             identity_security_lab_facts=identity_security_lab_facts,

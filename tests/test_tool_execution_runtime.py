@@ -177,6 +177,7 @@ def test_registry_toolspec_runtime_durable_artifact_emits_canonical_ref(
     from openminion.modules.tool.runtime import registry_toolspec
 
     artifactctl = _RecordingArtifactCtl()
+    retrieve_ctl = object()
     monkeypatch.setattr(
         registry_toolspec,
         "create_default_artifactctl",
@@ -222,6 +223,7 @@ def test_registry_toolspec_runtime_durable_artifact_emits_canonical_ref(
             target="cli-chat",
             session_id="sess-artifact",
             metadata={"workspace_root": str(tmp_path / "workspace")},
+            retrieve_ctl=retrieve_ctl,
         ),
     ).results[0]
 
@@ -230,6 +232,7 @@ def test_registry_toolspec_runtime_durable_artifact_emits_canonical_ref(
     assert artifactctl.calls
     assert artifactctl.calls[0]["session_id"] == "sess-artifact"
     assert artifactctl.calls[0]["original_name"] == "out.txt"
+    assert artifactctl.calls[0]["retrieve_ctl"] is retrieve_ctl
     assert artifactctl.closed is True
 
 
