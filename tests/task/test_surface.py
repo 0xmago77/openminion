@@ -77,7 +77,7 @@ def test_task_surface_lists_lifecycle_tasks_without_mutation_api() -> None:
     assert shown["title"] == "finish long task"
     assert shown["operator_state"] == "running"
     assert shown["resume_action"] == "continue"
-    assert shown["valid_actions"] == []
+    assert shown["valid_actions"] == ["pause", "cancel"]
     assert shown["activity"] == {
         "session_id": "s1",
         "session_events_path": "/sessions/s1/events",
@@ -95,6 +95,17 @@ def test_task_surface_lists_lifecycle_tasks_without_mutation_api() -> None:
     without_activity = surface.show_task("lt2")
     assert without_activity is not None
     assert "activity" not in without_activity
+
+    project = manager.create_task(
+        session_id="s1",
+        mode_name="project",
+        goal="specialized project",
+        agent_id="agent",
+        task_id="project-task",
+    )
+    projected = surface.show_task(project.task_id)
+    assert projected is not None
+    assert projected["valid_actions"] == []
 
 
 def test_task_surface_quotes_activity_route_segments() -> None:

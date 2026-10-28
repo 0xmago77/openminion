@@ -6,9 +6,12 @@ from types import SimpleNamespace
 import openminion.cli.commands.tasks as tasks_command
 import pytest
 
+from openminion.base.config import ToolSelectionConfig
 from openminion.cli.commands.tasks import run_tasks
 from openminion.modules.session.storage.repository import create_sqlite_cron_repository
 from openminion.modules.task import InMemoryTaskCtl, TaskCreateInput, TaskManager
+from openminion.modules.tool.registry import ToolRegistry
+from openminion.tools.task.plugin import register as register_task_tools
 
 
 def test_tasks_cli_lists_task_as_json(capsys) -> None:
@@ -111,6 +114,52 @@ def test_tasks_cli_shows_live_scheduler_readiness_for_scheduled_task(
     detail = capsys.readouterr().out
     assert "scheduler: paused (daemon: ready)" in detail
     assert "scheduler_reason: Provider maintenance" in detail
+
+
+def test_tasks_cli_controls_lifecycle_task_through_registered_tool(
+    tmp_path,
+    capsys,
+) -> None:
+    manager = TaskManager.for_lifecycle_db(db_path=tmp_path / "lifecycle.db")
+    manager.create_task(
+        session_id="session-1",
+        mode_name="research",
+        goal="finish the report",
+        agent_id="agent-1",
+        task_id="lifecycle-task",
+    )
+    registry = ToolRegistry()
+    register_task_tools(registry)
+    app = SimpleNamespace(
+        config=SimpleNamespace(
+            agents={"agent-1": object()},
+            default_agent="agent-1",
+            runtime=SimpleNamespace(
+                env={}, tools=None, tool_selection=ToolSelectionConfig()
+            ),
+        ),
+        tools=registry,
+        task_manager=manager,
+        scheduler_readiness=lambda: {"state": "ready"},
+    )
+
+    for command, expected_state in (
+        ("pause", "paused"),
+        ("resume", "active"),
+        ("cancel", "cancelled"),
+    ):
+        args = Namespace(
+            tasks_command=command,
+            task_id="lifecycle-task",
+            agent_id="agent-1",
+            session="session-1",
+            limit=10,
+            json=True,
+            confirm=False,
+        )
+        assert run_tasks(args, app) == 0
+        assert manager.get_task("lifecycle-task").state.value == expected_state
+        capsys.readouterr()
 
 
 def test_tasks_show_parser_accepts_run_limit_and_rejects_invalid_value() -> None:

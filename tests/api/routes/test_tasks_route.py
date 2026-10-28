@@ -227,6 +227,65 @@ def test_tasks_route_creates_and_mutates_through_registered_tools(tmp_path) -> N
     ]
 
 
+def test_tasks_route_controls_owned_lifecycle_task_without_cron_job(tmp_path) -> None:
+    manager = TaskManager.for_lifecycle_db(db_path=tmp_path / "lifecycle.db")
+    manager.create_task(
+        session_id="session-a",
+        mode_name="research",
+        goal="finish the report",
+        agent_id="agent-a",
+        task_id="lifecycle-task",
+    )
+    registry = ToolRegistry()
+    register_task_tools(registry)
+    ctx = APIRouteContext(
+        config_path=None,
+        runtime=SimpleNamespace(
+            task_manager=manager,
+            tools=registry,
+            scheduler_readiness=lambda: {"state": "ready"},
+        ),
+        runtime_bootstrap_error=None,
+        request_headers=None,
+        request_id="lifecycle-control",
+    )
+
+    for action, expected_state in (
+        ("pause", "paused"),
+        ("resume", "active"),
+    ):
+        result = handle_request(
+            ctx,
+            method_name="POST",
+            path=f"/v1/tasks/lifecycle-task/{action}",
+            body={},
+            query="agent_id=agent-a",
+        )
+        assert result is not None and result.status == HTTPStatus.OK
+        assert result.payload["task"]["lifecycle_state"] == expected_state
+
+    denied = handle_request(
+        ctx,
+        method_name="POST",
+        path="/v1/tasks/lifecycle-task/cancel",
+        body={},
+        query="agent_id=agent-b",
+    )
+    assert denied is not None and denied.status == HTTPStatus.FORBIDDEN
+    assert denied.payload["error"]["code"] == "POLICY_DENIED"
+    assert manager.get_task("lifecycle-task").state.value == "active"
+
+    cancelled = handle_request(
+        ctx,
+        method_name="POST",
+        path="/v1/tasks/lifecycle-task/cancel",
+        body={},
+        query="agent_id=agent-a",
+    )
+    assert cancelled is not None and cancelled.status == HTTPStatus.OK
+    assert cancelled.payload["task"]["lifecycle_state"] == "cancelled"
+
+
 def test_tasks_route_requires_agent_for_creation() -> None:
     result = handle_request(
         _ctx(),

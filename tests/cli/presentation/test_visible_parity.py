@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from openminion.base.config import ToolSelectionConfig
 from openminion.cli.status.token_usage import TokenUsageSnapshot, format_context_window
 from openminion.cli.presentation.visible_parity import (
     handle_effort_command,
@@ -19,6 +20,8 @@ from openminion.modules.memory.runtime.capture_status import (
     RecallProcessingSummary,
 )
 from openminion.modules.task.runtime.lifecycle import TaskManager
+from openminion.modules.tool.registry import ToolRegistry
+from openminion.tools.task.plugin import register as register_task_tools
 
 
 class _Runtime:
@@ -402,6 +405,45 @@ def test_render_tasks_report_applies_exact_lifecycle_actions(
         ("task.resume", {"task_id": record.task_id}),
         ("task.cancel", {"task_id": record.task_id}),
     ]
+
+
+def test_render_tasks_report_controls_lifecycle_task_through_registered_tool(
+    tmp_path,
+) -> None:
+    manager = TaskManager.for_lifecycle_db(db_path=tmp_path / "lifecycle.db")
+    manager.create_task(
+        session_id="session-1",
+        mode_name="research",
+        goal="finish the report",
+        agent_id="agent-1",
+        task_id="lifecycle-task",
+    )
+    registry = ToolRegistry()
+    register_task_tools(registry)
+    app = SimpleNamespace(
+        config=SimpleNamespace(
+            agents={"agent-1": object()},
+            default_agent="agent-1",
+            runtime=SimpleNamespace(
+                env={}, tools=None, tool_selection=ToolSelectionConfig()
+            ),
+        ),
+        tools=registry,
+        task_manager=manager,
+        scheduler_readiness=lambda: {"state": "ready"},
+    )
+    runtime = SimpleNamespace(
+        _rt=app,
+        task_manager=manager,
+        agent_id="agent-1",
+        session_id="session-1",
+        permission_mode="default",
+        permission_overrides={},
+    )
+
+    assert "status: WAITING" in render_tasks_report(runtime, "pause lifecycle-task")
+    assert "status: ACTIVE" in render_tasks_report(runtime, "resume lifecycle-task")
+    assert "status: CANCELED" in render_tasks_report(runtime, "cancel lifecycle-task")
 
 
 def test_render_tasks_report_dispatches_run_now_and_scheduler_status(

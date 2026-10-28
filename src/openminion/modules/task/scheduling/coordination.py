@@ -11,6 +11,18 @@ CronDeliveryHandler = Callable[[str, str, dict[str, Any], dict[str, Any], Any], 
 _SCHEDULER_STATUS_COMMAND = "openminion service status cron"
 
 
+def resolve_scheduler_readiness(
+    query: Callable[[], dict[str, Any]] | None,
+) -> dict[str, Any]:
+    if callable(query):
+        return query()
+    return scheduler_readiness_from_health(
+        {},
+        reachable=True,
+        identity_matches=None,
+    )
+
+
 def scheduler_readiness_from_health(
     health_payload: dict[str, Any],
     *,

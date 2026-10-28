@@ -319,6 +319,29 @@ def _agent_matches(record: Any, agent_id: str) -> bool:
     return bool(expected) and owner == expected
 
 
+def supports_generic_lifecycle_control(record: Any) -> bool:
+    """Return whether generic task controls own this lifecycle record."""
+
+    metadata = dict(_value(record, "metadata", {}) or {})
+    return (
+        str(metadata.get("kind") or "").strip() == "mode"
+        and str(metadata.get("mode_name") or "").strip() != "project"
+        and not metadata.get("parent_task_id")
+        and not metadata.get("subtask_id")
+    )
+
+
+def task_lifecycle_record_payload(
+    source: Any | None,
+    record: Any,
+    *,
+    runs_limit: int = 5,
+) -> dict[str, Any]:
+    """Project an already-authorized lifecycle record for task surfaces."""
+
+    return _lifecycle_record_payload(source, record, runs_limit=runs_limit)
+
+
 def _lifecycle_record_payload(
     source: Any | None,
     record: Any,
@@ -349,11 +372,15 @@ def _lifecycle_record_payload(
         "updated_at": _value(record, "updated_at"),
     }
     payload.update(_operator_projection(str(payload["status"]), ()))
-    payload["valid_actions"] = []
+    payload["valid_actions"] = (
+        _valid_lifecycle_actions(payload["lifecycle_state"])
+        if job is not None or supports_generic_lifecycle_control(record)
+        else []
+    )
     if job is not None:
         schedule = job.get("schedule") or job.get("schedule_json") or {}
         job_payload = dict(job.get("payload") or {})
-        actions = _valid_lifecycle_actions(payload["lifecycle_state"])
+        actions = list(payload["valid_actions"])
         if payload["lifecycle_state"] == TaskLifecycleState.ACTIVE.value:
             actions.append("run-now")
         if (
