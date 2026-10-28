@@ -82,14 +82,35 @@ To back up the runtime home, stop every process that writes it, as in
    python -c "import sqlite3, sys; src = sqlite3.connect(sys.argv[1]); dst = sqlite3.connect(sys.argv[2]); src.backup(dst); dst.close(); src.close()" <file> <backup>
    ```
 
-3. Copy the other files under the data root as they are.
+3. Copy the other files under the data root as they are, except the
+   `<file>-journal`, `<file>-wal` and `<file>-shm` companions of the SQLite
+   files. Steps 1 and 2 open each database through SQLite, which rolls back a
+   hot `-journal` and reads a `-wal`, so the backups already hold the
+   committed content. A companion copied now and put back next to a restored
+   file would be applied to it.
+4. Record a checksum of each backup, for example with `sha256sum`.
 
-To roll back, stop every process again and put each backup in place of its
-file. First delete `<file>-wal` and `<file>-shm` if they exist: a process
-that did not close the database can leave them, and SQLite would apply the
-old `-wal` to the restored file. Then restore an accepted file with
-`openminion storage restore --sqlite <file> --snapshot <backup> --yes`, copy
-the backup over the file for the others, and copy the other files back.
+To roll back:
+
+1. Stop every process that uses the runtime home, readers included.
+2. Check every backup before you replace anything: it matches the checksum
+   you recorded, and `PRAGMA integrity_check` on it, for example
+   `sqlite3 <backup> "PRAGMA integrity_check"`, prints `ok`.
+3. Move each SQLite file of the runtime home, together with its
+   `<file>-journal`, `<file>-wal` and `<file>-shm` if they exist, to a
+   directory outside the data root, keeping their paths relative to the data
+   root. Keep each set together and do not delete any of it: a writer that
+   did not finish can leave a `-journal` or a `-wal` that is the only copy of
+   that database's last committed content, and SQLite applies it to whatever
+   file has the database's name. Left next to a restored file, a hot
+   `-journal` would be rolled back into the backup and a `-wal` would add
+   newer commits to it.
+4. Put each backup in place of its file: restore an accepted file with
+   `openminion storage restore --sqlite <file> --snapshot <backup> --yes`,
+   and copy the backup to the file's path for the others. Then copy the other
+   files back, without any `-journal`, `-wal` or `-shm`.
+5. Check that no `<file>-journal`, `<file>-wal` or `<file>-shm` is next to a
+   restored file before you start any process.
 
 ## Brain working state fields
 
