@@ -16,10 +16,11 @@ these upgrades need every writer to move together.
 
 1. Stop every process that writes the runtime database: gateways, API
    servers, workers, CLI sessions and scheduled jobs.
-2. Keep a pre-upgrade backup of the database. For SQLite,
-   `openminion storage backup --sqlite <path>` takes a snapshot; for
-   PostgreSQL use `pg_dump` (`openminion storage backup --backend postgres`
-   prints the guidance).
+2. Keep a pre-upgrade backup. For a PostgreSQL runtime database use
+   `pg_dump` (`openminion storage backup --backend postgres` prints the
+   guidance). For SQLite, `openminion storage backup --sqlite <path>` takes a
+   snapshot of one database file; back up every database of the runtime home
+   as in [SQLite runtime home backup](#sqlite-runtime-home-backup).
 3. Upgrade every process to the same package version, then start them. The
    first one applies the migrations.
 4. Never run a process from before the upgrade against the migrated database.
@@ -31,24 +32,119 @@ the derived data and leaves it wrong.
 If a migration fails, it raises, and the database stays at the previous
 version. Fix the cause it reports and start again.
 
+## SQLite runtime home backup
+
+`openminion storage backup --sqlite <file> --output <backup>` snapshots one
+SQLite file with SQLite's online backup API. It checks the file's
+`application_id`: it accepts a file without one (`0`) or with the storage
+module's (`0x4F4D0000`), and refuses any other id, which other modules set
+on their own databases, with exit code 1 and `application_id mismatch for
+module 'storage': expected 1330446336, found <id>`. It also keeps a copy of
+the snapshot in a `<file>.bak/` directory next to the database. No single
+command backs up the whole runtime home.
+
+After its first turn, a runtime home with the default layout has these SQLite
+files under its data root (by default `.openminion` under the home root).
+Other configurations and features can add files.
+
+| File | Owner (`application_id`) | `openminion storage backup` |
+| --- | --- | --- |
+| `state/openminion.db` (runtime database) | none | accepted |
+| `state/brain/sessions.db` (brain working state) | none | accepted |
+| `memory/memory.audit.db` | none | accepted |
+| `ops/evidence.db`, `ops/jobs.db`, `ops/plans.db` | none | accepted |
+| `task/task.db` | none | accepted |
+| `artifact/index.db` | artifact | refused |
+| `authored_tools/store.sqlite` | authoring | refused |
+| `identity/identity.db` | identity | refused |
+| `memory/memory.db`, `state/brain/memory.db` | memory | refused |
+| `policy/policy.db` | policy | refused |
+| `retrieve/retrieve.db` | retrieve | refused |
+| `skill/skills.db` | skill | refused |
+| `state/brain/brain.db` | brain | refused |
+| `telemetry/telemetry.db` | telemetry | refused |
+
+To back up the runtime home, stop every process that writes it, as in
+[Coordinated upgrade](#coordinated-upgrade), then:
+
+1. Back up each accepted file with
+   `openminion storage backup --sqlite <file> --output <backup>`.
+2. Back up every other SQLite file with SQLite's backup API, from the
+   `sqlite3` shell:
+
+   ```bash
+   sqlite3 <file> ".backup '<backup>'"
+   ```
+
+   or from the Python environment that runs OpenMinion:
+
+   ```bash
+   python -c "import sqlite3, sys; src = sqlite3.connect(sys.argv[1]); dst = sqlite3.connect(sys.argv[2]); src.backup(dst); dst.close(); src.close()" <file> <backup>
+   ```
+
+3. Copy the other files under the data root as they are, except the
+   `<file>-journal`, `<file>-wal` and `<file>-shm` companions of the SQLite
+   files. Steps 1 and 2 open each database through SQLite, which rolls back a
+   hot `-journal` and reads a `-wal`, so the backups already hold the
+   committed content. A companion copied now and put back next to a restored
+   file would be applied to it.
+4. Record a checksum of each backup, for example with `sha256sum`.
+
+To roll back:
+
+1. Stop every process that uses the runtime home, readers included.
+2. Check every backup before you replace anything: it matches the checksum
+   you recorded, and `PRAGMA integrity_check` on it, for example
+   `sqlite3 <backup> "PRAGMA integrity_check"`, prints `ok`.
+3. Move each SQLite file of the runtime home, together with its
+   `<file>-journal`, `<file>-wal` and `<file>-shm` if they exist, to a
+   directory outside the data root, keeping their paths relative to the data
+   root. Keep each set together and do not delete any of it: a writer that
+   did not finish can leave a `-journal` or a `-wal` that is the only copy of
+   that database's last committed content, and SQLite applies it to whatever
+   file has the database's name. Left next to a restored file, a hot
+   `-journal` would be rolled back into the backup and a `-wal` would add
+   newer commits to it.
+4. Put each backup in place of its file: restore an accepted file with
+   `openminion storage restore --sqlite <file> --snapshot <backup> --yes`,
+   and copy the backup to the file's path for the others. Then copy the other
+   files back, without any `-journal`, `-wal` or `-shm`.
+5. Check that no `<file>-journal`, `<file>-wal` or `<file>-shm` is next to a
+   restored file before you start any process.
+
 ## Brain working state fields
 
-The brain saves each session's working state as JSON: in the runtime
-database's `working_state` table, or in `working_state.json` with the local
-session store. The working state rejects fields it does not define.
+The brain saves each session's working state as JSON: in the `working_state`
+table of the brain's session store (`brain/sessions.db` next to the SQLite
+runtime database, `state/brain/sessions.db` in the default layout), or in
+`working_state.json` with the local session store. The working state rejects
+fields it does not define.
 
-Packages with `turn_evidence` and `turn_evidence_trace_id` write both fields
-in every working state they save, as `null` when no same-turn continuation
-ran. They read a working state saved before the fields, with both unset. A
-package from before the fields rejects any working state saved with them:
-validation fails with `extra_forbidden` for both.
+Packages with `turn_evidence` and `turn_evidence_trace_id` add both fields,
+as `null` when no same-turn continuation ran, when the brain saves its typed
+working state (`save_state`). A writer that updates the stored JSON in place
+keeps its keys. Before each runtime turn reaches the brain loop, the
+turn-start reset rewrites the stored state that way, and so does the
+injection of a gateway system context or of task, cron, project, watch,
+consolidation or delegation hints when the turn carries them. So on a session
+last saved before the fields, the first runtime turn after the upgrade can
+write the reset's row without them, and the brain's next typed save in that
+turn adds them. Once a typed save has added them, the rewrites keep them. A
+row without the fields therefore does not mean that an older process wrote
+it.
+
+Packages with the fields read a working state without them, including those
+rows, with both unset. A package from before the fields rejects any working
+state saved with them: validation fails with `extra_forbidden` for both.
 
 Upgrade the processes that share the runtime state as in
 [Coordinated upgrade](#coordinated-upgrade): stop them, keep a pre-upgrade
-backup (with the local session store, a copy of its `sessions` directory),
-upgrade them together, and never run an older process against working state
-saved by the newer package. Rolling back means restoring the matching
-pre-upgrade backup with the matching older package.
+backup (the databases of the runtime home as in
+[SQLite runtime home backup](#sqlite-runtime-home-backup), and with the local
+session store a copy of its `sessions` directory), upgrade them together, and
+never run an older process against working state saved by the newer package.
+Rolling back means restoring the matching pre-upgrade backup with the
+matching older package.
 
 ## Runtime migration 15: session metadata string rows
 
