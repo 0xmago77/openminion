@@ -241,7 +241,7 @@ def test_worker_deadline_survives_supervisor_loss_and_exact_recovery(
 
     archive = snapshot(
         tmp_path / "source.tar",
-        {f"file{n}.py": b"eval(input())\n" for n in range(1000)},
+        {f"file{n}.py": b"value = 1\n" * 6553 for n in range(1000)},
     )
     digest = sha256(archive.read_bytes()).hexdigest()
     config = tmp_path / "scan.json"
