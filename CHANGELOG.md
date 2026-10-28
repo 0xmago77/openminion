@@ -1,11 +1,60 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-26
+Last updated: 2026-10-27
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+## Current package line - 2026-10-27
+
+- Document what `openminion storage backup` covers in a SQLite runtime home.
+  The command snapshots one file and refuses the module databases that carry
+  their own `application_id` (artifact, authored tools, brain, identity,
+  memory, policy, retrieve, skill and telemetry). The upgrade guide now lists
+  the files of a default runtime home with the command's result for each,
+  and backs up the refused ones with SQLite's backup API while every writer
+  is stopped. For a rollback it checks each backup first, then moves each
+  database aside together with its `-journal`, `-wal` and `-shm` before it
+  puts the backups in place, so a companion left by a writer that did not
+  finish is neither applied to a restored file nor deleted. It also states
+  where the brain working state gets `turn_evidence` and
+  `turn_evidence_trace_id`: the typed save adds them, while the turn-start
+  reset rewrites the stored state with its existing keys, so the first row a
+  runtime turn writes after the upgrade can lack both. The working state
+  lives in the brain's session store, not in the runtime database
+  (`docs/runtime-database-upgrades.md`, Refs #452, #419).
+
+- Accept the canonical `time.now` tool's `utc` timestamp as exact-date
+  evidence. Current-date answers that successfully called the time tool no
+  longer fail the freshness verifier after receiving a grounded timestamp.
+- Close what a runtime memory assembly build obtained when the build fails
+  partway. The artifact store, and the memory store with its audit sink for
+  the built-in backend, are closed once each through their current owner,
+  and the build's own error reaches the caller even when a close fails. A
+  PostgreSQL memory store disposes its engine instead of keeping a server
+  connection. Successful builds hand both to the assembly as before
+  (Refs #390).
+- Pass validated Pydantic-model and dataclass arguments to `@tool` functions
+  as instances instead of plain dicts. The decorator handler called
+  `model_dump()` on the validated arguments, so a tool typed `span: Range`
+  received a `dict` and failed with `AttributeError`. The handler now
+  validates mappings with the tool's args model, accepting both declared
+  aliases and canonical field names, and passes the validated field values;
+  defaults and `Annotated` constraints apply and invalid mappings raise
+  `ValidationError`. With Pydantic before 2.11, a nested model that declares
+  aliases is accepted by alias only. This changes the decorator handler
+  only: the shared built-in tool mapping contract is unchanged, so a normal
+  SDK `Agent.run` call with an aliased argument, top-level or nested, is
+  still rejected before the handler runs, as it is without this change. That
+  runtime alias bug is tracked in #454 (Refs #435).
+- Make `python -m openminion.modules.storage` exit with the status that
+  storagectl's `main()` returns, as `python -m openminion.modules.storage.cli`
+  already does. A command that prints `"ok": false` and returns 2, such as
+  `pool-stats` without a PostgreSQL URL, now exits 2 instead of 0. The
+  printed output is unchanged, and a command that raises still exits 1
+  (Refs #450, #412).
 
 ## Current package line - 2026-10-26 update
 

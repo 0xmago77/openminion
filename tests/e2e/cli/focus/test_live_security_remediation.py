@@ -399,13 +399,13 @@ def _handoff(
             "verification_timeout_seconds": DEFAULT_PROJECT_VERIFICATION_TIMEOUT_SECONDS,
             "failing_before_exit_code": 1,
             "operator_approved": True,
-            "delivery": f"Delegate exactly one code-bearing child to {_IMPLEMENTER}; parent must not edit app.py. "
-            "Instruct that child to edit only app.py using the existing file.write allowance; leave verification to the runtime. "
+            "delivery": f"Use exactly three task.delegate calls: one code-bearing mode=sync to {_IMPLEMENTER}, one mode=review, then one mode=accept; parent must not edit app.py. "
+            "Instruct that child to edit only app.py using the existing file.write allowance and return a change summary; do not execute commands and leave verification to the runtime, which creates the child artifact after return. "
             f"Use task.delegate mode=review with distinct {_CODE_REVIEWER}; instruct the reviewer to assess the supplied diff and verifier evidence without tools. "
-            "After a passing review, accept the same full record_alias and target_digest returned by the child; never abbreviate them. "
+            "After a passing review, accept the same full record_alias and target_digest returned by task.delegate; never ask the child to create them or abbreviate them. "
             "No security tools, network, installation, push or PR. Do not commit; operator commits accepted patch. "
             "Use the configured verifier and git.status. Call plan directly, not through tool.request. "
-            "Mark each work step completed, then complete the public task plan once.",
+            "After acceptance, mark remaining plan steps completed from the recorded verifier/review evidence, then complete the public task plan once; do not delegate again.",
         }
     )
     redacted, count = redact_sensitive_text(text)

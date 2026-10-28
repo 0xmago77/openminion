@@ -21,14 +21,16 @@ def _config(tmp_path: Path) -> SecurityConfig:
     )
 
 
-def _runner(payload: str, *, return_code: int = 1):
+def _runner(payload: str, *, return_code: int = 1, stderr: str = ""):
     def run(argv, *, cwd, timeout_seconds):
         del cwd, timeout_seconds
         if "--version" in argv:
             return ScannerProcessResult(return_code=0, stdout="Version: 0.70.0\n")
         assert "--skip-db-update" in argv
         assert argv[-1]
-        return ScannerProcessResult(return_code=return_code, stdout=payload)
+        return ScannerProcessResult(
+            return_code=return_code, stdout=payload, stderr=stderr
+        )
 
     return run
 
@@ -219,3 +221,85 @@ def test_trivy_preserves_empty_and_null_findings(monkeypatch, tmp_path, payload)
         process_runner=_runner(json.dumps(payload), return_code=0),
     )
     assert result.ok and result.status == "completed" and result.findings == []
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        {"InstalledVersion": "2.0.0", "PkgPath": "node_modules/example"},
+        {"InstalledVersion": "1.0.0", "PkgPath": "nested/node_modules/example"},
+    ],
+)
+def test_dependency_occurrences_have_distinct_stable_ids(monkeypatch, tmp_path, second):
+    monkeypatch.setattr(trivy.shutil, "which", lambda _name: "/usr/bin/trivy")
+    first = {
+        "VulnerabilityID": "CVE-2026-0001",
+        "PkgName": "example",
+        "InstalledVersion": "1.0.0",
+        "PkgPath": "node_modules/example",
+    }
+    payload = json.dumps(
+        {
+            "Results": [
+                {
+                    "Target": "package-lock.json",
+                    "Vulnerabilities": [first, {**first, **second}, first],
+                }
+            ]
+        }
+    )
+    result = trivy.scan_dependencies(
+        LocalScanArgs(target="."),
+        target=tmp_path,
+        config=_config(tmp_path),
+        process_runner=_runner(payload),
+    )
+    assert result.status == "completed" and result.total_findings == 3
+    ids = [finding.finding_id for finding in result.findings]
+    assert ids[0] != ids[1]
+    assert ids[0] == ids[2]
+
+
+@pytest.mark.parametrize("return_code", [1, 2])
+def test_trivy_failure_without_json_keeps_redacted_diagnostic(
+    monkeypatch, tmp_path, return_code
+):
+    monkeypatch.setattr(trivy.shutil, "which", lambda _name: "/usr/bin/trivy")
+    result = trivy.scan_dependencies(
+        LocalScanArgs(target="."),
+        target=tmp_path,
+        config=_config(tmp_path),
+        process_runner=_runner(
+            "",
+            return_code=return_code,
+            stderr="DB error: --skip-db-update cannot be specified on the first run; password=synthetic-secret",
+        ),
+    )
+    assert not result.ok and result.status == "failed"
+    assert result.error and result.error.code == "EXEC_ERROR"
+    assert result.error.exit_code == return_code
+    assert "--skip-db-update" in result.error.message
+    assert "synthetic-secret" not in result.error.message
+    assert "invalid JSON" not in result.error.message
+
+
+def test_trivy_cancelled_scan_keeps_its_terminal_status(monkeypatch, tmp_path):
+    monkeypatch.setattr(trivy.shutil, "which", lambda _name: "/usr/bin/trivy")
+
+    def cancelled(argv, **kwargs):
+        if "--version" in argv:
+            return ScannerProcessResult(return_code=0, stdout="Version: 0.70.0")
+        return ScannerProcessResult(
+            return_code=-15, cancelled=True, stderr="terminated"
+        )
+
+    result = trivy.scan_dependencies(
+        LocalScanArgs(target="."),
+        target=tmp_path,
+        config=_config(tmp_path),
+        process_runner=cancelled,
+    )
+    assert result.status == "cancelled"
+    assert result.error and result.error.code == "EXEC_ERROR"
+    assert result.error.exit_code == -15
+    assert result.error.message == "Trivy scan was cancelled"

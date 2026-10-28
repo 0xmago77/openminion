@@ -1217,6 +1217,86 @@ def test_engine_redirects_repeated_plan_only_calls_to_substantive_work() -> None
     )
 
 
+def test_engine_preserves_plan_completion_validation_and_recovery() -> None:
+    plan_id = "completion-recovery"
+    calls = [
+        {
+            "action": "declare",
+            "objective": "Finish the remaining plan step",
+            "steps": [{"step_id": "remaining", "description": "Record the result"}],
+        },
+        {"action": "complete", "reason": "Work is finished"},
+        {"action": "complete", "reason": "The result is ready"},
+        {
+            "action": "step_completed",
+            "step_id": "remaining",
+            "output_summary": "Result recorded",
+        },
+        {"action": "complete", "reason": "Work is finished"},
+    ]
+    runtime = _FakeRuntime(
+        responses=[
+            *[
+                LLMResponse(
+                    ok=True,
+                    provider="fake",
+                    model="fake-model",
+                    tool_calls=[
+                        ToolCall(
+                            id=f"plan-{index}",
+                            name=PLAN_TOOL_NAME,
+                            arguments={"plan_id": plan_id, **arguments},
+                        )
+                    ],
+                    finish_reason="tool_calls",
+                )
+                for index, arguments in enumerate(calls)
+            ],
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="fake-model",
+                output_text="Plan completed.",
+                finalization_status={
+                    "status": "final_answer",
+                    "reasoning": "The remaining step and plan are complete.",
+                },
+                finish_reason="stop",
+            ),
+        ]
+    )
+    session_api = _FakeSessionAPI()
+    loop_ctx = _LoopContext(
+        state=_state(tool_calls=2, llm_calls_max=8), session_api=session_api
+    )
+
+    outcome = run_adaptive_tool_loop(
+        loop_ctx,
+        profile=_profile(allowed_tools=frozenset(), max_iterations=8),
+        runtime=runtime,
+        model="fake-model",
+        initial_messages=[Message(role="user", content="finish the active plan")],
+        tool_specs=[],
+    )
+
+    errors = [
+        json.loads(message.content)["error"]
+        for message in runtime.calls[3]["messages"]
+        if message.role == "tool" and message.tool_call_id in {"plan-1", "plan-2"}
+    ]
+    assert [error["code"] for error in errors] == ["PLAN_STEPS_UNRESOLVED"] * 2
+    assert all(error["details"]["step_ids"] == ["remaining"] for error in errors)
+    assert PLAN_TOOL_NAME in {spec.name for spec in runtime.calls[3]["tools"]}
+    assert loop_ctx.commands == []
+    assert outcome.termination_reason == ADAPTIVE_TERM_FINAL_TEXT
+    assert outcome.final_text == "Plan completed."
+    assert [
+        event["event_type"]
+        for event in session_api.events
+        if event["event_type"].startswith("task_plan.")
+    ] == ["task_plan.declared", "task_plan.step_completed", "task_plan.completed"]
+
+
 def test_repeated_plan_only_detection_treats_plan_family_as_control() -> None:
     loop_state = AdaptiveToolLoopState()
     loop_state.scratchpad[PLAN_TOOL_LAST_SUBSTANTIVE_COUNT_SCRATCHPAD_KEY] = 0
