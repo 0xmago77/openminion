@@ -151,6 +151,15 @@ def test_source_turn_done_does_not_replace_semantic_closure(
             source._assert_closed_readonly_turn(events)
 
 
+def test_source_later_closure_failure_cannot_reuse_an_earlier_success():
+    events = [
+        ("brain.closure_gate.completed", {"satisfied": True, "next_action": "close"}),
+        ("brain.closure_gate.failed", {"error": "invalid_structured_output"}),
+    ]
+    with pytest.raises(AssertionError, match="no successful final closure verdict"):
+        source._assert_closed_readonly_turn(events)
+
+
 @pytest.fixture
 def live_config(tmp_path, monkeypatch):
     original = tmp_path / "original.json"

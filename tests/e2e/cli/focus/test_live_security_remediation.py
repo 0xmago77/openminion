@@ -262,7 +262,6 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
                 f"persisted {field} contains nonstructural tool data"
             )
     recovered = _assert_readonly_outcomes(events, expected_security, terminal_statuses)
-    final_closure = _assert_closed_readonly_turn(events)
     usage = _usage(
         _events(probe.data_root / "telemetry/telemetry.db", 0),
         probe.session_id,
@@ -272,6 +271,19 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
     assert usage["input_tokens"] > 0 and usage["output_tokens"] > 0
     sessions = SQLiteSessionStore(probe.data_root / "state/brain/sessions.db")
     try:
+        final_closure = _assert_closed_readonly_turn(
+            [
+                (event["event_type"], event["payload"])
+                for event in sessions.get_events(
+                    brain_session,
+                    types=[
+                        "brain.entry",
+                        "brain.closure_gate.completed",
+                        "brain.closure_gate.failed",
+                    ],
+                )
+            ]
+        )
         transcript = sessions.get_tool_transcript(brain_session)
         assert transcript["causal_fidelity"] == "exact" and transcript["events"]
         assert {event["payload"]["call_id"] for event in transcript["events"]} == {
@@ -303,12 +315,18 @@ def _assert_closed_readonly_turn(events: list) -> dict:
         kind == "brain.entry" and data.get("reason_code") == "token_budget_exceeded"
         for kind, data in events
     ), "turn exhausted its token budget"
-    closures = [data for kind, data in events if kind == "brain.closure_gate.completed"]
-    assert closures and closures[-1].get("satisfied") is True, (
-        "turn did not satisfy final closure"
+    closures = [
+        (kind, data)
+        for kind, data in events
+        if kind in {"brain.closure_gate.completed", "brain.closure_gate.failed"}
+    ]
+    assert closures and closures[-1][0] == "brain.closure_gate.completed", (
+        "turn has no successful final closure verdict"
     )
-    assert closures[-1].get("next_action") == "close", "turn requires continuation"
-    return closures[-1]
+    final = closures[-1][1]
+    assert final.get("satisfied") is True, "turn did not satisfy final closure"
+    assert final.get("next_action") == "close", "turn requires continuation"
+    return final
 
 
 def _assert_readonly_outcomes(
