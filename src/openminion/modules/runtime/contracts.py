@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -65,6 +66,7 @@ class TurnRequest:
     stream: bool = False
     meta: dict[str, Any] = field(default_factory=dict)
     explicit_agent: bool = False
+    trusted_memory_consolidation_context: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True)
