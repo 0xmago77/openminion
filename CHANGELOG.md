@@ -1,11 +1,13 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-26
+Last updated: 2026-10-27
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+## Current package line - 2026-10-27
 
 - Close what a runtime memory assembly build obtained when the build fails
   partway. The artifact store, and the memory store with its audit sink for
