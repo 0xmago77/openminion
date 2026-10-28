@@ -115,6 +115,42 @@ def test_source_publication_requires_successful_terminal_turn(terminal_statuses)
         )
 
 
+@pytest.mark.parametrize(
+    ("closure", "budget_stop", "accepted"),
+    [
+        (None, False, False),
+        ({"satisfied": False, "next_action": "continue"}, False, False),
+        ({"satisfied": True, "next_action": "continue"}, False, False),
+        ({"satisfied": False, "next_action": "continue"}, True, False),
+        ({"satisfied": True, "next_action": "close"}, True, False),
+        ({"satisfied": True, "next_action": "close"}, False, True),
+    ],
+)
+def test_source_turn_done_does_not_replace_semantic_closure(
+    closure, budget_stop, accepted
+):
+    events = [
+        (
+            "tool.call.requested",
+            {"call_id": "review", "canonical_name": "security.review_report"},
+        ),
+        ("tool.call.completed", {"call_id": "review", "status": "success"}),
+    ]
+    if closure is not None:
+        events.append(("brain.closure_gate.completed", closure))
+    if budget_stop:
+        events.append(("brain.entry", {"reason_code": "token_budget_exceeded"}))
+    assert (
+        source._assert_readonly_outcomes(events, ["security.review_report"], ["done"])
+        == []
+    )
+    if accepted:
+        assert source._assert_closed_readonly_turn(events) == closure
+    else:
+        with pytest.raises(AssertionError):
+            source._assert_closed_readonly_turn(events)
+
+
 @pytest.fixture
 def live_config(tmp_path, monkeypatch):
     original = tmp_path / "original.json"

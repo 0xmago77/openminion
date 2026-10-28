@@ -262,6 +262,7 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
                 f"persisted {field} contains nonstructural tool data"
             )
     recovered = _assert_readonly_outcomes(events, expected_security, terminal_statuses)
+    final_closure = _assert_closed_readonly_turn(events)
     usage = _usage(
         _events(probe.data_root / "telemetry/telemetry.db", 0),
         probe.session_id,
@@ -289,11 +290,25 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
         "calls": calls,
         "recovered_validation_attempts": recovered,
         "terminal_statuses": terminal_statuses,
+        "final_closure": final_closure,
         "approvals": approvals,
         "usage": usage,
         "tool_transcript": f"{name}.tools.json",
         "content_boundary": "Structural transcript omits invocation arguments and results; canonical CAS documents are read in full by the operator.",
     }
+
+
+def _assert_closed_readonly_turn(events: list) -> dict:
+    assert not any(
+        kind == "brain.entry" and data.get("reason_code") == "token_budget_exceeded"
+        for kind, data in events
+    ), "turn exhausted its token budget"
+    closures = [data for kind, data in events if kind == "brain.closure_gate.completed"]
+    assert closures and closures[-1].get("satisfied") is True, (
+        "turn did not satisfy final closure"
+    )
+    assert closures[-1].get("next_action") == "close", "turn requires continuation"
+    return closures[-1]
 
 
 def _assert_readonly_outcomes(
@@ -1000,7 +1015,8 @@ def test_live_security_remediation(
                 "Call security.review_report review_kind=initial for the exact report ref, disposition each candidate once, "
                 "using JSON arrays for finding_reviews and verification_criteria, not objects with item keys, "
                 "and give accepted findings a minimal objective and explicit regression criteria, with the complete remediation brief under 1000 characters. "
-                "If review publication rejects arguments, correct them using its feedback; stop after successful publication. Do not repair.\n"
+                "If review publication rejects arguments, correct them using its feedback. "
+                "After successful publication, return the canonical review ref in your final answer and stop. Do not repair.\n"
                 + _operator_evidence(
                     reviewer, ctl, [report_ref, *report.evidence_refs]
                 ),
@@ -1085,7 +1101,8 @@ def test_live_security_remediation(
                 "one closure per accepted finding and decisions for unmatched current candidates. "
                 "Use JSON arrays for closure_reviews, new_finding_reviews and current_finding_ids, including [] when empty. "
                 "Use evidence to choose resolved/residual/not_reproduced. "
-                "If review publication rejects arguments, correct them using its feedback; stop after successful publication. Do not repair.\n"
+                "If review publication rejects arguments, correct them using its feedback. "
+                "After successful publication, return the canonical review ref in your final answer and stop. Do not repair.\n"
                 + _operator_evidence(
                     reviewer,
                     ctl,
