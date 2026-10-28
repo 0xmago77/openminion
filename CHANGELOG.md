@@ -17,6 +17,20 @@ This file tracks package-facing release notes for `openminion`.
   through `runtime.sessions` on either backend. A SQLite record store without
   a connection still fails the start with the same error. What is covered on
   PostgreSQL is listed in `docs/runtime-database-upgrades.md` (Refs #437).
+- Keep a room's active agent when a first agent join runs at the same time as
+  another join, an explicit selection or a leave on another connection. The
+  join read the room after its participant row had committed and, when the
+  room had no active agent, wrote its agent as active in a separate
+  statement. A second join could then replace the first activation, a join
+  could overwrite a `set_active_agent` selection (`/activate`), and a join
+  whose agent left meanwhile (`/kick`) stored that agent as active. The join
+  now reads and writes the active agent in its participant transaction, under
+  the session-row lock that joins and leaves already take, with the same
+  empty or blank check. The first activation a join commits stays until a
+  selection or a leave changes it, and a selection or leave made during a
+  join waits for it to commit, then applies. The active agent is still not
+  guaranteed to be the earliest join. Legacy owner records still activate no
+  agent (Refs #393).
 
 ## Current package line - 2026-10-27
 
