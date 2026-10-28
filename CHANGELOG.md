@@ -1,12 +1,28 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-26
+Last updated: 2026-10-27
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Start `APIRuntime` with PostgreSQL runtime storage (`storage.backend:
+  postgres`). The start read the runtime record store's SQLite connection for
+  every backend and failed with `runtime record_store does not expose sqlite
+  connection`, so commands such as `openminion room create` exited with a
+  startup error. `APIRuntime.storage_connection`, and the compatibility
+  wrapper's `OpenMinionRuntime.storage`, are now the SQLite connection on
+  SQLite, unchanged, and `None` for other backends; sessions and rooms go
+  through `runtime.sessions` on either backend. A SQLite record store without
+  a connection still fails the start with the same error. What is covered on
+  PostgreSQL is listed in `docs/runtime-database-upgrades.md` (Refs #437).
+
+## Current package line - 2026-10-27
+
+- Accept the canonical `time.now` tool's `utc` timestamp as exact-date
+  evidence. Current-date answers that successfully called the time tool no
+  longer fail the freshness verifier after receiving a grounded timestamp.
 - Close what a runtime memory assembly build obtained when the build fails
   partway. The artifact store, and the memory store with its audit sink for
   the built-in backend, are closed once each through their current owner,
@@ -33,16 +49,6 @@ This file tracks package-facing release notes for `openminion`.
   `pool-stats` without a PostgreSQL URL, now exits 2 instead of 0. The
   printed output is unchanged, and a command that raises still exits 1
   (Refs #450, #412).
-- Start `APIRuntime` with PostgreSQL runtime storage (`storage.backend:
-  postgres`). The start read the runtime record store's SQLite connection for
-  every backend and failed with `runtime record_store does not expose sqlite
-  connection`, so commands such as `openminion room create` exited with a
-  startup error. `APIRuntime.storage_connection`, and the compatibility
-  wrapper's `OpenMinionRuntime.storage`, are now the SQLite connection on
-  SQLite, unchanged, and `None` for other backends; sessions and rooms go
-  through `runtime.sessions` on either backend. A SQLite record store without
-  a connection still fails the start with the same error. What is covered on
-  PostgreSQL is listed in `docs/runtime-database-upgrades.md` (Refs #437).
 
 ## Current package line - 2026-10-26 update
 
