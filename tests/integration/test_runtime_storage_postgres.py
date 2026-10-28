@@ -36,12 +36,18 @@ from tests._room_participant_scenarios import (
     COUNTED_JOIN_SEQ_SQL,
     LEGACY_ORDER,
     PRE_UPGRADE_ORDER_SQL,
+    check_blank_active_agent_counts_as_none,
     check_concurrent_joins,
     check_explicit_active_agent,
+    check_join_keeps_an_activation_committed_during_it,
     check_join_place_on_upsert_and_rejoin,
+    check_joins_selection_and_leaves_on_two_connections,
     check_leave_and_rejoin_wait_for_each_other,
+    check_leave_during_a_join_applies_after_it,
     check_joins_write_no_session_value,
     check_legacy_owner_join_order,
+    check_legacy_owner_records_activate_no_agent,
+    check_selection_during_a_join_applies_after_it,
     check_tied_join_order,
     check_upgraded_join_order,
     legacy_participant_rows,
@@ -923,6 +929,57 @@ def test_postgres_leave_and_rejoin_on_two_connections_wait_for_each_other(
         finally:
             leaver.close()
             joiner.close()
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize(
+    "check",
+    [
+        check_join_keeps_an_activation_committed_during_it,
+        check_selection_during_a_join_applies_after_it,
+        check_leave_during_a_join_applies_after_it,
+        check_joins_selection_and_leaves_on_two_connections,
+    ],
+    ids=["two-first-joins", "selection", "leave", "one-after-another"],
+)
+def test_postgres_room_active_agent_on_two_connections(
+    tmp_path: Path,
+    check: Callable[[SessionStore, SessionStore, SessionStore], None],
+) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om393_active_agent") as url:
+        first, second = (
+            build_runtime_storage(
+                tmp_path / f"state/{name}.db",
+                env={},
+                record_backend="record.postgres",
+                record_backend_options={"url": url},
+            )
+            for name in ("first", "second")
+        )
+        try:
+            with _postgres_sessions(tmp_path, url) as sessions:
+                check(sessions, first.sessions, second.sessions)
+        finally:
+            first.close()
+            second.close()
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize(
+    "check",
+    [
+        check_legacy_owner_records_activate_no_agent,
+        check_blank_active_agent_counts_as_none,
+    ],
+)
+def test_postgres_room_join_activation_rules(
+    tmp_path: Path, check: Callable[[SessionStore], None]
+) -> None:
+    pytest.importorskip("sqlalchemy")
+    with _postgres_schema("om393_activation_rules") as url:
+        with _postgres_sessions(tmp_path, url) as sessions:
+            check(sessions)
 
 
 @pytest.mark.postgres
