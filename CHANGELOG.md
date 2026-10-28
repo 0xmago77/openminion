@@ -27,6 +27,12 @@ This file tracks package-facing release notes for `openminion`.
   SDK `Agent.run` call with an aliased argument, top-level or nested, is
   still rejected before the handler runs, as it is without this change. That
   runtime alias bug is tracked in #454 (Refs #435).
+- Make `python -m openminion.modules.storage` exit with the status that
+  storagectl's `main()` returns, as `python -m openminion.modules.storage.cli`
+  already does. A command that prints `"ok": false` and returns 2, such as
+  `pool-stats` without a PostgreSQL URL, now exits 2 instead of 0. The
+  printed output is unchanged, and a command that raises still exits 1
+  (Refs #450, #412).
 - Start `APIRuntime` with PostgreSQL runtime storage (`storage.backend:
   postgres`). The start read the runtime record store's SQLite connection for
   every backend and failed with `runtime record_store does not expose sqlite
