@@ -115,7 +115,7 @@ _WATCH_OUTCOME_GUIDANCE = (
     "condition_met=true only when the watch alert condition is satisfied. Do not "
     "set it if you still need tools. If the provider cannot return that signal "
     "out of band, append exactly "
-    "<watch_outcome>{\"condition_met\":false,\"summary\":\"...\"}</watch_outcome> "
+    '<watch_outcome>{"condition_met":false,"summary":"..."}</watch_outcome> '
     "after the final answer, replacing the example values with the observed outcome."
 )
 _WATCH_ACTION_GUIDANCE = (

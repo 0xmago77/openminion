@@ -20,6 +20,8 @@ _STATUS_ORDER = {
     "CANCELED": 4,
     "FAILED": 5,
 }
+
+
 @dataclass(frozen=True)
 class TaskSurface:
     """Canonical projection for task inventory surfaces."""
@@ -114,6 +116,7 @@ class TaskSurface:
                 str(item.get("decision_id", "")),
             ),
         )
+
 
 def build_task_surface(
     source: Any | None,

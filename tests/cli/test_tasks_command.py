@@ -123,9 +123,7 @@ def test_tasks_show_parser_accepts_run_limit_and_rejects_invalid_value() -> None
     with pytest.raises(SystemExit):
         parser.parse_args(["tasks", "show", "task-1", "--runs-limit", "invalid"])
 
-    compatibility_args = parser.parse_args(
-        ["tasks", "show", "task-1", "--limit", "20"]
-    )
+    compatibility_args = parser.parse_args(["tasks", "show", "task-1", "--limit", "20"])
     assert compatibility_args.limit == 20
     assert compatibility_args.runs_limit is None
 
@@ -163,9 +161,16 @@ def test_tasks_cli_show_renders_requested_recent_runs(tmp_path, capsys) -> None:
     args.limit = 7
     assert run_tasks(args, SimpleNamespace(task_manager=manager)) == 0
     compatibility_output = capsys.readouterr().out
-    assert len(
-        [line for line in compatibility_output.splitlines() if line.startswith("- ")]
-    ) == 7
+    assert (
+        len(
+            [
+                line
+                for line in compatibility_output.splitlines()
+                if line.startswith("- ")
+            ]
+        )
+        == 7
+    )
 
 
 def test_tasks_cli_uses_configured_default_agent(capsys) -> None:

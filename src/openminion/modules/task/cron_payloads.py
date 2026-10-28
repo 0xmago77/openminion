@@ -43,7 +43,9 @@ def turn_wait_timeout(base_timeout_s: float, payload: Mapping[str, Any]) -> floa
     return float(base_timeout_s) + max(0, float(payload.get("timeout_seconds") or 0))
 
 
-def strip_untrusted_task_context(metadata: Mapping[str, str] | None) -> dict[str, str] | None:
+def strip_untrusted_task_context(
+    metadata: Mapping[str, str] | None,
+) -> dict[str, str] | None:
     filtered = dict(metadata or {})
     for key in _TRUSTED_TASK_METADATA_KEYS:
         filtered.pop(key, None)

@@ -31,16 +31,12 @@ def test_manager_preserves_trusted_task_context() -> None:
                 agent_id="ops",
                 session_id="session-context",
                 input_text="consolidate",
-                trusted_task_context={
-                    "memory_consolidation_job": "true"
-                },
+                trusted_task_context={"memory_consolidation_job": "true"},
             )
         ).result(timeout_s=2)
 
         assert result.final_text == "ok"
-        assert seen[0].trusted_task_context == {
-            "memory_consolidation_job": "true"
-        }
+        assert seen[0].trusted_task_context == {"memory_consolidation_job": "true"}
     finally:
         manager.shutdown()
 

@@ -404,7 +404,9 @@ def test_render_tasks_report_applies_exact_lifecycle_actions(
     ]
 
 
-def test_render_tasks_report_dispatches_run_now_and_scheduler_status(monkeypatch) -> None:
+def test_render_tasks_report_dispatches_run_now_and_scheduler_status(
+    monkeypatch,
+) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
 
     class Runtime:

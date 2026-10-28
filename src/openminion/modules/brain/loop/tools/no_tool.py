@@ -334,10 +334,10 @@ def _unresolved_plan_retry(
 
 def _no_tool_retry(
     runner: Any,
-    finalization_status: Any,
     normalized_final_text: str,
     payloads: dict[str, Any],
 ) -> tuple[bool, AdaptiveToolLoopOutcome | None] | None:
+    finalization_status = payloads[STATE_KEY_FINALIZATION_STATUS]
     retry = (
         _argument_retry(runner, finalization_status, normalized_final_text)
         or _failed_exec_retry(runner, finalization_status, normalized_final_text)
@@ -553,7 +553,7 @@ class AdaptiveLoopRunnerNoToolMixin:
                 code="EMPTY_PROVIDER_RESPONSE",
             )
         self.loop_state.scratchpad.pop("empty_payload_recovery_retry_count", None)
-        if retry := _no_tool_retry(self, finalization_status, normalized_final_text, payloads):
+        if retry := _no_tool_retry(self, normalized_final_text, payloads):
             return retry
         raw_payload_repair = self._repair_raw_tool_payload_final_text(
             normalized_final_text

@@ -29,6 +29,7 @@ _LAB_CONTEXT_KEYS = {
     "openminion_ephemeral_workspace_roots",
 }
 
+
 def _security_lab_inbound_metadata(
     *,
     runtime: "RuntimeFacade",

@@ -24,9 +24,11 @@ def _resolve_turn_timeout_seconds(
     inbound_metadata: dict[str, str],
     default_timeout: int = 600,
 ) -> int:
-    env_timeout = resolve_environment_config().get(
-        OPENMINION_TURN_TIMEOUT_SECONDS_ENV, ""
-    ).strip()
+    env_timeout = (
+        resolve_environment_config()
+        .get(OPENMINION_TURN_TIMEOUT_SECONDS_ENV, "")
+        .strip()
+    )
     if env_timeout:
         try:
             parsed = int(env_timeout)

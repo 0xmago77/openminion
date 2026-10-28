@@ -308,11 +308,13 @@ def _cron_turn_executor_for_runtime(
     return CronTurnExecutor(
         runtime=runtime,
         cron_store=cron_store,
-        request_builder=lambda payload, agent_id, context=None, watch_context=None: build_turn_request(
-            payload,
-            default_agent_id=agent_id,
-            trusted_memory_consolidation_context=context,
-            trusted_watch_context=watch_context,
+        request_builder=lambda payload, agent_id, context=None, watch_context=None: (
+            build_turn_request(
+                payload,
+                default_agent_id=agent_id,
+                trusted_memory_consolidation_context=context,
+                trusted_watch_context=watch_context,
+            )
         ),
         timeout_s=cron_timeout_s,
         task_manager=task_manager,

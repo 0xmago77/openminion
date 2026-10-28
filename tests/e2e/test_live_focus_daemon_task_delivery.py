@@ -108,8 +108,7 @@ def _cron_announcements(
     ]
     events = _rows(
         runtime_db_path,
-        "SELECT * FROM events WHERE session_id = ? "
-        "AND event_type = 'cron.announce'",
+        "SELECT * FROM events WHERE session_id = ? AND event_type = 'cron.announce'",
         (session_id,),
     )
     return messages, events
@@ -131,7 +130,10 @@ def _trace_proves_file_read(
                     function = call.get("function")
                     if call.get("name") == "file.read":
                         arguments = call.get("arguments")
-                    elif isinstance(function, dict) and function.get("name") == "file.read":
+                    elif (
+                        isinstance(function, dict)
+                        and function.get("name") == "file.read"
+                    ):
                         arguments = function.get("arguments")
                     else:
                         continue
@@ -140,10 +142,15 @@ def _trace_proves_file_read(
                             arguments = json.loads(arguments)
                         except json.JSONDecodeError:
                             continue
-                    if isinstance(arguments, dict) and arguments.get("path") == relative_path:
+                    if (
+                        isinstance(arguments, dict)
+                        and arguments.get("path") == relative_path
+                    ):
                         return True
             return any(
-                matching_call(value, within_arguments=within_arguments or key == "arguments")
+                matching_call(
+                    value, within_arguments=within_arguments or key == "arguments"
+                )
                 for key, value in node.items()
             )
         if isinstance(node, list):
@@ -318,9 +325,7 @@ def test_official_minimax_focus_daemon_material_change_watch(
     trace_root.mkdir(parents=True)
     fixture_path = run_root / "release-status.json"
     fixture_path.write_text(
-        json.dumps(
-            {"release": "cedar", "status": "ready", "checked_at": "t0"}
-        ),
+        json.dumps({"release": "cedar", "status": "ready", "checked_at": "t0"}),
         encoding="utf-8",
     )
     config_path = _isolated_config(run_root)
@@ -411,9 +416,7 @@ def test_official_minimax_focus_daemon_material_change_watch(
         ) == ([], [])
 
         fixture_path.write_text(
-            json.dumps(
-                {"release": "cedar", "status": "ready", "checked_at": "t1"}
-            ),
+            json.dumps({"release": "cedar", "status": "ready", "checked_at": "t1"}),
             encoding="utf-8",
         )
         first_two = _wait_for_finished_run_count(db_path, job_id, 2)
@@ -433,8 +436,7 @@ def test_official_minimax_focus_daemon_material_change_watch(
         ) == ([], [])
 
         assert (
-            daemon_stop(str(config_path), home_root=home_root, data_root=data_root)
-            == 0
+            daemon_stop(str(config_path), home_root=home_root, data_root=data_root) == 0
         )
         daemon_running = False
         before_restart = _rows(
@@ -444,14 +446,13 @@ def test_official_minimax_focus_daemon_material_change_watch(
         )
         assert before_restart == [{"job_id": job_id}]
         fixture_path.write_text(
-            json.dumps(
-                {"release": "cedar", "status": "blocked", "checked_at": "t2"}
-            ),
+            json.dumps({"release": "cedar", "status": "blocked", "checked_at": "t2"}),
             encoding="utf-8",
         )
-        assert daemon_start(
-            str(config_path), home_root=home_root, data_root=data_root
-        ) == 0
+        assert (
+            daemon_start(str(config_path), home_root=home_root, data_root=data_root)
+            == 0
+        )
         daemon_running = True
 
         runs = _wait_for_finished_run_count(db_path, job_id, 3)
@@ -480,9 +481,7 @@ def test_official_minimax_focus_daemon_material_change_watch(
         )
         assert len(completed_job) == 1
         assert completed_job[0]["enabled"] == 0
-        final_watch = json.loads(completed_job[0]["payload_json"])[
-            "_openminion_watch"
-        ]
+        final_watch = json.loads(completed_job[0]["payload_json"])["_openminion_watch"]
         assert final_watch["checks_completed"] == 3
         assert final_watch["last_condition_met"] is True
         assert final_watch["last_terminal_reason"] == "condition_met"
@@ -494,15 +493,20 @@ def test_official_minimax_focus_daemon_material_change_watch(
         )
         assert len(messages) == 1
         assert len(events) == 1
-        assert json.loads(messages[0]["metadata_json"])["cron_run_id"] == runs[2][
-            "run_id"
-        ]
-        assert json.loads(events[0]["payload_json"])["cron_run_id"] == runs[2][
-            "run_id"
-        ]
+        assert (
+            json.loads(messages[0]["metadata_json"])["cron_run_id"] == runs[2]["run_id"]
+        )
+        assert json.loads(events[0]["payload_json"])["cron_run_id"] == runs[2]["run_id"]
 
         time.sleep(65)
-        assert len(_rows(db_path, "SELECT run_id FROM cron_runs WHERE job_id = ?", (job_id,))) == 3
+        assert (
+            len(
+                _rows(
+                    db_path, "SELECT run_id FROM cron_runs WHERE job_id = ?", (job_id,)
+                )
+            )
+            == 3
+        )
         final_messages, final_events = _cron_announcements(
             runtime_db_path,
             session_id=session_id,
