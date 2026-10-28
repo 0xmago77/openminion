@@ -22,6 +22,7 @@ from sophiagraph.storage import SophiaGraphSqliteStore
 
 from openminion import Agent, APIRuntime
 from openminion.base.config import ConfigManager, OpenMinionConfig, save_config
+from openminion.modules.brain.adapters.memory.runtime import MemctlAdapter
 from openminion.modules.memory.backends.builtin import BackendMemoryStoreAdapter
 from openminion.modules.memory.backends.external import (
     ExternalBackendCapabilities,
@@ -36,6 +37,7 @@ from openminion.modules.memory.runtime.capture_bundle import (
     CaptureCandidateInput,
 )
 from openminion.modules.memory.service import MemoryService
+from openminion.modules.memory.storage import AuditedMemoryStore
 from openminion.modules.memory.storage.sqlite.store import SQLiteMemoryStore
 from tests._csc_fixtures import _csc_install_default_agent
 
@@ -122,6 +124,48 @@ def test_adapter_reports_a_backend_without_capture_as_unsupported(
     # The memory service over the backend reports it the same way.
     with pytest.raises(CaptureRecoveryUnsupportedError):
         MemoryService(backend=backend).apply_capture_bundle(_bundle())
+    # So does the memory API above the service, with the backend's message.
+    memctl = MemctlAdapter(MemoryService(backend=backend), agent_id="agent-1")
+    with pytest.raises(CaptureRecoveryUnsupportedError, match="SophiaGraphSqliteStore"):
+        memctl.apply_capture_bundle(
+            capture_id="capture:unit",
+            root_turn_id="turn-1",
+            session_id="session-1",
+            agent_id="agent-1",
+            candidates=[],
+        )
+
+
+@pytest.mark.parametrize(
+    ("backend_type", "supported"),
+    [
+        (SophiaGraphSqliteStore, False),
+        (CapturingReferenceBackend, True),
+        (FailingReferenceBackend, True),
+    ],
+    ids=["without-capture", "implemented", "failing"],
+)
+def test_capture_capability_is_forwarded_through_the_store_owners(
+    tmp_path: Path, backend_type: type[SophiaGraphSqliteStore], supported: bool
+) -> None:
+    """Each owner above the backend answers with the backend's own check (#449)."""
+    backend = backend_type(tmp_path / "reference.sqlite3")
+    adapter = BackendMemoryStoreAdapter(backend)
+    owners = {
+        "store adapter": adapter,
+        "audited store adapter": AuditedMemoryStore(adapter),
+        "memory service": MemoryService(backend=backend),
+        "memory service over the audited adapter": MemoryService(
+            store=AuditedMemoryStore(adapter)
+        ),
+        "memory API": MemctlAdapter(MemoryService(backend=backend), agent_id="a"),
+    }
+
+    answers = {name: owner.supports_capture_bundles() for name, owner in owners.items()}
+
+    assert answers == dict.fromkeys(owners, supported)
+    # Asking writes nothing.
+    assert getattr(backend, "bundles", []) == []
 
 
 def test_adapter_forwards_the_bundle_to_a_backend_that_implements_capture(
@@ -192,11 +236,12 @@ def _run_turns(
         outcomes = [e for e in events if e.event_type == "turn.outcome"]
         agent_id = str(outcomes[0].payload["agent_id"]) if outcomes else ""
         # The recovery pass applies each pending intent through the runtime's
-        # memory API again; the extractor is not under test here.
+        # memory API again; the extractor only counts its calls.
+        extractions: list[str] = []
         recovery = runtime.resolve_memory_assembly(agent_id).recover_pending_captures(
             sessions=sessions,
             agent_id=agent_id,
-            extract_candidates=lambda *_: [],
+            extract_candidates=lambda *args: extractions.append(args[2]) or [],
             authorize=lambda *_: True,
         )
         return {
@@ -204,6 +249,7 @@ def _run_turns(
             "intent states": [e.payload.get("capture_state") for e in outcomes],
             "results": [e for e in events if e.event_type == "memory.capture.result"],
             "recovery": (recovery.scanned, recovery.recovered, recovery.pending),
+            "recovery extractions": len(extractions),
         }
     finally:
         runtime.close()
@@ -226,10 +272,12 @@ def test_sdk_turns_with_the_reference_backend_complete_with_capture_unsupported(
             '"disposition": "pending"' in turn.metadata["memory_capture_bundle_result"]
         )
     # Each turn's capture intent stays pending, with no result, and the
-    # recovery pass finds both and leaves them pending.
+    # recovery pass finds both and leaves them pending without extracting
+    # again: the backend cannot commit a bundle (#449).
     assert run["intent states"] == ["pending", "pending"]
     assert run["results"] == []
     assert run["recovery"] == (2, 0, 2)
+    assert run["recovery extractions"] == 0
 
 
 def test_sdk_turns_with_an_external_backend_that_implements_capture(
@@ -254,8 +302,10 @@ def test_sdk_turn_lets_an_implemented_backend_capture_fail(
         assert isinstance(turn, CaptureFailed)
     assert run["intent states"] == ["pending", "pending"]
     assert run["results"] == []
-    # The failure is the backend's, so recovery keeps the intents pending.
+    # The failure is the backend's, so recovery extracts, then keeps the
+    # intents pending.
     assert run["recovery"] == (2, 0, 2)
+    assert run["recovery extractions"] == 2
 
 
 def test_sdk_turns_with_the_default_memory_provider(
