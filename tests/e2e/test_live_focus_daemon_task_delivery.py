@@ -276,9 +276,8 @@ def test_official_minimax_focus_daemon_preserves_conversation_delivery(
                     prompt=(
                         "Use task.schedule to create a one-time task at exactly "
                         f"{due_at.isoformat()}. Set name to {task_name!r}, instruction "
-                        "to 'Reply with exactly: TLP_DELIVERED', session_target to "
-                        "'isolated', and delivery mode to 'announce' with target 'last'. "
-                        "Report the exact task_id."
+                        "to 'Reply with exactly: TLP_DELIVERED', and report the exact "
+                        "task_id."
                     ),
                     expected_markers=(),
                     requires_approval=True,
