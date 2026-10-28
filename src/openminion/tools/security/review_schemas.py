@@ -116,7 +116,11 @@ class SecurityFollowUpReviewArgs(BaseModel):
     review_kind: Literal["follow_up"]
     prior_review_ref: str = Field(pattern=_CANONICAL_REF_PATTERN)
     rescan_report_ref: str = Field(pattern=_CANONICAL_REF_PATTERN)
-    closure_reviews: list[SecurityClosureDecision] = Field(min_length=1, max_length=200)
+    closure_reviews: list[SecurityClosureDecision] = Field(
+        min_length=1,
+        max_length=200,
+        description="JSON array with exactly one object per finding marked accepted in prior_review_ref. Copy each prior accepted finding_id exactly once; no duplicate or extra IDs. These are prior finding IDs, not current rescan candidate IDs.",
+    )
     new_finding_reviews: list[SecurityFindingDecision] = Field(
         default_factory=list,
         max_length=200,

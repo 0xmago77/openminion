@@ -90,6 +90,10 @@ def _exact_review_ids(actual: list[str], expected: set[str]) -> None:
         raise ToolRuntimeError(
             "INVALID_ARGUMENT",
             "review decisions must cover each required finding exactly once",
+            details={
+                "expected_finding_ids": sorted(expected),
+                "received_finding_ids": actual,
+            },
         )
 
 
