@@ -42,6 +42,7 @@ class TaskManagerScheduleMixin:
         max_attempts: int = 3,
         retry_backoff_s: int = 30,
         job_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> TaskLifecycleRecord:
         created_job_id = self._cron_repository.add_cron_job(
             name=name,
@@ -67,6 +68,7 @@ class TaskManagerScheduleMixin:
                 cron_job_id=created_job_id,
                 agent_id=agent_id,
                 task_id=created_job_id,
+                metadata=metadata,
             )
         except Exception:
             try:

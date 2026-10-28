@@ -49,6 +49,7 @@ class CronRun:
     brain_session_api: Any = None
     intent_result: dict[str, Any] | None = None
     cron_turn_outcomes: int = 0
+    cron_turn_capture_states: tuple[str, ...] = ()
 
 
 @pytest.fixture
@@ -138,10 +139,17 @@ def _consolidate(
         runtime=runtime,
         # The consolidation path does not use the cron store.
         cron_store=SimpleNamespace(),
-        request_builder=lambda payload, agent_id: build_turn_request(
-            payload, default_agent_id=agent_id
+        request_builder=lambda payload, agent_id, context=None: build_turn_request(
+            payload,
+            default_agent_id=agent_id,
+            trusted_memory_consolidation_context=context,
         ),
         timeout_s=60,
+        task_manager=SimpleNamespace(
+            get_task_by_job=lambda _job_id: SimpleNamespace(
+                metadata={"kind": "memory_consolidation"}
+            )
+        ),
     )
     job = {
         "job_id": "consolidation-job",
@@ -162,6 +170,11 @@ def _consolidate(
         str(event.payload.get("capture_id")): dict(event.payload)
         for event in _events(runtime, "memory.capture.result")
     }
+    cron_outcomes = [
+        event
+        for event in _events(runtime, "turn.outcome")
+        if event.payload.get("root_turn_id") != intent["root_turn_id"]
+    ]
     return CronRun(
         output=output,
         intent=intent,
@@ -169,10 +182,9 @@ def _consolidate(
         extractor_calls=extractor_calls,
         brain_session_api=service._get_runner().session_api,
         intent_result=results.get(str(intent["capture_id"])),
-        cron_turn_outcomes=sum(
-            1
-            for event in _events(runtime, "turn.outcome")
-            if event.payload.get("root_turn_id") != intent["root_turn_id"]
+        cron_turn_outcomes=len(cron_outcomes),
+        cron_turn_capture_states=tuple(
+            str(event.payload.get("capture_state") or "") for event in cron_outcomes
         ),
     )
 
@@ -183,6 +195,7 @@ def _assert_scheduled_turn_ran(run: CronRun) -> None:
         f"agent:{AGENT_ID}"
     )
     assert run.cron_turn_outcomes == 1
+    assert run.cron_turn_capture_states == ("excluded",)
 
 
 def _assert_extractor_called_for_the_intent(run: CronRun) -> None:

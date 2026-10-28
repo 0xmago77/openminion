@@ -734,6 +734,8 @@ def test_task_consolidate_memory_creates_cron_backed_payload(
 
     ctx = _ctx(tmp_path, agent_id="agent-a")
     store = _resolve_cron_store(ctx)
+    manager = TaskManager.from_cron_repository(store)
+    ctx.task_manager = manager
 
     created = _h_task_consolidate_memory(
         {
@@ -757,6 +759,9 @@ def test_task_consolidate_memory_creates_cron_backed_payload(
     assert row["concurrency_key"] == "memory-consolidation:agent:agent-a"
     assert row["max_attempts"] == 3
     assert row["retry_backoff_s"] == 30
+    task = manager.get_task(created["task_id"])
+    assert task is not None
+    assert task.metadata["kind"] == "memory_consolidation"
 
 
 def test_task_list_surfaces_consolidation_metadata(

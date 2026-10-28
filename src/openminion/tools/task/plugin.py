@@ -36,6 +36,7 @@ from openminion.modules.task.scheduling.coordination import (
 
 from .constants import (
     CONSOLIDATION_PAYLOAD_KEY,
+    CONSOLIDATION_TASK_KIND,
     DEFAULT_TASK_NAME_MAX_CHARS,
     DEFAULT_CONSOLIDATION_MAX_ITERATIONS,
     DEFAULT_CONSOLIDATION_MAX_ATTEMPTS,
@@ -557,6 +558,7 @@ def _h_task_consolidate_memory(
             max_attempts=DEFAULT_CONSOLIDATION_MAX_ATTEMPTS,
             retry_backoff_s=DEFAULT_CONSOLIDATION_RETRY_BACKOFF_SECONDS,
             job_id=job_id,
+            metadata={"kind": CONSOLIDATION_TASK_KIND},
         )
         job = manager.get_scheduled_job(task_row.task_id) or {}
 

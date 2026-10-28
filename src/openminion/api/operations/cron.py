@@ -17,7 +17,16 @@ def _reject_task_owned_job(*, runtime: Any, job_id: str) -> None:
         )
 
 
+def _reject_task_owned_payload(body: dict[str, Any]) -> None:
+    payload = body.get("payload")
+    if isinstance(payload, dict) and "_openminion_memory_consolidation" in payload:
+        raise TaskOwnedCronJobError(
+            "memory consolidation jobs must be created through task.consolidate_memory"
+        )
+
+
 def create_cron_job(*, runtime, body: dict[str, Any]) -> str:
+    _reject_task_owned_payload(body)
     store = resolve_cron_store(runtime)
     return store.add_cron_job(
         name=str(body.get("name", "")).strip(),

@@ -6,6 +6,45 @@ from time import monotonic, sleep
 from openminion.services.runtime import AgentRuntimeManager, TurnRequest, TurnResponse
 
 
+def test_turn_request_keeps_positional_explicit_agent_compatibility() -> None:
+    request = TurnRequest(
+        "trace", "agent", "session", "message", [], "oneshot", False, {}, True
+    )
+
+    assert request.explicit_agent is True
+    assert request.trusted_memory_consolidation_context is None
+
+
+def test_manager_preserves_trusted_memory_consolidation_context() -> None:
+    seen: list[TurnRequest] = []
+
+    def _executor(req, emit_chunk, cancel_event):  # noqa: ANN001
+        del emit_chunk, cancel_event
+        seen.append(req)
+        return TurnResponse(final_text="ok")
+
+    manager = AgentRuntimeManager(turn_executor=_executor)
+    try:
+        result = manager.submit_turn(
+            TurnRequest(
+                trace_id="trace-context",
+                agent_id="ops",
+                session_id="session-context",
+                input_text="consolidate",
+                trusted_memory_consolidation_context={
+                    "memory_consolidation_job": "true"
+                },
+            )
+        ).result(timeout_s=2)
+
+        assert result.final_text == "ok"
+        assert seen[0].trusted_memory_consolidation_context == {
+            "memory_consolidation_job": "true"
+        }
+    finally:
+        manager.shutdown()
+
+
 def test_per_agent_fifo_serialization() -> None:
     seen: list[str] = []
 

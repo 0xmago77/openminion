@@ -28,6 +28,14 @@ _LAB_CONTEXT_KEYS = {
     "openminion_ephemeral_workspace_roots",
 }
 
+_MEMORY_CONSOLIDATION_CONTEXT_KEYS = {
+    "memory_consolidation_job",
+    "memory_consolidation_target_scope",
+    "memory_consolidation_batch_limit",
+    "memory_consolidation_max_iterations",
+    "memory_consolidation_timeout_seconds",
+}
+
 
 def _security_lab_inbound_metadata(
     *,
@@ -120,6 +128,7 @@ def build_manager_turn_request(
     payload: dict[str, Any],
     *,
     default_agent_id: str,
+    trusted_memory_consolidation_context: dict[str, str] | None = None,
 ) -> TurnRequest:
     trace_id = _optional_text(payload.get("trace_id")) or ""
     requested_agent_id = _optional_text(payload.get("agent_id"))
@@ -149,6 +158,11 @@ def build_manager_turn_request(
         mode=mode,
         stream=bool(payload.get("stream")),
         meta=_manager_meta_from_payload(payload),
+        trusted_memory_consolidation_context=(
+            MappingProxyType(dict(trusted_memory_consolidation_context))
+            if trusted_memory_consolidation_context is not None
+            else None
+        ),
         explicit_agent=requested_agent_id is not None,
     )
 
@@ -202,6 +216,11 @@ def runtime_turn_request_from_manager_request(
             explicit_category=meta.get("capability_category"),
         ),
         run_profile_overrides=run_profile_overrides,
+        trusted_memory_consolidation_context=(
+            MappingProxyType(dict(request.trusted_memory_consolidation_context))
+            if request.trusted_memory_consolidation_context is not None
+            else None
+        ),
         explicit_agent=request.explicit_agent,
     )
 
@@ -233,6 +252,7 @@ def _direct_inbound_metadata(
         inbound_metadata=inbound_metadata,
         payload=payload,
     )
+    inbound_metadata = _without_memory_consolidation_context(inbound_metadata)
     return apply_workspace_root(
         inbound_metadata=inbound_metadata,
         runtime_workspace_root=getattr(runtime, "tool_workspace_root", None),
@@ -253,10 +273,20 @@ def _managed_inbound_metadata(
         payload=meta,
     )
     inbound_metadata = _apply_managed_meta(inbound_metadata=inbound_metadata, meta=meta)
+    inbound_metadata = _without_memory_consolidation_context(inbound_metadata)
     return apply_workspace_root(
         inbound_metadata=inbound_metadata,
         runtime_workspace_root=getattr(runtime, "tool_workspace_root", None),
     )
+
+
+def _without_memory_consolidation_context(
+    inbound_metadata: dict[str, str] | None,
+) -> dict[str, str] | None:
+    filtered = dict(inbound_metadata or {})
+    for key in _MEMORY_CONSOLIDATION_CONTEXT_KEYS:
+        filtered.pop(key, None)
+    return filtered or None
 
 
 def _optional_text(value: Any) -> str | None:

@@ -25,6 +25,28 @@ def test_extract_ephemeral_prompt_metadata_includes_cron_metadata() -> None:
     }
 
 
+def test_extract_ephemeral_prompt_metadata_includes_memory_consolidation_context() -> (
+    None
+):
+    extracted = _extract_ephemeral_prompt_metadata(
+        {
+            "memory_consolidation_job": "true",
+            "memory_consolidation_target_scope": "global:system",
+            "memory_consolidation_batch_limit": "8",
+            "memory_consolidation_max_iterations": "2",
+            "memory_consolidation_timeout_seconds": "30",
+        }
+    )
+
+    assert extracted == {
+        "memory_consolidation_job": "true",
+        "memory_consolidation_target_scope": "global:system",
+        "memory_consolidation_batch_limit": "8",
+        "memory_consolidation_max_iterations": "2",
+        "memory_consolidation_timeout_seconds": "30",
+    }
+
+
 def test_extract_ephemeral_prompt_metadata_keeps_turn_tool_scope() -> None:
     extracted = _extract_ephemeral_prompt_metadata(
         {

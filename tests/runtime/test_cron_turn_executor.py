@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -49,6 +50,7 @@ class _FakeCronStore:
     def __init__(self) -> None:
         self.cutoffs: list[str] = []
         self.replaced_payloads: list[tuple[str, dict[str, object]]] = []
+        self.disabled_jobs: list[str] = []
 
     def delete_old_cron_runs(self, cutoff: str) -> int:
         self.cutoffs.append(cutoff)
@@ -60,6 +62,17 @@ class _FakeCronStore:
         payload: dict[str, object],
     ) -> None:
         self.replaced_payloads.append((job_id, dict(payload)))
+
+    def set_cron_job_enabled(
+        self,
+        job_id: str,
+        enabled: bool,
+        *,
+        cancel_queued: bool = False,
+    ) -> None:
+        assert enabled is False
+        assert cancel_queued is True
+        self.disabled_jobs.append(job_id)
 
 
 class _FakeSessions:
@@ -170,13 +183,24 @@ def _monitoring_job(
     }
 
 
-def _request_builder(payload: dict[str, object], agent_id: str) -> object:
+def _request_builder(
+    payload: dict[str, object],
+    agent_id: str,
+    trusted_memory_consolidation_context: dict[str, str] | None = None,
+) -> object:
     return SimpleNamespace(
         agent_id=agent_id,
         session_id=str(payload.get("session_id") or ""),
         trace_id=str(payload.get("trace_id") or ""),
         meta=dict(payload.get("meta") or {}),
         payload=dict(payload),
+        trusted_memory_consolidation_context=trusted_memory_consolidation_context,
+    )
+
+
+def _task_manager(kind: str = "memory_consolidation") -> object:
+    return SimpleNamespace(
+        get_task_by_job=lambda _job_id: SimpleNamespace(metadata={"kind": kind})
     )
 
 
@@ -239,6 +263,7 @@ def test_cron_turn_executor_builds_typed_consolidation_watermark() -> None:
         cron_store=_FakeCronStore(),
         request_builder=_request_builder,
         timeout_s=90.0,
+        task_manager=_task_manager(),
     )
 
     result = executor.execute(
@@ -358,6 +383,7 @@ def test_cron_turn_executor_forwards_memory_consolidation_metadata() -> None:
         cron_store=_FakeCronStore(),
         request_builder=_request_builder,
         timeout_s=90.0,
+        task_manager=_task_manager(),
     )
 
     executor.execute(
@@ -385,6 +411,90 @@ def test_cron_turn_executor_forwards_memory_consolidation_metadata() -> None:
     assert request.meta["memory_consolidation_batch_limit"] == "8"
     assert request.meta["memory_consolidation_max_iterations"] == "2"
     assert request.meta["memory_consolidation_timeout_seconds"] == "30"
+    assert request.trusted_memory_consolidation_context == {
+        "memory_consolidation_job": "true",
+        "memory_consolidation_target_scope": "agent:agent-explicit",
+        "memory_consolidation_batch_limit": "8",
+        "memory_consolidation_max_iterations": "2",
+        "memory_consolidation_timeout_seconds": "30",
+    }
+
+
+def test_cron_turn_executor_pauses_pre_upgrade_consolidation_job() -> None:
+    runtime, runtime_manager = _runtime(
+        [SimpleNamespace(final_text="ordinary cron turn")],
+        registered_agents=["agent-explicit"],
+    )
+    task_manager = MagicMock()
+    task_manager.get_task_by_job.return_value = SimpleNamespace(
+        task_id="legacy-consolidation",
+        metadata={},
+    )
+    executor = CronTurnExecutor(
+        runtime=runtime,
+        cron_store=_FakeCronStore(),
+        request_builder=_request_builder,
+        timeout_s=90.0,
+        task_manager=task_manager,
+    )
+
+    result = executor.execute(
+        {
+            "job_id": "legacy-consolidation",
+            "agent_id": "agent-explicit",
+            "payload": {
+                "kind": "agentTurn",
+                "message": "review memory candidates",
+                "_openminion_memory_consolidation": {"target_scope": "global:system"},
+            },
+        },
+        {"run_id": "run-legacy", "due_at": "2026-03-20T00:00:00Z"},
+    )
+
+    assert result == {
+        "summary": (
+            "memory consolidation job is missing trusted task provenance; "
+            "it was paused and must be recreated with task.consolidate_memory"
+        ),
+        "error": True,
+    }
+    task_manager.pause_task.assert_called_once_with("legacy-consolidation")
+    assert runtime_manager.submitted == []
+
+
+def test_cron_turn_executor_disables_unowned_consolidation_job() -> None:
+    runtime, runtime_manager = _runtime(
+        [SimpleNamespace(final_text="ordinary cron turn")],
+        registered_agents=["agent-explicit"],
+    )
+    cron_store = _FakeCronStore()
+    task_manager = MagicMock()
+    task_manager.get_task_by_job.return_value = None
+    executor = CronTurnExecutor(
+        runtime=runtime,
+        cron_store=cron_store,
+        request_builder=_request_builder,
+        timeout_s=90.0,
+        task_manager=task_manager,
+    )
+
+    result = executor.execute(
+        {
+            "job_id": "unowned-consolidation",
+            "agent_id": "agent-explicit",
+            "payload": {
+                "kind": "agentTurn",
+                "message": "review memory candidates",
+                "_openminion_memory_consolidation": {"target_scope": "global:system"},
+            },
+        },
+        {"run_id": "run-unowned", "due_at": "2026-03-20T00:00:00Z"},
+    )
+
+    assert result["error"] is True
+    assert "task.consolidate_memory" in result["summary"]
+    assert cron_store.disabled_jobs == ["unowned-consolidation"]
+    assert runtime_manager.submitted == []
 
 
 def test_cron_turn_executor_submits_once_per_acquired_attempt() -> None:
