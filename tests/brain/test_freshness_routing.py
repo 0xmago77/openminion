@@ -371,6 +371,46 @@ def test_final_answer_verifier_accepts_nested_tool_result_dates() -> None:
     )
 
 
+def test_final_answer_verifier_accepts_time_tool_utc_evidence() -> None:
+    contract = FreshnessContract(
+        intent="current_date_and_time",
+        domain="general",
+        time_sensitive=True,
+        needs_live_data=True,
+        needs_exact_date=True,
+        answer_mode="browse_then_answer",
+    )
+    obligations = FreshnessObligations(
+        require_live_data=True,
+        require_exact_date=True,
+        answer_mode="browse_then_answer",
+    )
+    action_result = ActionResult(
+        command_id="cmd-time",
+        status="success",
+        summary="Fetched current time",
+        outputs={
+            "tool_results": [
+                {
+                    "tool_name": "time",
+                    "ok": True,
+                    "data": {"utc": "2026-10-27T18:20:00Z"},
+                }
+            ]
+        },
+    )
+
+    assert (
+        verify_freshness_answer(
+            contract=contract,
+            obligations=obligations,
+            answer="It is October 27, 2026 at 18:20 UTC.",
+            action_result=action_result,
+        )
+        == []
+    )
+
+
 def test_weather_freshness_requires_weather_category_evidence() -> None:
     contract = FreshnessContract(
         intent="current_weather_here",
