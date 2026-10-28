@@ -11,7 +11,8 @@ and the recovery result.
 The turn leaves its capture intent pending in two ways: with the built-in
 memory provider when its capture bundle write fails once with
 `StoreWriteError`, and with the bundled `reference-sqlite` external adapter,
-which has no atomic capture (`CAPTURE_RECOVERY_UNSUPPORTED`, #397).
+which has no atomic capture (`CAPTURE_RECOVERY_UNSUPPORTED`, #397). With that
+adapter recovery does not call the extractor (#449).
 """
 
 from __future__ import annotations
@@ -114,7 +115,10 @@ def _turn(
 
 
 def _consolidate(
-    runtime: Any, monkeypatch: pytest.MonkeyPatch, intent: dict[str, Any]
+    runtime: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    intent: dict[str, Any],
+    run_id: str = "consolidation-run",
 ) -> CronRun:
     service = runtime.resolve_agent_service(AGENT_ID)
     assembly = runtime.resolve_memory_assembly(AGENT_ID)
@@ -131,8 +135,6 @@ def _consolidate(
         extractor_calls.append(kwargs)
         return real_extract(*args, **kwargs)
 
-    monkeypatch.setattr(assembly, "recover_pending_captures", recording_recover)
-    monkeypatch.setattr(service, "extract_memory_capture_candidates", recording_extract)
     executor = CronTurnExecutor(
         runtime=runtime,
         # The consolidation path does not use the cron store.
@@ -158,8 +160,12 @@ def _consolidate(
             CONSOLIDATION_PAYLOAD_KEY: {"target_scope": f"agent:{AGENT_ID}"},
         },
     }
-    run = {"run_id": "consolidation-run", "due_at": "2026-10-26T00:00:00+00:00"}
-    output = executor.execute(job, run)
+    run = {"run_id": run_id, "due_at": "2026-10-26T00:00:00+00:00"}
+    # The recorders are removed after the run, so the next run records its own.
+    with monkeypatch.context() as patch:
+        patch.setattr(assembly, "recover_pending_captures", recording_recover)
+        patch.setattr(service, "extract_memory_capture_candidates", recording_extract)
+        output = executor.execute(job, run)
     results = {
         str(event.payload.get("capture_id")): dict(event.payload)
         for event in _events(runtime, "memory.capture.result")
@@ -262,9 +268,82 @@ def test_consolidation_run_keeps_an_unsupported_capture_pending(
         runtime.close()
 
     assert [(r.scanned, r.recovered, r.pending) for r in run.recovery] == [(1, 0, 1)]
-    _assert_extractor_called_for_the_intent(run)
+    # The store cannot commit a bundle, so recovery does not extract (#449).
+    assert run.extractor_calls == []
     assert run.intent_result is None
     _assert_scheduled_turn_ran(run)
+
+
+def test_consolidation_runs_recover_an_unsupported_intent_once_the_store_is_capable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reference_adapter: None
+) -> None:
+    """Runs on a store without atomic capture do not extract (#449).
+
+    Three runs on `reference-sqlite` leave the turn's intent pending, unchanged
+    and without a result, and call no extractor. The same runtime home reopened
+    with the built-in store recovers it in the next run, once. Pending intents
+    of the scheduled turns themselves are not counted here (#456).
+    """
+    runtime = _runtime(tmp_path, monkeypatch, external=True)
+    try:
+        intent = _turn(runtime, monkeypatch, fail_capture_write=False)
+        assert intent["capture_state"] == "pending"
+        unsupported = [
+            _consolidate(runtime, monkeypatch, intent, run_id=f"consolidation-run-{n}")
+            for n in (1, 2, 3)
+        ]
+        [outcome] = [
+            event
+            for event in _events(runtime, "turn.outcome")
+            if event.payload.get("root_turn_id") == intent["root_turn_id"]
+        ]
+    finally:
+        runtime.close()
+
+    for run in unsupported:
+        [recovery] = run.recovery
+        assert recovery.recovered == 0
+        assert recovery.pending == recovery.scanned >= 1
+        assert run.extractor_calls == []
+        assert run.intent_result is None
+        assert run.output["isolated_session_id"]
+    assert dict(outcome.payload) == intent
+
+    reopened = _runtime(tmp_path, monkeypatch, external=False)
+    try:
+        recovering = _consolidate(
+            reopened, monkeypatch, intent, run_id="consolidation-run-4"
+        )
+        after = _consolidate(
+            reopened, monkeypatch, intent, run_id="consolidation-run-5"
+        )
+        intent_results = [
+            event
+            for event in _events(reopened, "memory.capture.result")
+            if event.payload.get("capture_id") == intent["capture_id"]
+        ]
+    finally:
+        reopened.close()
+
+    [recovery] = recovering.recovery
+    assert recovery.recovered == recovery.scanned >= 1
+    assert recovery.pending == 0
+    assert [
+        call
+        for call in recovering.extractor_calls
+        if call["root_turn_id"] == intent["root_turn_id"]
+    ] == [
+        {
+            "session_api": recovering.brain_session_api,
+            "session_id": "capture",
+            "root_turn_id": intent["root_turn_id"],
+            "user_message": "remember that I prefer tabs",
+        }
+    ]
+    assert recovering.intent_result is not None
+    assert [(r.scanned, r.recovered, r.pending) for r in after.recovery] == [(0, 0, 0)]
+    assert after.extractor_calls == []
+    assert len(intent_results) == 1
 
 
 def test_consolidation_run_without_pending_intents_runs_its_turn(
