@@ -3,6 +3,7 @@ from typing import Any
 
 from openminion.cli.parser.flags import add_json_output_flag
 from openminion.cli.presentation.json_output import print_json_payload
+from openminion.modules.telemetry.config import load_config
 from openminion.modules.telemetry.inspection import (
     TELEMETRY_INSPECTION_EXCEPTIONS,
     build_telemetry_debug_error,
@@ -47,6 +48,8 @@ def run_telemetry_status(args: Any) -> int:
     )
     home_root_value = str(getattr(args, "home_root", "") or "").strip()
     home_root = Path(home_root_value) if home_root_value else None
+    config_path = str(getattr(args, "config", "") or "").strip() or None
+    config = load_config(config_path, home_root=home_root)
     try:
         with open_telemetry_inspection(home_root=home_root) as service:
             report = build_telemetry_debug_report(
@@ -54,24 +57,40 @@ def run_telemetry_status(args: Any) -> int:
                 selector_kind=selector_kind,
                 invocation_id=getattr(args, "invocation_id", None),
                 trace_root=resolve_trace_root(home_root=home_root),
+                exporter_config=config.otel_exporter,
                 session_id=str(getattr(args, "session_id", "") or "").strip() or None,
             )
     except TELEMETRY_INSPECTION_EXCEPTIONS as exc:
         report = build_telemetry_debug_error(
             telemetry_storage_error_code(exc),
             "storage",
+            exporter_config=config.otel_exporter,
         )
-    _render_report(report, as_json=bool(getattr(args, "json", False)))
+    _render_report(
+        report,
+        as_json=bool(getattr(args, "json", False)),
+        exact_capture_enabled=config.exact_request_traces_enabled,
+    )
     return telemetry_debug_exit(report)
 
 
-def _render_report(report: TelemetryDebugReport, *, as_json: bool) -> None:
+def _render_report(
+    report: TelemetryDebugReport,
+    *,
+    as_json: bool,
+    exact_capture_enabled: bool,
+) -> None:
     if as_json:
         print_json_payload(report.to_dict())
         return
     print(f"telemetry: {report.status}")
+    print(_export_health_line(report))
+    print(
+        "exact payload capture: " + ("enabled" if exact_capture_enabled else "disabled")
+    )
     if report.error:
         print(f"error: {report.error.code}")
+        print("next: telemetryctl doctor")
         return
     if report.invocation is None:
         codes = {item.code for item in report.diagnostics}
@@ -107,11 +126,19 @@ def _render_report(report: TelemetryDebugReport, *, as_json: bool) -> None:
         f"cost={usage.cost_usd if usage and usage.cost_usd is not None else '-'}"
     )
     print(
-        f"trace_files={invocation.trace_count if invocation.trace_count is not None else '-'} "
-        f"external_export={report.export_health.state}"
+        f"trace_files={invocation.trace_count if invocation.trace_count is not None else '-'}"
     )
     for command in report.links.commands:
         print(f"next: {command}")
+    print("next: openminion status tokens --recent 10")
+
+
+def _export_health_line(report: TelemetryDebugReport) -> str:
+    health = report.export_health
+    protocol = f" ({health.protocol})" if health.enabled and health.protocol else ""
+    if health.enabled and health.state == "unavailable":
+        return f"external export: configured{protocol}; live health unavailable"
+    return f"external export: {health.state}{protocol}"
 
 
 __all__ = ["register_telemetry_subcommand", "run_telemetry_status"]

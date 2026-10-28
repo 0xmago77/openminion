@@ -103,6 +103,9 @@ Useful commands:
 8. `telemetryctl debug latest|failed|invocation <id>` prints the shared
    `openminion.telemetry_debug.v1` report used by the root and interactive
    operator surfaces. `latest` and `failed` accept `--session-id`.
+9. `openminion status telemetry` shows export and exact-capture posture even
+   when telemetry is empty or unreadable. Its text view links to
+   `openminion status tokens --recent 10` after a recorded invocation.
 
 These commands deliberately avoid content classification or response-quality
 judgment. Post-hoc eval/replay tooling may analyze captured traces separately,

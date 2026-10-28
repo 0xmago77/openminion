@@ -539,6 +539,7 @@ def _print_debug(*, args: Any, db_path: Path, home_root: str | None) -> int:
         if args.debug_command == "invocation"
         else str(args.debug_command)
     )
+    exporter_config = load_config(home_root=home_root).otel_exporter
     try:
         with open_telemetry_inspection(
             db_path=db_path,
@@ -549,12 +550,14 @@ def _print_debug(*, args: Any, db_path: Path, home_root: str | None) -> int:
                 selector_kind=selector_kind,
                 invocation_id=getattr(args, "invocation_id", None),
                 trace_root=_trace_root_from_args(args),
+                exporter_config=exporter_config,
                 session_id=str(getattr(args, "session_id", "") or "").strip() or None,
             )
     except TELEMETRY_INSPECTION_EXCEPTIONS as exc:
         report = build_telemetry_debug_error(
             telemetry_storage_error_code(exc),
             "storage",
+            exporter_config=exporter_config,
         )
     print_json_payload(report.to_dict())
     return telemetry_debug_exit(report)

@@ -7,6 +7,7 @@ from openminion.base.config import (
     OpenMinionConfig,
     RuntimeConfig,
 )
+from openminion.base.config.env import resolve_environment_config
 from openminion.base.config.io import load_config as load_base_config
 
 
@@ -18,6 +19,7 @@ class TelemetryExportConfig:
 @dataclass(frozen=True)
 class TelemetryConfig:
     otel_exporter: OTELExporterConfig = field(default_factory=OTELExporterConfig)
+    exact_request_traces_enabled: bool = False
 
     @property
     def export(self) -> TelemetryExportConfig:
@@ -35,7 +37,11 @@ def load_config(
     home_root: str | Path | None = None,
 ) -> TelemetryConfig:
     runtime_config = _coerce_runtime_config(payload, home_root=home_root)
-    return TelemetryConfig(otel_exporter=runtime_config.telemetry_exporter)
+    env = resolve_environment_config(runtime_env=runtime_config.env)
+    return TelemetryConfig(
+        otel_exporter=runtime_config.telemetry_exporter,
+        exact_request_traces_enabled=env.openminion_trace_requests,
+    )
 
 
 def _coerce_runtime_config(

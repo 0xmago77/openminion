@@ -331,7 +331,10 @@ Local telemetry remains usable when external export is disabled.
 with filters for session, agent, canonical invocation status, and event type.
 Use `telemetryctl debug latest --session-id <session-id>` or
 `openminion status telemetry --session-id <session-id>` to keep latest/failed
-selection within one session. Use
+selection within one session. The root status command honors `--config`, shows
+export and exact-capture posture in empty and error states, and points to the
+recent-session token report after a recorded invocation. Interactive telemetry
+errors preserve the same posture and point to `telemetryctl doctor`. Use
 `telemetryctl invocation show <invocation-id>` for deterministic structural
 events and timing, token, cache, cost, policy, and correlated-log summaries.
 `telemetryctl invocation graph <invocation-id>` shows finite execution
