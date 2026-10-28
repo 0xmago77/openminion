@@ -1,12 +1,25 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-26
+Last updated: 2026-10-27
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+- Report the migration error in `openminion storage migrate` entries. When a
+  module's `MigrationReport` failed, its entry had status `error` but no
+  message, and the text output printed only `FAIL <module>`. The entry now
+  carries the report's `error`, and the text line prints it after the module
+  id. The `applied` list is left out: it read a field that `MigrationReport`
+  does not have, so it was always empty. Exit status is unchanged (Refs
+  #446).
+
+## Current package line - 2026-10-27
+
+- Accept the canonical `time.now` tool's `utc` timestamp as exact-date
+  evidence. Current-date answers that successfully called the time tool no
+  longer fail the freshness verifier after receiving a grounded timestamp.
 - Close what a runtime memory assembly build obtained when the build fails
   partway. The artifact store, and the memory store with its audit sink for
   the built-in backend, are closed once each through their current owner,
@@ -33,13 +46,6 @@ This file tracks package-facing release notes for `openminion`.
   `pool-stats` without a PostgreSQL URL, now exits 2 instead of 0. The
   printed output is unchanged, and a command that raises still exits 1
   (Refs #450, #412).
-- Report the migration error in `openminion storage migrate` entries. When a
-  module's `MigrationReport` failed, its entry had status `error` but no
-  message, and the text output printed only `FAIL <module>`. The entry now
-  carries the report's `error`, and the text line prints it after the module
-  id. The `applied` list is left out: it read a field that `MigrationReport`
-  does not have, so it was always empty. Exit status is unchanged (Refs
-  #446).
 
 ## Current package line - 2026-10-26 update
 

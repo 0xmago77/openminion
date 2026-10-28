@@ -235,6 +235,7 @@ _DATED_EVIDENCE_KEYS = frozenset(
         "published_at",
         "query_time",
         "retrieved_at",
+        "utc",
     }
 )
 
