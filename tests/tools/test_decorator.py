@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from openminion.modules.tool.framework import (
     ToolDecl,
@@ -10,6 +12,7 @@ from openminion.modules.tool.framework import (
 )
 from openminion.modules.tool.registry import ToolRegistry
 from openminion.tools import tool
+from openminion.tools.decorator import _MODEL_VALIDATE_ACCEPTS_BY_NAME
 
 
 def test_decorator_bare_form_preserves_callability() -> None:
@@ -338,3 +341,89 @@ def test_decorator_still_rejects_unresolved_exposed_argument_with_valid_return(
             "def lookup(value: MissingArgType, **kwargs: int) -> int:\n"
             "    return 1\n",
         )
+
+
+def test_decorator_handler_passes_model_and_dataclass_args_as_instances() -> None:
+    from tests.tools._postponed_annotation_tools import summarize, summarize_span
+
+    decl = summarize.tool_decl
+    validated = decl.args_model(window="week", span={"start": 1, "end": 4}, label="x")
+    # The validated args model, the dumped mapping the brain runtime passes,
+    # and the raw mapping the MCP server passes all reach the function with a
+    # ``Range`` instance for ``span`` (``span.start`` fails on a dict).
+    assert decl.handler(validated) == "week:1-4:x:5"
+    assert decl.handler(validated.model_dump()) == "week:1-4:x:5"
+    raw = {"window": "week", "span": {"start": 1, "end": 4}, "label": "x"}
+    assert decl.handler(raw) == "week:1-4:x:5"
+    assert (
+        summarize_span.tool_decl.handler({"span": {"start": 2, "end": 3}}) == "Span:2-3"
+    )
+
+
+def test_decorator_handler_accepts_alias_and_canonical_mappings() -> None:
+    @tool
+    def show(value: Annotated[int, Field(alias="external_value", ge=0)]) -> str:
+        """Show value."""
+        return str(value)
+
+    validated = show.tool_args_model.model_validate({"external_value": 3})
+    assert show.tool_decl.handler(validated) == "3"
+    assert show.tool_decl.handler(validated.model_dump()) == "3"
+    assert show.tool_decl.handler(validated.model_dump(by_alias=True)) == "3"
+    assert show.tool_decl.handler({"external_value": 4}) == "4"
+    assert show.tool_decl.handler({"value": 5}) == "5"
+    # The args model the runtime validates model output with is unchanged.
+    with pytest.raises(ValidationError):
+        show.tool_args_model.model_validate({"value": 3})
+    with pytest.raises(ValidationError):
+        show.tool_decl.handler({"value": -1})
+    with pytest.raises(ValidationError):
+        show.tool_decl.handler({"value": 1, "other": 2})
+    with pytest.raises(ValidationError):
+        show.tool_decl.handler({})
+
+
+def test_decorator_handler_rejects_invalid_structured_arguments() -> None:
+    from tests.tools._postponed_annotation_tools import summarize, summarize_span
+
+    with pytest.raises(ValidationError):
+        summarize.tool_decl.handler(
+            {"window": "week", "span": {"start": "x", "end": 4}, "label": "x"}
+        )
+    with pytest.raises(ValidationError):
+        summarize_span.tool_decl.handler({"span": {"start": 1}})
+
+
+class _AliasedInner(BaseModel):
+    value: int = Field(alias="external", ge=0)
+    note: str = "none"
+
+
+def test_decorator_handler_accepts_nested_alias_model_mappings() -> None:
+    @tool
+    def report(inner: _AliasedInner, label: str = "all") -> str:
+        """Report inner."""
+        assert type(inner) is _AliasedInner
+        return f"{inner.value}:{inner.note}:{label}"
+
+    validated = report.tool_args_model.model_validate({"inner": {"external": 7}})
+    assert report.tool_decl.handler(validated) == "7:none:all"
+    assert report.tool_decl.handler(validated.model_dump(by_alias=True)) == "7:none:all"
+    # The runtime passes the canonical (field-name) dump of the args model.
+    # Pydantic before 2.11 cannot validate a nested model's field names
+    # without changing that model's own configuration (#436 review).
+    if _MODEL_VALIDATE_ACCEPTS_BY_NAME:
+        assert report.tool_decl.handler(validated.model_dump()) == "7:none:all"
+    else:
+        with pytest.raises(ValidationError):
+            report.tool_decl.handler(validated.model_dump())
+    # Validation, extra-key and default controls on the nested model.
+    with pytest.raises(ValidationError):
+        report.tool_decl.handler({"inner": {"external": -1}})
+    with pytest.raises(ValidationError):
+        report.tool_decl.handler({"inner": {"external": 1}, "other": 2})
+    with pytest.raises(ValidationError):
+        report.tool_decl.handler({"inner": {}})
+    assert report.tool_decl.handler({"inner": {"external": 2}, "label": "x"}) == (
+        "2:none:x"
+    )

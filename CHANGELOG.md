@@ -30,6 +30,19 @@ This file tracks package-facing release notes for `openminion`.
   PostgreSQL memory store disposes its engine instead of keeping a server
   connection. Successful builds hand both to the assembly as before
   (Refs #390).
+- Pass validated Pydantic-model and dataclass arguments to `@tool` functions
+  as instances instead of plain dicts. The decorator handler called
+  `model_dump()` on the validated arguments, so a tool typed `span: Range`
+  received a `dict` and failed with `AttributeError`. The handler now
+  validates mappings with the tool's args model, accepting both declared
+  aliases and canonical field names, and passes the validated field values;
+  defaults and `Annotated` constraints apply and invalid mappings raise
+  `ValidationError`. With Pydantic before 2.11, a nested model that declares
+  aliases is accepted by alias only. This changes the decorator handler
+  only: the shared built-in tool mapping contract is unchanged, so a normal
+  SDK `Agent.run` call with an aliased argument, top-level or nested, is
+  still rejected before the handler runs, as it is without this change. That
+  runtime alias bug is tracked in #454 (Refs #435).
 
 ## Current package line - 2026-10-26 update
 
