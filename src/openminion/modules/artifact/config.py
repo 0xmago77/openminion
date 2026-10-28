@@ -14,6 +14,7 @@ from openminion.base.config import OpenMinionConfig, resolve_data_root
 from openminion.base.config.env import resolve_environment_config
 from openminion.base.config.parse import _as_obj
 from openminion.base.config.paths import resolve_config_storage_path
+from openminion.modules.artifact.errors import ArtifactCtlError
 from openminion.modules.config import resolve_module_home_root
 from .constants import (
     DEFAULT_INDEX_FILENAME,
@@ -160,11 +161,14 @@ def load_config(
             expire_default_days=int(aliases.get("expire_default_days", 30)),
         ),
         retention=RetentionConfig(
-            keep_days=int(retention.get("keep_days", 14)),
-            delete_unreferenced_after_days=int(
-                retention.get("delete_unreferenced_after_days", 7)
+            keep_days=_retention_days(retention.get("keep_days", 14), "keep_days"),
+            delete_unreferenced_after_days=_retention_days(
+                retention.get("delete_unreferenced_after_days", 7),
+                "delete_unreferenced_after_days",
             ),
-            purge_grace_days=int(retention.get("purge_grace_days", 7)),
+            purge_grace_days=_retention_days(
+                retention.get("purge_grace_days", 7), "purge_grace_days"
+            ),
             delete_views_first=bool(retention.get("delete_views_first", True)),
         ),
         security=SecurityConfig(
@@ -179,6 +183,53 @@ def _as_str_list(value: Any, default: list[str]) -> list[str]:
         return list(default)
     normalized = (str(item).strip().lower() for item in value)
     return [item for item in normalized if item]
+
+
+def _retention_days(value: Any, field_name: str) -> int:
+    if isinstance(value, (int, float)) and value < 0:
+        raise ArtifactCtlError(
+            "INVALID_CONFIG",
+            f"retention.{field_name} must be non-negative",
+        )
+    days = int(value)
+    if days < 0:
+        raise ArtifactCtlError(
+            "INVALID_CONFIG",
+            f"retention.{field_name} must be non-negative",
+        )
+    return days
+
+
+def validate_retention_config(config: ArtifactCtlConfig) -> None:
+    values = (
+        ("keep_days", config.retention.keep_days),
+        (
+            "delete_unreferenced_after_days",
+            config.retention.delete_unreferenced_after_days,
+        ),
+        ("purge_grace_days", config.retention.purge_grace_days),
+    )
+    for field_name, value in values:
+        if isinstance(value, (int, float)) and value < 0:
+            raise ArtifactCtlError(
+                "INVALID_CONFIG",
+                f"retention.{field_name} must be non-negative",
+            )
+
+
+def retention_override(value: int, field_name: str) -> int:
+    if isinstance(value, (int, float)) and value < 0:
+        raise ArtifactCtlError(
+            "INVALID_ARGUMENT",
+            f"{field_name} must be non-negative",
+        )
+    days = int(value)
+    if days < 0:
+        raise ArtifactCtlError(
+            "INVALID_ARGUMENT",
+            f"{field_name} must be non-negative",
+        )
+    return days
 
 
 def _default_blob_root(home_root: Path | None, data_root: Path | None) -> str:

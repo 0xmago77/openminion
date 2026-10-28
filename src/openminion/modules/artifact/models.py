@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from openminion.base.time import utc_now_iso as iso_now  # noqa: F401
@@ -26,6 +27,21 @@ def parse_ref_or_sha(ref_or_sha: str) -> str:
     if not set(lowered) <= _HEX_DIGITS:
         raise ValueError(f"Invalid sha256: {candidate}")
     return lowered
+
+
+def normalize_alias_expiry(expires_at: str) -> str:
+    raw = expires_at.strip()
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "expires_at must be a timezone-aware ISO-8601 timestamp"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("expires_at must be a timezone-aware ISO-8601 timestamp")
+    return parsed.astimezone(timezone.utc).isoformat()
 
 
 @dataclass

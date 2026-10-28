@@ -13,6 +13,21 @@ from openminion.modules.artifact.models import (
 from openminion.modules.artifact.storage.fs_cas import FileSystemCASBlobStore
 
 
+def hash_file(path: Path) -> tuple[str, int]:
+    hasher = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            hasher.update(chunk)
+            size += len(chunk)
+    return hasher.hexdigest(), size
+
+
+def read_file_sample(path: Path, size: int = 4096) -> bytes:
+    with path.open("rb") as handle:
+        return handle.read(size)
+
+
 def build_verify_report(
     rows: list[ArtifactMeta],
     *,

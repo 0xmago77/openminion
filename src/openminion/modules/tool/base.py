@@ -35,6 +35,7 @@ class ToolExecutionContext:
     tool_registry: Any | None = None
     task_manager: Any | None = None
     scheduler_readiness: Callable[[], dict[str, Any]] | None = None
+    retrieve_ctl: Any | None = field(default=None, kw_only=True)
     confirm: bool = False
     artifactctl: Any | None = None
 
