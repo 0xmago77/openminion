@@ -32,6 +32,7 @@ SOCIAL_FEED_MAX_CHARS = 500_000
 SOCIAL_FEED_MAX_XML_DEPTH = 32
 SOCIAL_RECENT_KEY_LIMIT = 200
 CONSOLIDATION_PAYLOAD_KEY = "_openminion_memory_consolidation"
+CONSOLIDATION_TASK_KIND = "memory_consolidation"
 FIRST_RUN_PENDING_STATE = "pending"
 FIRST_RUN_PENDING_NOTE = "No runs recorded yet. Scheduled runs execute only while the openminion daemon is running."
 WATCH_PAYLOAD_KEY = "_openminion_watch"
@@ -93,6 +94,7 @@ __all__ = [
     "DEFAULT_WATCH_MAX_ITERATIONS",
     "DEFAULT_WATCH_TTL_MINUTES",
     "CONSOLIDATION_PAYLOAD_KEY",
+    "CONSOLIDATION_TASK_KIND",
     "EVERY_UNIT_TO_MS",
     "FIRST_RUN_PENDING_NOTE",
     "FIRST_RUN_PENDING_STATE",

@@ -166,10 +166,16 @@ def build_runtime_manager(runtime: "RuntimeFacade") -> Any:
     return manager
 
 
-def build_turn_request(payload: dict[str, Any], *, default_agent_id: str) -> Any:
+def build_turn_request(
+    payload: dict[str, Any],
+    *,
+    default_agent_id: str,
+    trusted_memory_consolidation_context: dict[str, str] | None = None,
+) -> Any:
     return build_manager_turn_request(
         payload,
         default_agent_id=default_agent_id,
+        trusted_memory_consolidation_context=trusted_memory_consolidation_context,
     )
 
 
@@ -208,8 +214,6 @@ def attach_cron_scheduler(
             resolve_brain_sessions_db_path=resolve_brain_sessions_db_path,
             sqlite_session_store=SQLiteSessionStore,
         )
-        turn_executor = _cron_turn_executor_for_runtime(runtime, cron_store=cron_store)
-        delivery_bridge = CronDeliveryBridge(runtime=runtime)
         from openminion.modules.task import TaskManager
 
         task_manager = TaskManager.from_cron_repository(
@@ -218,6 +222,12 @@ def attach_cron_scheduler(
                 Path(runtime.data_root) / DEFAULT_INTEGRATED_SQLITE_SUBPATH
             ).resolve(),
         )
+        turn_executor = _cron_turn_executor_for_runtime(
+            runtime,
+            cron_store=cron_store,
+            task_manager=task_manager,
+        )
+        delivery_bridge = CronDeliveryBridge(runtime=runtime)
 
         scheduler = CronScheduler(
             store=cron_store,
@@ -287,6 +297,7 @@ def _cron_turn_executor_for_runtime(
     runtime: "RuntimeFacade",
     *,
     cron_store: Any,
+    task_manager: Any,
 ) -> CronTurnExecutor:
     cron_timeout_s: float = max(
         10.0,
@@ -295,11 +306,13 @@ def _cron_turn_executor_for_runtime(
     return CronTurnExecutor(
         runtime=runtime,
         cron_store=cron_store,
-        request_builder=lambda payload, agent_id: build_turn_request(
+        request_builder=lambda payload, agent_id, context=None: build_turn_request(
             payload,
             default_agent_id=agent_id,
+            trusted_memory_consolidation_context=context,
         ),
         timeout_s=cron_timeout_s,
+        task_manager=task_manager,
     )
 
 

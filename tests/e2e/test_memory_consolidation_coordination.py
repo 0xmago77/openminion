@@ -96,6 +96,11 @@ def test_scheduled_consolidation_rejects_off_batch_then_preserves_valid_counts(
         cron_store=cron_store,
         request_builder=MagicMock(),
         timeout_s=30,
+        task_manager=SimpleNamespace(
+            get_task_by_job=lambda _job_id: SimpleNamespace(
+                metadata={"kind": "memory_consolidation"}
+            )
+        ),
     )
     request_payload = cron_executor._request_payload(
         job=job,

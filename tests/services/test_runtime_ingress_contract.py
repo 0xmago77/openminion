@@ -14,6 +14,8 @@ from openminion.base.config import (
     UnknownProfileError,
     resolve_agent_config,
 )
+from openminion.modules.session.capture import capture_is_excluded
+from openminion.services.gateway.turn.runtime import _extract_ephemeral_prompt_metadata
 from openminion.services.stats import RunStats
 from openminion.services.runtime.ingress import (
     TurnRequestError,
@@ -264,6 +266,71 @@ def test_trusted_subagent_context_is_projected_after_public_parsing() -> None:
     assert runtime.gateway.calls[0]["inbound_metadata"]["subagent_context_id"] == (
         "trusted"
     )
+
+
+@pytest.mark.parametrize("managed", [False, True])
+def test_public_memory_consolidation_metadata_is_not_trusted(managed: bool) -> None:
+    runtime = _RuntimeStub()
+    payload = {
+        "message": "ordinary turn",
+        "session_id": "session-ordinary",
+        "meta": {
+            "memory_consolidation_job": "true",
+            "memory_consolidation_target_scope": "global:system",
+            "memory_consolidation_batch_limit": "999",
+            "memory_consolidation_max_iterations": "999",
+            "memory_consolidation_timeout_seconds": "999",
+        },
+        "inbound_metadata": {
+            "memory_consolidation_job": "true",
+            "memory_consolidation_target_scope": "global:system",
+            "memory_consolidation_batch_limit": "999",
+            "memory_consolidation_max_iterations": "999",
+            "memory_consolidation_timeout_seconds": "999",
+        },
+    }
+    request = _ingress_request(runtime, payload, managed)
+
+    execute_runtime_turn(runtime=runtime, request=request)
+
+    inbound_metadata = runtime.gateway.calls[0]["inbound_metadata"]
+    assert "memory_consolidation_job" not in inbound_metadata
+    assert "memory_consolidation_target_scope" not in inbound_metadata
+    assert "memory_consolidation_batch_limit" not in inbound_metadata
+    assert "memory_consolidation_max_iterations" not in inbound_metadata
+    assert "memory_consolidation_timeout_seconds" not in inbound_metadata
+
+
+def test_trusted_memory_consolidation_context_is_projected() -> None:
+    runtime = _RuntimeStub()
+    manager_request = build_manager_turn_request(
+        {
+            "message": "review memory candidates",
+            "session_id": "session-consolidation",
+        },
+        default_agent_id="main",
+        trusted_memory_consolidation_context={
+            "memory_consolidation_job": "true",
+            "memory_consolidation_target_scope": "global:system",
+            "memory_consolidation_batch_limit": "8",
+        },
+    )
+    request = runtime_turn_request_from_manager_request(
+        runtime=runtime,
+        request=manager_request,
+    )
+
+    execute_runtime_turn(runtime=runtime, request=request)
+
+    inbound_metadata = runtime.gateway.calls[0]["inbound_metadata"]
+    assert inbound_metadata == {
+        "memory_consolidation_job": "true",
+        "memory_consolidation_target_scope": "global:system",
+        "memory_consolidation_batch_limit": "8",
+        "workspace_root": "/tmp/runtime-workspace",
+    }
+    prompt_metadata = _extract_ephemeral_prompt_metadata(inbound_metadata)
+    assert capture_is_excluded(prompt_metadata) is True
 
 
 def test_runtime_turn_request_rejects_unknown_profile_in_single_agent_mode() -> None:
