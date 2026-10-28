@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from datetime import datetime, timedelta, timezone
 from time import sleep
 from uuid import uuid4
 
+import pytest
+
+from openminion.modules.session.storage.repository import (
+    create_sqlite_cron_repository,
+)
+from openminion.modules.task import TaskManager
 from openminion.modules.task.scheduling import CronError
 from openminion.services.cron.scheduler import CronScheduler
 
@@ -378,6 +385,67 @@ def test_scheduler_reconciles_task_outcomes_on_tick_and_completion() -> None:
         if name == "cron.task_outcomes.reconciled" and payload["job_id"] == "job-task"
     )
     assert reconciliation["count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("executor_fails", "expected_state", "expected_run_state"),
+    [
+        (False, "done", "finished"),
+        (True, "failed", "failed"),
+    ],
+)
+def test_sqlite_one_shot_scheduler_closes_lifecycle_and_retains_history(
+    tmp_path,
+    executor_fails: bool,
+    expected_state: str,
+    expected_run_state: str,
+) -> None:
+    repository = create_sqlite_cron_repository(db_path=tmp_path / "one-shot.db")
+    manager = TaskManager.from_cron_repository(repository)
+    due_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    record = manager.schedule_task(
+        name="one shot",
+        schedule={"kind": "at", "at": due_at.isoformat()},
+        payload={"kind": "agentTurn", "message": "run once"},
+        agent_id="agent-a",
+        max_attempts=1,
+    )
+    finished = threading.Event()
+
+    def execute(_job, _run):
+        if executor_fails:
+            raise RuntimeError("provider unavailable")
+        return {"summary": "completed once"}
+
+    def on_event(name, payload):
+        if name == "cron.run.finished" and payload["job_id"] == record.cron_job_id:
+            finished.set()
+
+    scheduler = CronScheduler(
+        store=repository,
+        daemon_id="daemon-one-shot",
+        tick_seconds=0.05,
+        lease_ttl_seconds=2,
+        max_concurrent_runs=1,
+        execute_agent_turn=execute,
+        record_task_outcomes=manager.reconcile_scheduled_outcomes,
+        on_event=on_event,
+    )
+    scheduler.start()
+    try:
+        assert finished.wait(timeout=3.0)
+    finally:
+        scheduler.shutdown(grace_s=1.0)
+
+    task = manager.get_task(record.task_id)
+    job = manager.get_scheduled_job(record.task_id)
+    runs = manager.list_scheduled_runs(job_id=record.cron_job_id)
+
+    assert task is not None
+    assert task.state.value == expected_state
+    assert job is not None and job["enabled"] is False
+    assert len(runs) == 1
+    assert runs[0]["state"] == expected_run_state
 
 
 def test_execution_failure_remains_distinct_from_delivery_failure() -> None:
@@ -1065,7 +1133,12 @@ def test_tcee_06_scheduler_invokes_real_cron_turn_executor_end_to_end() -> None:
         sessions=_FakeSessions(),
     )
 
-    def _request_builder(payload: dict, agent_id: str) -> object:
+    def _request_builder(
+        payload: dict,
+        agent_id: str,
+        _trusted_memory_context: dict[str, str] | None = None,
+        _trusted_watch_context: dict[str, str] | None = None,
+    ) -> object:
         return SimpleNamespace(
             agent_id=agent_id,
             session_id=str(payload.get("session_id") or ""),

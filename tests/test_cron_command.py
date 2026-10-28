@@ -9,6 +9,7 @@ from argparse import Namespace
 from types import SimpleNamespace
 from unittest import mock
 
+from openminion.base.config import ToolSelectionConfig
 from openminion.cli.commands.cron import run_cron
 from openminion.cli.commands.task_tools import build_schedule_payload
 from openminion.cli.parser.base import build_parser
@@ -36,7 +37,7 @@ class CronCommandTests(unittest.TestCase):
             default_agent="ops",
             runtime=SimpleNamespace(
                 env={"OPENMINION_DEBUG": "1"},
-                tool_selection=SimpleNamespace(),
+                tool_selection=ToolSelectionConfig(),
             ),
         )
         task_manager = mock.Mock(spec=["get_task", "list_scheduled_jobs"])
@@ -61,7 +62,10 @@ class CronCommandTests(unittest.TestCase):
 
         help_text = output.getvalue()
         self.assertIn("run                 Run one exact owned task now", help_text)
-        self.assertIn("status              Show cron scheduler health", help_text)
+        self.assertIn(
+            "status              Show scheduler health and dispatch state",
+            help_text,
+        )
 
     def test_build_schedule_payload_cron_with_tz(self) -> None:
         args = Namespace(
@@ -165,20 +169,79 @@ class CronCommandTests(unittest.TestCase):
         context = app.tools.execute_calls.call_args.kwargs["context"]
         self.assertEqual(context.metadata["agent_id"], "ops")
 
-    def test_run_cron_status_reports_scheduler_health_only(self) -> None:
-        app = self._mock_app()
+    def test_run_cron_status_reports_health_and_dispatch_state(self) -> None:
+        app = self._mock_app(
+            data={
+                "scheduler": {"state": "ready"},
+                "scheduler_control": {
+                    "paused": True,
+                    "reason": "maintenance",
+                    "updated_at": "revision-1",
+                },
+            }
+        )
         app.scheduler_readiness.return_value = {
             "state": "ready",
             "last_heartbeat_at": "2026-10-18T12:00:00Z",
         }
-        args = Namespace(cron_command="status")
+        args = Namespace(
+            cron_command="status",
+            agent_id="ops",
+            session="cron-cli",
+            json=False,
+        )
 
         with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
             code = run_cron(args, app)
 
         self.assertEqual(code, 0)
         self.assertIn("Scheduler Status", stdout.getvalue())
+        self.assertIn("Dispatch: paused", stdout.getvalue())
+        self.assertIn("Dispatch reason: maintenance", stdout.getvalue())
         self.assertNotIn("Registered scheduled tasks", stdout.getvalue())
+        tool_call = app.tools.execute_calls.call_args.args[0][0]
+        self.assertEqual(tool_call.name, "task.scheduler_status")
+
+    def test_run_cron_status_json_keeps_daemon_exit_semantics(self) -> None:
+        app = self._mock_app(
+            data={
+                "scheduler": {"state": "ready"},
+                "scheduler_control": {"paused": False, "updated_at": "revision-1"},
+            }
+        )
+        app.scheduler_readiness.return_value = {"state": "ready"}
+        args = Namespace(
+            cron_command="status",
+            agent_id="ops",
+            session="cron-cli",
+            json=True,
+        )
+
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            code = run_cron(args, app)
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["scheduler"]["state"], "ready")
+        self.assertFalse(payload["scheduler_control"]["paused"])
+
+    def test_run_cron_status_fails_when_dispatch_state_is_unavailable(self) -> None:
+        app = self._mock_app(ok=False, error="db unavailable")
+        app.scheduler_readiness.return_value = {"state": "ready"}
+        args = Namespace(
+            cron_command="status",
+            agent_id="ops",
+            session="cron-cli",
+            json=True,
+        )
+
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            code = run_cron(args, app)
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "db unavailable")
 
     def test_run_cron_status_is_nonzero_when_scheduler_is_unhealthy(self) -> None:
         app = self._mock_app()
@@ -189,7 +252,15 @@ class CronCommandTests(unittest.TestCase):
         }
 
         with mock.patch("sys.stdout", new_callable=io.StringIO):
-            code = run_cron(Namespace(cron_command="status"), app)
+            code = run_cron(
+                Namespace(
+                    cron_command="status",
+                    agent_id="ops",
+                    session="cron-cli",
+                    json=False,
+                ),
+                app,
+            )
 
         self.assertEqual(code, 1)
 

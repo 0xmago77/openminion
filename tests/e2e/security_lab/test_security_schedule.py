@@ -129,8 +129,8 @@ def test_two_real_worker_ticks_survive_restart(audit_context, offline_runner, tm
                 store=store,
                 job=manager.get_scheduled_job(job_id),
                 run=run,
-                request_builder=lambda payload, agent: build_turn_request(
-                    payload, default_agent_id=agent
+                request_builder=lambda payload, agent, consolidation, watch: (
+                    build_turn_request(payload, default_agent_id=agent)
                 ),
                 artifactctl_factory=lambda: nullcontext(ctx.artifactctl),
                 timeout_s=10,

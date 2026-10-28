@@ -24,6 +24,7 @@ def show_task(
     agent_id: str = "",
     session_id: str = "",
     limit: int = 50,
+    runs_limit: int = 5,
 ) -> dict[str, Any] | None:
     source = resolve_task_surface_source(runtime)
     task = build_task_surface(
@@ -31,7 +32,7 @@ def show_task(
         agent_id=agent_id,
         session_id=session_id,
         limit=limit,
-    ).show_task(task_id)
+    ).show_task(task_id, runs_limit=runs_limit)
     if task is not None and task.get("project"):
         from openminion.modules.task.project.reports import (
             build_project_report_from_task,

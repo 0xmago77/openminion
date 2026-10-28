@@ -14,10 +14,20 @@ from openminion.tools.task.constants import (
     DEFAULT_WATCH_MAX_ITERATIONS,
     DEFAULT_WATCH_TIMEOUT_SECONDS,
     WATCH_DEFAULT_ALLOWED_TOOLS,
+    WATCH_EPHEMERAL_METADATA_KEYS,
     WATCH_PAYLOAD_KEY,
     WATCH_TURN_KIND_ACTION,
     WATCH_TURN_KIND_CHECK,
 )
+
+_TRUSTED_TASK_METADATA_KEYS = WATCH_EPHEMERAL_METADATA_KEYS | {
+    "security_scan_context",
+    "memory_consolidation_job",
+    "memory_consolidation_target_scope",
+    "memory_consolidation_batch_limit",
+    "memory_consolidation_max_iterations",
+    "memory_consolidation_timeout_seconds",
+}
 
 MetadataResolver = Callable[[dict[str, Any]], dict[str, Any] | None]
 
@@ -32,6 +42,26 @@ WatchActionExecutor = Callable[
 
 def turn_wait_timeout(base_timeout_s: float, payload: Mapping[str, Any]) -> float:
     return float(base_timeout_s) + max(0, float(payload.get("timeout_seconds") or 0))
+
+
+def strip_untrusted_task_context(
+    metadata: Mapping[str, str] | None,
+) -> dict[str, str] | None:
+    filtered = dict(metadata or {})
+    for key in _TRUSTED_TASK_METADATA_KEYS:
+        filtered.pop(key, None)
+    return filtered or None
+
+
+def trusted_watch_context(payload: Mapping[str, Any]) -> dict[str, str] | None:
+    metadata = dict(payload.get("meta") or {})
+    if str(metadata.get("watch_job", "")).strip().lower() != "true":
+        return None
+    return {
+        key: str(metadata[key])
+        for key in WATCH_EPHEMERAL_METADATA_KEYS
+        if key in metadata
+    }
 
 
 def build_cron_turn_result(

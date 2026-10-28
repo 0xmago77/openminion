@@ -1,6 +1,6 @@
 from contextlib import contextmanager
-from collections.abc import Callable, Iterator, Mapping
-from typing import Any
+from collections.abc import Iterator, Mapping
+from typing import Any, cast
 from uuid import uuid4
 
 from openminion.modules.brain.runtime.goal.policy import authorize_goal_action
@@ -20,19 +20,18 @@ from openminion.modules.tool.runtime.context import (
 from openminion.modules.tool.contracts.schemas import ErrorCode
 from openminion.modules.tool.errors import ToolRuntimeError
 from openminion.modules.tool.registry import ToolRegistry
-from openminion.modules.task import TaskManager
+from openminion.modules.task import TaskLifecycleState, TaskManager
 from openminion.modules.task.constants import (
     DEFAULT_INTEGRATED_SQLITE_SUBPATH,
     TASK_LIST_MAX_LIMIT,
-    TASK_INTERNAL_PAUSE_REASON_KEY,
-    TASK_INTERNAL_PAUSE_SOURCE_KEY,
     TASK_REASON_RESUME_EXPIRED_ONE_SHOT,
     TASK_REASON_SCHEDULE_INTERVAL_TOO_SHORT,
 )
 from openminion.tools.config import resolve_tool_data_root
 from openminion.modules.task.scheduling.coordination import (
-    scheduler_readiness_from_health,
+    resolve_scheduler_readiness,
 )
+from openminion.modules.task.surface import supports_generic_lifecycle_control
 
 from .constants import (
     CONSOLIDATION_PAYLOAD_KEY,
@@ -49,6 +48,7 @@ from .constants import (
     TASK_REASON_STORAGE_UNCONFIGURED,
     TASK_REASON_OWNERSHIP_DENIED,
     TASK_REASON_SCHEDULER_REVISION_CONFLICT,
+    TASK_REASON_UNSUPPORTED_KIND,
     WATCH_PAYLOAD_KEY,
     WATCH_TURN_KIND_CHECK,
 )
@@ -70,9 +70,11 @@ from .args import (
 )
 from .scheduled_task.runtime import (
     _background_write_authorization_allowed,
+    _apply_pause_metadata,
     _coerce_schedule_aliases,
     _context_metadata,
     _origin_delivery_context,
+    _paused_reason_from_payload,
     _safe_str,
     _text,
     _watch_delivery_payload,
@@ -84,6 +86,12 @@ from .scheduled_task.views import (
     _task_show_payload,
 )
 from .watch import watch_profile_tools
+from .lifecycle_views import (
+    append_lifecycle_task_payloads,
+    lifecycle_task_result,
+    restrict_task_actions_to_owner,
+    task_list_policy,
+)
 
 
 def _tool_error(
@@ -138,6 +146,14 @@ def _enforce_goal_execution_policy(
             "requires_user_confirm": bool(auth.requires_user_confirm),
             "risk_tier": auth.risk_tier,
         },
+    )
+
+
+def _truthy(value: Any) -> bool:
+    return (
+        value
+        if isinstance(value, bool)
+        else _text(value).lower() in {"1", "true", "yes", "on"}
     )
 
 
@@ -248,29 +264,6 @@ def _derive_task_name(*, name: str | None, instruction: str) -> str:
     return f"{compact[: DEFAULT_TASK_NAME_MAX_CHARS - 3].rstrip()}..."
 
 
-def _paused_reason_from_payload(payload: Mapping[str, Any] | None) -> str | None:
-    if not isinstance(payload, Mapping):
-        return None
-    token = _text(payload.get(TASK_INTERNAL_PAUSE_REASON_KEY))
-    return token or None
-
-
-def _apply_pause_metadata(
-    payload: Mapping[str, Any] | None,
-    *,
-    reason: str | None,
-    source: str | None,
-) -> dict[str, Any]:
-    updated = dict(payload or {})
-    if reason:
-        updated[TASK_INTERNAL_PAUSE_REASON_KEY] = str(reason)
-        updated[TASK_INTERNAL_PAUSE_SOURCE_KEY] = str(source or "operator")
-    else:
-        updated.pop(TASK_INTERNAL_PAUSE_REASON_KEY, None)
-        updated.pop(TASK_INTERNAL_PAUSE_SOURCE_KEY, None)
-    return updated
-
-
 def _owned_job_or_error(
     *,
     manager: TaskManager,
@@ -297,12 +290,52 @@ def _owned_job_or_error(
             reason_code=TASK_REASON_OWNERSHIP_DENIED,
             details={"task_id": task_id},
         )
-    return job
+    return cast(dict[str, Any], job)
+
+
+def _owned_scheduled_job_or_none(
+    *,
+    manager: TaskManager,
+    task_id: str,
+    caller_agent_id: str | None,
+) -> dict[str, Any] | None:
+    with _storage_operation(
+        message="Failed to resolve task",
+        details={"task_id": task_id},
+    ):
+        job = manager.get_scheduled_job(task_id)
+        record = manager.get_task(task_id) if job is None else None
+    if job is None and record is None:
+        raise _tool_error(
+            "NOT_FOUND",
+            message="Task not found",
+            reason_code=TASK_REASON_RECORD_NOT_FOUND,
+            details={"task_id": task_id},
+        )
+    owner = (
+        _safe_str(job, "agent_id")
+        if job is not None
+        else str(getattr(record, "agent_id", "") or "").strip()
+    )
+    if not owner or owner != caller_agent_id:
+        raise _tool_error(
+            "POLICY_DENIED",
+            message="Task is not owned by the current agent",
+            reason_code=TASK_REASON_OWNERSHIP_DENIED,
+            details={"task_id": task_id},
+        )
+    if job is None and not supports_generic_lifecycle_control(record):
+        raise _tool_error(
+            "INVALID_ARGUMENT",
+            message="Task must be controlled through its specialized owner",
+            reason_code=TASK_REASON_UNSUPPORTED_KIND,
+            details={"task_id": task_id},
+        )
+    return cast(dict[str, Any] | None, job)
 
 
 def _h_task_schedule(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     validated = TaskScheduleArgs.model_validate(args)
-    # same gate as the watch surface — when the model
     _enforce_goal_execution_policy(
         ctx=ctx,
         goal_origin_action_type=validated.goal_origin_action_type,
@@ -361,7 +394,7 @@ def _h_task_schedule(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any
                 ctx.artifactctl, job_id=job["job_id"], admission=scan_admission
             )
 
-    scheduler = _scheduler_readiness(ctx)
+    scheduler = resolve_scheduler_readiness(ctx.scheduler_readiness)
     scheduler_note = (
         "Task scheduled. The OpenMinion daemon scheduler is ready."
         if scheduler["state"] == "ready"
@@ -384,18 +417,6 @@ def _h_task_schedule(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any
         "scheduler": scheduler,
         "scheduler_note": scheduler_note,
     }
-
-
-def _scheduler_readiness(ctx: RuntimeContext) -> dict[str, Any]:
-    query: Callable[[], dict[str, Any]] | None = ctx.scheduler_readiness
-    if callable(query):
-        return query()
-    readiness: dict[str, Any] = scheduler_readiness_from_health(
-        {},
-        reachable=True,
-        identity_matches=None,
-    )
-    return readiness
 
 
 def _h_task_watch(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
@@ -602,18 +623,27 @@ def _h_task_cancel(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     task_id = validated.task_id
     caller_agent_id = _agent_id_from_context(ctx)
     manager = _resolve_task_manager(ctx)
-    _owned_job_or_error(
+    job = _owned_scheduled_job_or_none(
         manager=manager,
         task_id=task_id,
         caller_agent_id=caller_agent_id,
     )
 
     with _storage_operation(
-        message="Failed to cancel scheduled task",
+        message="Failed to cancel task",
         details={"task_id": task_id},
         passthrough=(KeyError,),
     ):
-        manager.cancel_task(task_id)
+        if job is None:
+            try:
+                manager.transition_task(
+                    task_id=task_id,
+                    to_state=TaskLifecycleState.CANCELLED,
+                )
+            except ValueError as exc:
+                _raise_task_control_error(exc)
+        else:
+            manager.cancel_task(task_id)
 
     return {
         "ok": True,
@@ -628,11 +658,30 @@ def _h_task_pause(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     task_id = validated.task_id
     caller_agent_id = _agent_id_from_context(ctx)
     manager = _resolve_task_manager(ctx)
-    job = _owned_job_or_error(
+    job = _owned_scheduled_job_or_none(
         manager=manager,
         task_id=task_id,
         caller_agent_id=caller_agent_id,
     )
+    if job is None:
+        try:
+            with _storage_operation(
+                message="Failed to pause task",
+                details={"task_id": task_id},
+                passthrough=(ValueError,),
+            ):
+                record = manager.transition_task(
+                    task_id=task_id,
+                    to_state=TaskLifecycleState.PAUSED,
+                )
+        except ValueError as exc:
+            _raise_task_control_error(exc)
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "paused": True,
+            "lifecycle_state": record.state.value,
+        }
     updated_payload = _apply_pause_metadata(
         job.get("payload"),
         reason=None,
@@ -663,11 +712,30 @@ def _h_task_resume(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     task_id = validated.task_id
     caller_agent_id = _agent_id_from_context(ctx)
     manager = _resolve_task_manager(ctx)
-    _owned_job_or_error(
+    job = _owned_scheduled_job_or_none(
         manager=manager,
         task_id=task_id,
         caller_agent_id=caller_agent_id,
     )
+    if job is None:
+        try:
+            with _storage_operation(
+                message="Failed to resume task",
+                details={"task_id": task_id},
+                passthrough=(ValueError,),
+            ):
+                record = manager.transition_task(
+                    task_id=task_id,
+                    to_state=TaskLifecycleState.ACTIVE,
+                )
+        except ValueError as exc:
+            _raise_task_control_error(exc)
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "resumed": True,
+            "lifecycle_state": record.state.value,
+        }
     try:
         with _storage_operation(
             message="Failed to resume scheduled task",
@@ -697,12 +765,18 @@ def _h_task_show(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     task_id = validated.task_id
     caller_agent_id = _agent_id_from_context(ctx)
     manager = _resolve_task_manager(ctx)
-    job = _owned_job_or_error(
+    job = _owned_scheduled_job_or_none(
         manager=manager,
         task_id=task_id,
         caller_agent_id=caller_agent_id,
     )
     effective_runs_limit = max(1, min(int(validated.runs_limit), 20))
+    if job is None:
+        return lifecycle_task_result(
+            manager,
+            task_id=task_id,
+            runs_limit=effective_runs_limit,
+        )
     return {
         "ok": True,
         "task": _task_show_payload(
@@ -715,47 +789,23 @@ def _h_task_show(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     }
 
 
-def _truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    return _text(value).lower() in {"1", "true", "yes", "on"}
-
-
-def _task_list_policy(ctx: RuntimeContext) -> tuple[bool, bool]:
-    allow_cross_agent = False
-    include_unowned = False
-    policy_raw = getattr(ctx.policy, "raw", {}) or {}
-    if not isinstance(policy_raw, Mapping):
-        return allow_cross_agent, include_unowned
-
-    include_unowned = _truthy(policy_raw.get("task_list_include_unowned"))
-    allow_cross_agent = _truthy(policy_raw.get("task_list_allow_cross_agent"))
-
-    context_meta = policy_raw.get("context_metadata")
-    if isinstance(context_meta, Mapping):
-        include_unowned = include_unowned or _truthy(
-            context_meta.get("task_list_include_unowned")
-        )
-        allow_cross_agent = allow_cross_agent or _truthy(
-            context_meta.get("task_list_allow_cross_agent")
-        )
-    return allow_cross_agent, include_unowned
-
-
 def _h_task_list(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
     validated = TaskListArgs.model_validate(args)
     requested_limit = int(validated.limit)
     effective_limit = max(1, min(requested_limit, TASK_LIST_MAX_LIMIT))
 
     caller_agent_id = _agent_id_from_context(ctx)
-    allow_cross_agent, include_unowned = _task_list_policy(ctx)
+    allow_cross_agent, include_unowned = task_list_policy(ctx)
     manager = _resolve_task_manager(ctx)
     with _storage_operation(message="Failed to list scheduled tasks"):
         jobs = manager.list_scheduled_jobs(
-            limit=effective_limit,
+            limit=1000,
             agent_id=None if allow_cross_agent else caller_agent_id,
             include_unowned=include_unowned,
         )
+    if allow_cross_agent and not include_unowned:
+        jobs = [job for job in jobs if job.get("agent_id") is not None]
+    jobs = jobs[:effective_limit]
 
     visible_jobs: list[dict[str, Any]] = []
     for job in jobs:
@@ -767,6 +817,15 @@ def _h_task_list(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any]:
         jobs=visible_jobs,
         effective_limit=effective_limit,
     )
+    tasks = append_lifecycle_task_payloads(
+        manager,
+        tasks=tasks,
+        agent_id=caller_agent_id,
+        limit=effective_limit,
+        allow_cross_agent=allow_cross_agent,
+        include_unowned=include_unowned,
+    )
+    tasks = restrict_task_actions_to_owner(tasks, agent_id=caller_agent_id)
 
     return {
         "ok": True,
@@ -870,7 +929,7 @@ def _h_task_scheduler_status(
     return {
         "ok": True,
         "scheduler_control": manager.scheduler_control_status(),
-        "scheduler": _scheduler_readiness(ctx),
+        "scheduler": resolve_scheduler_readiness(ctx.scheduler_readiness),
     }
 
 

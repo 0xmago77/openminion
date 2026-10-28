@@ -204,7 +204,7 @@ def execute_security_run(
         watch_metadata=lambda _: None,
     )
     request_payload.update(payload, agent_id=admission.agent_id)
-    request = request_builder(request_payload, admission.agent_id)
+    request = request_builder(request_payload, admission.agent_id, None, None)
     request = bind_request(request, (admission, revision), job, run)
     result = runtime.runtime_manager.submit_turn(request).result(
         timeout_s=timeout_s + admission.timeout_seconds

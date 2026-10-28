@@ -132,7 +132,10 @@ def _executor(
             tool_resources=dict(tool_resources or {}),
         ),
         cron_store=cron_store,
-        request_builder=lambda payload, agent_id: (payload, agent_id),
+        request_builder=lambda payload, agent_id, _memory=None, _watch=None: (
+            payload,
+            agent_id,
+        ),
         timeout_s=10,
     )
 

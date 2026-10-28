@@ -66,7 +66,7 @@ class TurnRequest:
     stream: bool = False
     meta: dict[str, Any] = field(default_factory=dict)
     explicit_agent: bool = False
-    trusted_memory_consolidation_context: Mapping[str, str] | None = None
+    trusted_task_context: Mapping[str, str] | None = None
     trusted_security_scan_context: Mapping[str, str] | None = None
 
 

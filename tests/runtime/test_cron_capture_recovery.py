@@ -139,10 +139,13 @@ def _consolidate(
         runtime=runtime,
         # The consolidation path does not use the cron store.
         cron_store=SimpleNamespace(),
-        request_builder=lambda payload, agent_id, context=None: build_turn_request(
-            payload,
-            default_agent_id=agent_id,
-            trusted_memory_consolidation_context=context,
+        request_builder=lambda payload, agent_id, context=None, watch_context=None: (
+            build_turn_request(
+                payload,
+                default_agent_id=agent_id,
+                trusted_memory_consolidation_context=context,
+                trusted_watch_context=watch_context,
+            )
         ),
         timeout_s=60,
         task_manager=SimpleNamespace(

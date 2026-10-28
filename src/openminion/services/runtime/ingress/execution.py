@@ -40,8 +40,8 @@ def execute_runtime_turn(
     inbound_metadata = dict(request.inbound_metadata or {})
     if request.trusted_subagent_context is not None:
         inbound_metadata.update(request.trusted_subagent_context.as_inbound_metadata())
-    if request.trusted_memory_consolidation_context is not None:
-        inbound_metadata.update(request.trusted_memory_consolidation_context)
+    if request.trusted_task_context is not None:
+        inbound_metadata.update(request.trusted_task_context)
     if request.trusted_security_scan_context is not None:
         inbound_metadata.update(request.trusted_security_scan_context)
     context = _build_turn_context(

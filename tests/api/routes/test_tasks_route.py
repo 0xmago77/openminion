@@ -78,6 +78,34 @@ def test_tasks_route_shows_task() -> None:
     assert result.payload["task"]["title"] == "Inspect route"
 
 
+def test_tasks_route_bounds_recent_run_query(tmp_path) -> None:
+    ctx, manager, task_id = _control_ctx(tmp_path)
+    repository = getattr(manager, "_cron_repository")
+    for index in range(25):
+        run_id = repository.trigger_cron_run(task_id)
+        repository.finish_cron_run(run_id, state="finished", summary=f"run-{index}")
+
+    def show(query: str):
+        return handle_request(
+            ctx,
+            method_name="GET",
+            path=f"/v1/tasks/{task_id}",
+            body=None,
+            query=query,
+        )
+
+    default = show("agent_id=agent-a")
+    explicit = show("agent_id=agent-a&runs_limit=8")
+    capped = show("agent_id=agent-a&runs_limit=100")
+    invalid = show("agent_id=agent-a&runs_limit=invalid")
+
+    assert default is not None and len(default.payload["task"]["recent_runs"]) == 5
+    assert explicit is not None and len(explicit.payload["task"]["recent_runs"]) == 8
+    assert capped is not None and len(capped.payload["task"]["recent_runs"]) == 20
+    assert invalid is not None and invalid.status == HTTPStatus.BAD_REQUEST
+    assert invalid.payload["error"]["code"] == "invalid_runs_limit"
+
+
 def test_tasks_route_returns_none_for_other_paths() -> None:
     assert (
         handle_request(
@@ -87,13 +115,24 @@ def test_tasks_route_returns_none_for_other_paths() -> None:
     )
 
 
-def test_tasks_route_creates_and_deduplicates_user_schedule(tmp_path) -> None:
+def test_tasks_route_creates_and_mutates_through_registered_tools(tmp_path) -> None:
     repository = create_sqlite_cron_repository(db_path=tmp_path / "tasks.db")
     manager = TaskManager.from_cron_repository(repository)
+    registry = ToolRegistry()
+    register_task_tools(registry)
+    executed: list[str] = []
+    original_execute = registry.execute_calls
+
+    def execute_calls(calls, *, context):
+        executed.extend(call.name for call in calls)
+        return original_execute(calls, context=context)
+
+    registry.execute_calls = execute_calls  # type: ignore[method-assign]
     ctx = APIRouteContext(
         config_path=None,
         runtime=SimpleNamespace(
             task_manager=manager,
+            tools=registry,
             scheduler_readiness=lambda: {
                 "state": "ready",
                 "hosted_by": "daemon",
@@ -179,6 +218,72 @@ def test_tasks_route_creates_and_deduplicates_user_schedule(tmp_path) -> None:
     assert cross_agent is not None
     assert cross_agent.status == HTTPStatus.FORBIDDEN
     assert cross_agent.payload["error"]["code"] == "task_scope_denied"
+    assert executed == [
+        "task.schedule",
+        "task.schedule",
+        "task.pause",
+        "task.resume",
+        "task.cancel",
+    ]
+
+
+def test_tasks_route_controls_owned_lifecycle_task_without_cron_job(tmp_path) -> None:
+    manager = TaskManager.for_lifecycle_db(db_path=tmp_path / "lifecycle.db")
+    manager.create_task(
+        session_id="session-a",
+        mode_name="research",
+        goal="finish the report",
+        agent_id="agent-a",
+        task_id="lifecycle-task",
+    )
+    registry = ToolRegistry()
+    register_task_tools(registry)
+    ctx = APIRouteContext(
+        config_path=None,
+        runtime=SimpleNamespace(
+            task_manager=manager,
+            tools=registry,
+            scheduler_readiness=lambda: {"state": "ready"},
+        ),
+        runtime_bootstrap_error=None,
+        request_headers=None,
+        request_id="lifecycle-control",
+    )
+
+    for action, expected_state in (
+        ("pause", "paused"),
+        ("resume", "active"),
+    ):
+        result = handle_request(
+            ctx,
+            method_name="POST",
+            path=f"/v1/tasks/lifecycle-task/{action}",
+            body={},
+            query="agent_id=agent-a",
+        )
+        assert result is not None and result.status == HTTPStatus.OK
+        assert result.payload["task"]["lifecycle_state"] == expected_state
+
+    denied = handle_request(
+        ctx,
+        method_name="POST",
+        path="/v1/tasks/lifecycle-task/cancel",
+        body={},
+        query="agent_id=agent-b",
+    )
+    assert denied is not None and denied.status == HTTPStatus.FORBIDDEN
+    assert denied.payload["error"]["code"] == "POLICY_DENIED"
+    assert manager.get_task("lifecycle-task").state.value == "active"
+
+    cancelled = handle_request(
+        ctx,
+        method_name="POST",
+        path="/v1/tasks/lifecycle-task/cancel",
+        body={},
+        query="agent_id=agent-a",
+    )
+    assert cancelled is not None and cancelled.status == HTTPStatus.OK
+    assert cancelled.payload["task"]["lifecycle_state"] == "cancelled"
 
 
 def test_tasks_route_requires_agent_for_creation() -> None:
@@ -384,10 +489,13 @@ def test_tasks_route_uses_shared_relative_schedule_contract(tmp_path) -> None:
     manager = TaskManager.from_cron_repository(
         create_sqlite_cron_repository(db_path=tmp_path / "tasks.db")
     )
+    registry = ToolRegistry()
+    register_task_tools(registry)
     ctx = APIRouteContext(
         config_path=None,
         runtime=SimpleNamespace(
             task_manager=manager,
+            tools=registry,
             scheduler_readiness=lambda: {"state": "ready"},
         ),
         runtime_bootstrap_error=None,
@@ -466,9 +574,15 @@ def test_tasks_route_maps_inventory_and_expired_resume_errors(tmp_path) -> None:
         enabled=False,
     )
     manager.transition_task(task_id=record.task_id, to_state="paused")
+    registry = ToolRegistry()
+    register_task_tools(registry)
     expired_ctx = APIRouteContext(
         config_path=None,
-        runtime=SimpleNamespace(task_manager=manager),
+        runtime=SimpleNamespace(
+            task_manager=manager,
+            tools=registry,
+            scheduler_readiness=lambda: {"state": "ready"},
+        ),
         runtime_bootstrap_error=None,
         request_headers=None,
         request_id="test-request",

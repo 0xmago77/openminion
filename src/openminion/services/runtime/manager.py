@@ -360,9 +360,9 @@ class AgentRuntimeManager:
             meta=dict(req.meta or {}),
             explicit_agent=bool(req.explicit_agent),
             trusted_security_scan_context=req.trusted_security_scan_context,
-            trusted_memory_consolidation_context=(
-                dict(req.trusted_memory_consolidation_context)
-                if req.trusted_memory_consolidation_context is not None
+            trusted_task_context=(
+                dict(req.trusted_task_context)
+                if req.trusted_task_context is not None
                 else None
             ),
         )

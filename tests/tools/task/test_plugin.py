@@ -124,6 +124,192 @@ def test_operational_controls_reject_unowned_raw_jobs(tmp_path: Path) -> None:
     assert repository.get_cron_job(task_id) == job
 
 
+def test_lifecycle_controls_use_exact_owned_task_without_cron_job(
+    tmp_path: Path,
+) -> None:
+    manager = TaskManager.for_lifecycle_db(db_path=tmp_path / "lifecycle.db")
+    manager.create_task(
+        session_id="session-a",
+        mode_name="research",
+        goal="finish the report",
+        agent_id="agent-a",
+        task_id="lifecycle-task",
+    )
+    manager.create_task(
+        session_id="session-a",
+        mode_name="project",
+        goal="specialized project",
+        agent_id="agent-a",
+        task_id="project-task",
+    )
+    manager.create_task(
+        session_id="session-a",
+        mode_name="research",
+        goal="orchestrated child",
+        agent_id="agent-a",
+        task_id="child-task",
+        metadata={"parent_task_id": "parent-task", "subtask_id": "subtask-1"},
+    )
+    manager.ensure_task_record(
+        cron_job_id="orphaned-schedule",
+        agent_id="agent-a",
+    )
+    owner_ctx = _ctx(tmp_path, agent_id="agent-a")
+    owner_ctx.task_manager = manager
+    foreign_ctx = _ctx(tmp_path, agent_id="agent-b")
+    foreign_ctx.task_manager = manager
+
+    paused = _h_task_pause({"task_id": "lifecycle-task"}, owner_ctx)
+    resumed = _h_task_resume({"task_id": "lifecycle-task"}, owner_ctx)
+    shown = _h_task_show({"task_id": "lifecycle-task"}, owner_ctx)
+    listed = _h_task_list({"limit": 20}, owner_ctx)
+
+    assert paused["lifecycle_state"] == "paused"
+    assert resumed["lifecycle_state"] == "active"
+    assert shown["task"]["task_id"] == "lifecycle-task"
+    assert {task["task_id"] for task in listed["tasks"]} == {"lifecycle-task"}
+    with pytest.raises(ToolRuntimeError) as denied:
+        _h_task_cancel({"task_id": "lifecycle-task"}, foreign_ctx)
+    assert denied.value.code == "POLICY_DENIED"
+    assert denied.value.details["reason_code"] == "task_ownership_denied"
+    assert manager.get_task("lifecycle-task").state.value == "active"
+    with pytest.raises(ToolRuntimeError) as foreign_project:
+        _h_task_pause({"task_id": "project-task"}, foreign_ctx)
+    assert foreign_project.value.code == "POLICY_DENIED"
+    for task_id in ("project-task", "child-task", "orphaned-schedule"):
+        with pytest.raises(ToolRuntimeError) as unsupported:
+            _h_task_pause({"task_id": task_id}, owner_ctx)
+        assert unsupported.value.code == "INVALID_ARGUMENT"
+        assert unsupported.value.details["reason_code"] == "task_unsupported_kind"
+        assert manager.get_task(task_id).state.value == "active"
+
+    for index in range(25):
+        manager.create_task(
+            session_id="session-a",
+            mode_name="project",
+            goal=f"specialized project {index}",
+            agent_id="agent-a",
+            task_id=f"project-task-{index}",
+        )
+    crowded = _h_task_list({"limit": 20}, owner_ctx)
+    assert {task["task_id"] for task in crowded["tasks"]} == {"lifecycle-task"}
+
+    manager.create_task(
+        session_id="session-b",
+        mode_name="research",
+        goal="foreign lifecycle task",
+        agent_id="agent-b",
+        task_id="foreign-lifecycle-task",
+    )
+    manager.create_task(
+        session_id="session-unowned",
+        mode_name="research",
+        goal="unowned lifecycle task",
+        agent_id=None,
+        task_id="unowned-lifecycle-task",
+    )
+    scoped_ctx = _ctx(
+        tmp_path,
+        agent_id="agent-a",
+        metadata={
+            "task_list_allow_cross_agent": "true",
+            "task_list_include_unowned": "true",
+        },
+    )
+    scoped_ctx.task_manager = manager
+    scoped = _h_task_list({"limit": 100}, scoped_ctx)
+    scoped_ids = {task["task_id"] for task in scoped["tasks"]}
+    assert {"foreign-lifecycle-task", "unowned-lifecycle-task"} <= scoped_ids
+    scoped_by_id = {task["task_id"]: task for task in scoped["tasks"]}
+    assert scoped_by_id["lifecycle-task"]["valid_actions"] == ["pause", "cancel"]
+    assert scoped_by_id["foreign-lifecycle-task"]["valid_actions"] == []
+    assert scoped_by_id["unowned-lifecycle-task"]["valid_actions"] == []
+
+    cross_only_ctx = _ctx(
+        tmp_path,
+        agent_id="agent-a",
+        metadata={"task_list_allow_cross_agent": "true"},
+    )
+    cross_only_ctx.task_manager = manager
+    cross_only_ids = {
+        task["task_id"]
+        for task in _h_task_list({"limit": 100}, cross_only_ctx)["tasks"]
+    }
+    assert "foreign-lifecycle-task" in cross_only_ids
+    assert "unowned-lifecycle-task" not in cross_only_ids
+
+    unowned_only_ctx = _ctx(
+        tmp_path,
+        agent_id="agent-a",
+        metadata={"task_list_include_unowned": "true"},
+    )
+    unowned_only_ctx.task_manager = manager
+    unowned_only = _h_task_list({"limit": 100}, unowned_only_ctx)
+    unowned_only_by_id = {task["task_id"]: task for task in unowned_only["tasks"]}
+    assert "lifecycle-task" in unowned_only_by_id
+    assert "unowned-lifecycle-task" in unowned_only_by_id
+    assert "foreign-lifecycle-task" not in unowned_only_by_id
+    assert unowned_only_by_id["unowned-lifecycle-task"]["valid_actions"] == []
+
+    cancelled = _h_task_cancel({"task_id": "lifecycle-task"}, owner_ctx)
+
+    assert cancelled["cancelled"] is True
+    assert manager.get_task("lifecycle-task").state.value == "cancelled"
+
+
+def test_lifecycle_task_remains_discoverable_when_scheduled_list_is_full(
+    tmp_path: Path,
+) -> None:
+    manager = TaskManager.from_cron_repository(
+        create_sqlite_cron_repository(db_path=tmp_path / "tasks.db")
+    )
+    ctx = _ctx(tmp_path, agent_id="agent-a")
+    ctx.task_manager = manager
+    for index in range(20):
+        manager.schedule_user_task(
+            name=f"scheduled-{index}",
+            instruction=f"scheduled work {index}",
+            schedule={"kind": "every", "every_ms": 60_000},
+            agent_id="agent-a",
+        )
+    manager.create_task(
+        session_id="session-a",
+        mode_name="research",
+        goal="new ordinary task",
+        agent_id="agent-a",
+        task_id="ordinary-newest",
+    )
+
+    listed = _h_task_list({"limit": 20}, ctx)
+
+    assert listed["count"] == 20
+    assert "ordinary-newest" in {task["task_id"] for task in listed["tasks"]}
+
+
+@pytest.mark.parametrize("handler", [_h_task_pause, _h_task_resume, _h_task_cancel])
+def test_terminal_lifecycle_controls_return_invalid_argument(
+    tmp_path: Path,
+    handler,
+) -> None:
+    manager = TaskManager.for_lifecycle_db(db_path=tmp_path / "lifecycle.db")
+    manager.create_task(
+        session_id="session-a",
+        mode_name="research",
+        goal="completed task",
+        agent_id="agent-a",
+        task_id="completed-task",
+    )
+    manager.transition_task(task_id="completed-task", to_state="done")
+    ctx = _ctx(tmp_path, agent_id="agent-a")
+    ctx.task_manager = manager
+
+    with pytest.raises(ToolRuntimeError) as raised:
+        handler({"task_id": "completed-task"}, ctx)
+
+    assert raised.value.code == "INVALID_ARGUMENT"
+    assert raised.value.details["reason_code"] == "invalid_task_action"
+
+
 def _ctx(
     tmp_path: Path,
     *,
@@ -1363,6 +1549,20 @@ def test_list_shape_scope_and_limit_clamp(
     include_cross = _h_task_list({"limit": 20}, cross_ctx)
     cross_names = {row["name"] for row in include_cross["tasks"]}
     assert {"owner-task", "other-task", "unowned-task"}.issubset(cross_names)
+    cross_by_name = {row["name"]: row for row in include_cross["tasks"]}
+    assert cross_by_name["owner-task"]["valid_actions"]
+    assert cross_by_name["other-task"]["valid_actions"] == []
+    assert cross_by_name["unowned-task"]["valid_actions"] == []
+
+    cross_only_ctx = _ctx(
+        tmp_path,
+        agent_id="agent-owner",
+        metadata={"task_list_allow_cross_agent": "true"},
+    )
+    cross_only = _h_task_list({"limit": 20}, cross_only_ctx)
+    cross_only_names = {row["name"] for row in cross_only["tasks"]}
+    assert {"owner-task", "other-task"}.issubset(cross_only_names)
+    assert "unowned-task" not in cross_only_names
 
     for idx in range(140):
         _h_task_schedule(

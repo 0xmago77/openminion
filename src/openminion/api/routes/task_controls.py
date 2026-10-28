@@ -18,6 +18,7 @@ from .task_responses import task_agent_id_required
 _TASK_RUN_NOW_RE = re.compile(r"/v1/tasks/([^/]+)/run-now")
 _TASK_HISTORY_DELETE_RE = re.compile(r"/v1/tasks/([^/]+)/history/delete")
 _TASK_SCHEDULER_RE = re.compile(r"/v1/tasks/scheduler(?:/(pause|resume))?")
+_TASK_LIFECYCLE_RE = re.compile(r"/v1/tasks/([^/]+)/(pause|resume|cancel)")
 _TASK_RE = re.compile(r"/v1/tasks/([^/]+)")
 
 
@@ -47,6 +48,11 @@ def handle_task_control_request(
     elif method_name == "POST" and (match := _TASK_HISTORY_DELETE_RE.fullmatch(path)):
         tool_name = "task.delete_history"
         arguments = {"task_id": unquote(match.group(1))}
+    elif method_name == "POST" and (match := _TASK_LIFECYCLE_RE.fullmatch(path)):
+        task_id = unquote(match.group(1))
+        action = str(match.group(2))
+        tool_name = f"task.{action}"
+        arguments = {"task_id": task_id}
     elif method_name == "PATCH" and (match := _TASK_RE.fullmatch(path)):
         tool_name = "task.update"
         arguments = dict(body or {})
@@ -89,7 +95,7 @@ def handle_task_control_request(
         )
         return exception_route_result(
             status,
-            code=exc.code,
+            code=exc.response_code,
             exc=exc,
             details=exc.details,
             retryable=False,

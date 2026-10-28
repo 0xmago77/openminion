@@ -155,7 +155,7 @@ def test_build_operations_overview_reuses_existing_read_owners(
                 "Inspect release",
                 "ACTIVE",
                 "waiting",
-                "approve",
+                "inspect-blocker",
                 1,
             ),
         ),

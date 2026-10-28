@@ -71,7 +71,12 @@ class _FakeCronStore(_FakeSessionApi):
         return 0
 
 
-def _request_builder(payload: dict[str, object], agent_id: str) -> object:
+def _request_builder(
+    payload: dict[str, object],
+    agent_id: str,
+    _trusted_memory_context: dict[str, str] | None = None,
+    _trusted_watch_context: dict[str, str] | None = None,
+) -> object:
     return SimpleNamespace(
         agent_id=agent_id,
         session_id=str(payload.get("session_id") or ""),

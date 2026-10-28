@@ -80,8 +80,8 @@ def _lifecycle_specs() -> tuple[ToolSpec, ...]:
             handler=_h_task_cancel,
             dangerous=False,
             idempotent=True,
-            tags=("plugin", "task", "schedule"),
-            capabilities=("task", "schedule"),
+            tags=("plugin", "task", "lifecycle", "schedule"),
+            capabilities=("task", "lifecycle", "schedule"),
             block_under_readonly=True,
         ),
         ToolSpec(
@@ -101,8 +101,8 @@ def _lifecycle_specs() -> tuple[ToolSpec, ...]:
             handler=_h_task_list,
             dangerous=False,
             idempotent=True,
-            tags=("plugin", "task", "schedule"),
-            capabilities=("task", "schedule"),
+            tags=("plugin", "task", "lifecycle", "schedule"),
+            capabilities=("task", "lifecycle", "schedule"),
         ),
         ToolSpec(
             name=MODEL_TASK_PAUSE,
@@ -111,8 +111,8 @@ def _lifecycle_specs() -> tuple[ToolSpec, ...]:
             handler=_h_task_pause,
             dangerous=False,
             idempotent=True,
-            tags=("plugin", "task", "schedule"),
-            capabilities=("task", "schedule"),
+            tags=("plugin", "task", "lifecycle", "schedule"),
+            capabilities=("task", "lifecycle", "schedule"),
             block_under_readonly=True,
         ),
         ToolSpec(
@@ -122,8 +122,8 @@ def _lifecycle_specs() -> tuple[ToolSpec, ...]:
             handler=_h_task_resume,
             dangerous=False,
             idempotent=True,
-            tags=("plugin", "task", "schedule"),
-            capabilities=("task", "schedule"),
+            tags=("plugin", "task", "lifecycle", "schedule"),
+            capabilities=("task", "lifecycle", "schedule"),
             block_under_readonly=True,
         ),
         ToolSpec(
@@ -133,8 +133,8 @@ def _lifecycle_specs() -> tuple[ToolSpec, ...]:
             handler=_h_task_show,
             dangerous=False,
             idempotent=True,
-            tags=("plugin", "task", "schedule"),
-            capabilities=("task", "schedule"),
+            tags=("plugin", "task", "lifecycle", "schedule"),
+            capabilities=("task", "lifecycle", "schedule"),
         ),
     )
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from typing import Any
+from typing import Any, cast
 
 from openminion.api.runtime import APIRuntime
 from openminion.base.config.core import resolve_default_agent_id
@@ -46,12 +46,20 @@ def run_tasks(args: argparse.Namespace, app: APIRuntime) -> int:
         if action == "list":
             payload = surface.inventory()
         elif action == "show":
-            payload = _show_payload(surface, getattr(args, "task_id", ""))
-        elif action in {"pause", "resume", "cancel"}:
-            payload = surface.apply_action(
-                task_id=getattr(args, "task_id", ""), action=action
+            runs_limit = getattr(args, "runs_limit", None)
+            payload = _show_payload(
+                surface,
+                getattr(args, "task_id", ""),
+                runs_limit=int(cast(int, runs_limit or getattr(args, "limit", 5))),
             )
-        elif action in {"run-now", "update", "delete-history"}:
+        elif action in {
+            "pause",
+            "resume",
+            "cancel",
+            "run-now",
+            "update",
+            "delete-history",
+        }:
             payload = _tool_action_payload(app, args, action=action)
         elif action in {"scheduler-status", "scheduler-pause", "scheduler-resume"}:
             payload = _scheduler_tool_payload(app, args, action=action)
@@ -89,8 +97,13 @@ def run_tasks(args: argparse.Namespace, app: APIRuntime) -> int:
     return 0 if payload.get("ok") else 1
 
 
-def _show_payload(surface: Any, task_id: str) -> dict[str, Any]:
-    task = surface.show_task(task_id)
+def _show_payload(
+    surface: Any,
+    task_id: str,
+    *,
+    runs_limit: int = 5,
+) -> dict[str, Any]:
+    task = surface.show_task(task_id, runs_limit=runs_limit)
     if task is None:
         return {"ok": False, "error": f"task not found: {task_id}"}
     return {"ok": True, "task": task}
@@ -121,12 +134,22 @@ def _tool_action_payload(
         tool_name=tool_name,
         payload=arguments,
     )
-    return {
+    result_data = result["data"]
+    payload = {
         "ok": result["ok"],
         "action": action,
         "error": result["error"],
-        **result["data"],
+        **(result_data if isinstance(result_data, dict) else {}),
     }
+    if result["ok"] and action in {"pause", "resume", "cancel"}:
+        task = build_task_surface(
+            resolve_task_surface_source(app),
+            agent_id=str(getattr(args, "agent_id", "") or "").strip(),
+            session_id=str(getattr(args, "session", "") or "").strip(),
+        ).show_task(task_id)
+        if task is not None:
+            payload["task"] = task
+    return payload
 
 
 def _scheduler_tool_payload(
@@ -146,11 +169,12 @@ def _scheduler_tool_payload(
         tool_name=tool_name,
         payload=arguments,
     )
+    result_data = result["data"]
     return {
         "ok": result["ok"],
         "action": action,
         "error": result["error"],
-        **result["data"],
+        **(result_data if isinstance(result_data, dict) else {}),
     }
 
 
@@ -259,7 +283,7 @@ def _print_human(*, action: str, payload: dict[str, Any]) -> None:
                     print(f"delivery_error: {delivery['error']}")
             if last_run.get("delivery_targets"):
                 print(f"delivery_targets: {', '.join(last_run['delivery_targets'])}")
-        recent_runs = list(task.get("recent_runs") or [])[:5]
+        recent_runs = list(task.get("recent_runs") or [])
         if recent_runs:
             print("recent_runs:")
             for run in recent_runs:
@@ -329,7 +353,14 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
     show_parser = task_subcommands.add_parser("show", help="Show one task")
     show_parser.add_argument("task_id", help="Exact task id")
+    show_parser.add_argument(
+        "--runs-limit",
+        type=int,
+        default=None,
+        help="Maximum recent runs to show (capped at 20)",
+    )
     _add_common_args(show_parser)
+    show_parser.set_defaults(limit=5)
 
     for name in ("pause", "resume", "cancel"):
         _register_task_action(task_subcommands, name)

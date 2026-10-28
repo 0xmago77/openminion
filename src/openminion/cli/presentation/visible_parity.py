@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import argparse
 import subprocess
 from pathlib import Path
 from typing import Any, cast
 
+from openminion.cli.commands.task_tools import execute_task_tool
 from openminion.cli.status import format_token_usage_summary
+from openminion.modules.brain.adapters.tool.permission_mode import (
+    effective_permission_mode_for_tool,
+    is_tool_blocked_by_readonly,
+)
 
 
 EFFORT_VALUES: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
@@ -303,16 +309,39 @@ def render_tasks_report(runtime: Any, task_id: str = "") -> str:
     )
     selected_id = str(task_id or "").strip()
     parts = selected_id.split(maxsplit=1)
-    if parts and parts[0].lower() in {"pause", "resume", "cancel"}:
+    action = parts[0].lower() if parts else ""
+    if action in {"pause", "resume", "cancel", "run-now"}:
         if len(parts) == 1:
-            return f"Usage: /tasks {parts[0].lower()} <task-id>"
-        action, selected_id = parts[0].lower(), parts[1].strip()
-        try:
-            surface.apply_action(task_id=selected_id, action=action)
-        except (KeyError, ValueError, PermissionError, NotImplementedError) as exc:
-            return _task_failure_text("Task action failed", exc)
-        except (AttributeError, TypeError, RuntimeError) as exc:
-            return _task_failure_text("Task action failed", exc)
+            return f"Usage: /tasks {action} <task-id>"
+        selected_id = parts[1].strip()
+        result = _execute_focus_task_tool(
+            runtime,
+            f"task.{action.replace('-', '_')}",
+            {"task_id": selected_id},
+        )
+        if not result.get("ok"):
+            return _task_tool_failure(result)
+        if action == "run-now":
+            raw_data = result.get("data")
+            data = dict(raw_data) if isinstance(raw_data, dict) else {}
+            return "\n".join(
+                (
+                    "Task run queued",
+                    "===============",
+                    f"task_id: {data.get('task_id') or selected_id}",
+                    f"run_id: {data.get('run_id') or '-'}",
+                )
+            )
+    elif action == "scheduler-status":
+        if len(parts) > 1:
+            return "Usage: /tasks scheduler-status"
+        result = _execute_focus_task_tool(runtime, "task.scheduler_status", {})
+        if not result.get("ok"):
+            return _task_tool_failure(result)
+        raw_data = result.get("data")
+        return _render_task_scheduler_status(
+            dict(raw_data) if isinstance(raw_data, dict) else {}
+        )
     if selected_id:
         try:
             task = surface.show_task(selected_id)
@@ -327,6 +356,59 @@ def render_tasks_report(runtime: Any, task_id: str = "") -> str:
     except (AttributeError, TypeError, RuntimeError) as exc:
         return _task_failure_text("Task inventory failed", exc)
     return _render_task_inventory(runtime, payload)
+
+
+def _execute_focus_task_tool(
+    runtime: Any,
+    tool_name: str,
+    arguments: dict[str, object],
+) -> dict[str, object]:
+    permission_mode, _ = effective_permission_mode_for_tool(
+        global_mode=str(getattr(runtime, "permission_mode", "default") or "default"),
+        permission_overrides=getattr(runtime, "permission_overrides", {}) or {},
+        tool_name=tool_name,
+    )
+    if permission_mode == "readonly" and is_tool_blocked_by_readonly(tool_name):
+        return {
+            "ok": False,
+            "error": f"Tool {tool_name!r} blocked by readonly permission mode",
+            "data": {"error_code": "PERMISSION_DENIED_READONLY"},
+        }
+    return execute_task_tool(
+        runtime._rt,
+        argparse.Namespace(
+            agent_id=runtime.agent_id,
+            session=runtime.session_id,
+            confirm=False,
+        ),
+        tool_name=tool_name,
+        payload=arguments,
+        owner="tasks",
+    )
+
+
+def _task_tool_failure(result: dict[str, object]) -> str:
+    raw_data = result.get("data")
+    data = dict(raw_data) if isinstance(raw_data, dict) else {}
+    code = str(data.get("error_code") or "").strip()
+    error = str(result.get("error") or "task operation failed")
+    return f"Task action failed: {code + ': ' if code else ''}{error}"
+
+
+def _render_task_scheduler_status(data: dict[str, Any]) -> str:
+    scheduler = dict(data.get("scheduler") or {})
+    control = dict(data.get("scheduler_control") or {})
+    lines = [
+        "Task scheduler",
+        "==============",
+        f"daemon: {scheduler.get('state') or 'unknown'}",
+        f"dispatch: {'paused' if control.get('paused') else 'enabled'}",
+    ]
+    if control.get("reason"):
+        lines.append(f"reason: {control['reason']}")
+    if control.get("updated_at"):
+        lines.append(f"updated_at: {control['updated_at']}")
+    return "\n".join(lines)
 
 
 def _render_task_detail(runtime: Any, task: dict[str, Any]) -> str:

@@ -1154,7 +1154,7 @@ class ReviewRoundTwoFixesTests(unittest.TestCase):
         executor = CronTurnExecutor(
             runtime=_FakeRuntime(),
             cron_store=_FakeStore(),
-            request_builder=lambda payload, agent_id: None,
+            request_builder=lambda payload, agent_id, _memory=None, _watch=None: None,
             timeout_s=10.0,
         )
         resolved = executor._resolve_session_api(agent_id="a1")
@@ -1181,7 +1181,7 @@ class ReviewRoundTwoFixesTests(unittest.TestCase):
         executor = CronTurnExecutor(
             runtime=_FakeRuntime(),
             cron_store=store,
-            request_builder=lambda payload, agent_id: None,
+            request_builder=lambda payload, agent_id, _memory=None, _watch=None: None,
             timeout_s=10.0,
         )
         suppressed = executor._check_idle_tick_user_activity_gate(

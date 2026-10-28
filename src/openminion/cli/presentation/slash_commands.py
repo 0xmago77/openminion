@@ -213,7 +213,8 @@ SLASH_COMMANDS: tuple[SlashCommandMetadata, ...] = (
         "Show or control task inventory",
         (
             "/tasks [task-id]",
-            "/tasks <pause|resume|cancel> <task-id>",
+            "/tasks <pause|resume|cancel|run-now> <task-id>",
+            "/tasks scheduler-status",
         ),
         aliases=("/task",),
     ),
@@ -369,7 +370,7 @@ def slash_command_runs_while_busy(text: str) -> bool:
     command = canonical_slash_command_name(parts[0])
     if command == "/tasks" and len(parts) > 1:
         action = parts[1].split(maxsplit=1)[0].lower()
-        if action in {"pause", "resume", "cancel"}:
+        if action in {"pause", "resume", "cancel", "run-now"}:
             return False
     if command == "/identity" and len(parts) > 1:
         return parts[1].strip().lower() == "verify"

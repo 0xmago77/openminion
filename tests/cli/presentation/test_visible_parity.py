@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from openminion.base.config import ToolSelectionConfig
 from openminion.cli.status.token_usage import TokenUsageSnapshot, format_context_window
 from openminion.cli.presentation.visible_parity import (
     handle_effort_command,
@@ -19,6 +20,8 @@ from openminion.modules.memory.runtime.capture_status import (
     RecallProcessingSummary,
 )
 from openminion.modules.task.runtime.lifecycle import TaskManager
+from openminion.modules.tool.registry import ToolRegistry
+from openminion.tools.task.plugin import register as register_task_tools
 
 
 class _Runtime:
@@ -328,7 +331,10 @@ def test_render_tasks_report_uses_active_agent_and_session_scope() -> None:
     assert "task-1: Scoped task" in render_tasks_report(runtime)
 
 
-def test_render_tasks_report_applies_exact_lifecycle_actions(tmp_path) -> None:
+def test_render_tasks_report_applies_exact_lifecycle_actions(
+    tmp_path,
+    monkeypatch,
+) -> None:
     from openminion.modules.session.storage.repository import (
         create_sqlite_cron_repository,
     )
@@ -352,20 +358,36 @@ def test_render_tasks_report_applies_exact_lifecycle_actions(tmp_path) -> None:
         isolated_session_id="result-session",
     )
     repository.mark_cron_delivery_target(run_id, target="session:origin")
-    runtime = type(
-        "Runtime",
-        (),
-        {
-            "task_manager": manager,
-            "agent_id": "agent-1",
-            "session_id": "session-1",
-            "scheduler_readiness": lambda self: {
-                "state": "ready",
-                "hosted_by": "daemon",
-                "reason": None,
-            },
-        },
-    )()
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class Runtime:
+        _rt = object()
+        task_manager = manager
+        agent_id = "agent-1"
+        session_id = "session-1"
+        permission_mode = "default"
+        permission_overrides = {}
+
+        def scheduler_readiness(self):
+            return {"state": "ready", "hosted_by": "daemon", "reason": None}
+
+    def execute(app, args, *, tool_name, payload, owner):
+        del app, args, owner
+        calls.append((tool_name, payload))
+        if tool_name == "task.pause":
+            manager.pause_task(payload["task_id"])
+        elif tool_name == "task.resume":
+            manager.resume_task(payload["task_id"])
+        elif tool_name == "task.cancel":
+            manager.cancel_task(payload["task_id"])
+        return {"ok": True, "data": {"task_id": payload["task_id"]}}
+
+    monkeypatch.setattr(
+        "openminion.cli.presentation.visible_parity.execute_task_tool",
+        execute,
+    )
+
+    runtime = Runtime()
     paused = render_tasks_report(runtime, f"pause {record.task_id}")
     resumed = render_tasks_report(runtime, f"resume {record.task_id}")
     cancelled = render_tasks_report(runtime, f"cancel {record.task_id}")
@@ -378,6 +400,112 @@ def test_render_tasks_report_applies_exact_lifecycle_actions(tmp_path) -> None:
     assert "delivery_targets: session:origin" in paused
     assert "status: ACTIVE" in resumed
     assert "status: CANCELED" in cancelled
+    assert calls == [
+        ("task.pause", {"task_id": record.task_id}),
+        ("task.resume", {"task_id": record.task_id}),
+        ("task.cancel", {"task_id": record.task_id}),
+    ]
+
+
+def test_render_tasks_report_controls_lifecycle_task_through_registered_tool(
+    tmp_path,
+) -> None:
+    manager = TaskManager.for_lifecycle_db(db_path=tmp_path / "lifecycle.db")
+    manager.create_task(
+        session_id="session-1",
+        mode_name="research",
+        goal="finish the report",
+        agent_id="agent-1",
+        task_id="lifecycle-task",
+    )
+    registry = ToolRegistry()
+    register_task_tools(registry)
+    app = SimpleNamespace(
+        config=SimpleNamespace(
+            agents={"agent-1": object()},
+            default_agent="agent-1",
+            runtime=SimpleNamespace(
+                env={}, tools=None, tool_selection=ToolSelectionConfig()
+            ),
+        ),
+        tools=registry,
+        task_manager=manager,
+        scheduler_readiness=lambda: {"state": "ready"},
+    )
+    runtime = SimpleNamespace(
+        _rt=app,
+        task_manager=manager,
+        agent_id="agent-1",
+        session_id="session-1",
+        permission_mode="default",
+        permission_overrides={},
+    )
+
+    assert "status: WAITING" in render_tasks_report(runtime, "pause lifecycle-task")
+    assert "status: ACTIVE" in render_tasks_report(runtime, "resume lifecycle-task")
+    assert "status: CANCELED" in render_tasks_report(runtime, "cancel lifecycle-task")
+
+
+def test_render_tasks_report_dispatches_run_now_and_scheduler_status(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class Runtime:
+        _rt = object()
+        task_manager = object()
+        agent_id = "agent-1"
+        session_id = "session-1"
+        permission_mode = "default"
+        permission_overrides = {}
+
+    def execute(app, args, *, tool_name, payload, owner):
+        del app, args, owner
+        calls.append((tool_name, payload))
+        if tool_name == "task.run_now":
+            return {
+                "ok": True,
+                "data": {"task_id": "task-1", "run_id": "run-1"},
+            }
+        return {
+            "ok": True,
+            "data": {
+                "scheduler": {"state": "ready"},
+                "scheduler_control": {"paused": True, "reason": "maintenance"},
+            },
+        }
+
+    monkeypatch.setattr(
+        "openminion.cli.presentation.visible_parity.execute_task_tool",
+        execute,
+    )
+
+    runtime = Runtime()
+
+    assert "run-1" in render_tasks_report(runtime, "run-now task-1")
+    status = render_tasks_report(runtime, "scheduler-status")
+
+    assert "paused" in status
+    assert "maintenance" in status
+    assert calls == [
+        ("task.run_now", {"task_id": "task-1"}),
+        ("task.scheduler_status", {}),
+    ]
+
+
+def test_render_tasks_report_surfaces_readonly_tool_denial() -> None:
+    class Runtime:
+        _rt = object()
+        task_manager = object()
+        agent_id = "agent-1"
+        session_id = "session-1"
+        permission_mode = "readonly"
+        permission_overrides = {}
+
+    body = render_tasks_report(Runtime(), "pause task-1")
+
+    assert "PERMISSION_DENIED_READONLY" in body
+    assert "readonly permission mode" in body
 
 
 def test_render_tasks_report_prioritizes_paused_scheduler_state(tmp_path) -> None:
