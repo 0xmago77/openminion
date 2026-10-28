@@ -1,7 +1,7 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-26
+Last updated: 2026-10-27
 
 This file tracks package-facing release notes for `openminion`.
 
@@ -23,6 +23,12 @@ This file tracks package-facing release notes for `openminion`.
   runtime turn writes after the upgrade can lack both. The working state
   lives in the brain's session store, not in the runtime database
   (`docs/runtime-database-upgrades.md`, Refs #452, #419).
+
+## Current package line - 2026-10-27
+
+- Accept the canonical `time.now` tool's `utc` timestamp as exact-date
+  evidence. Current-date answers that successfully called the time tool no
+  longer fail the freshness verifier after receiving a grounded timestamp.
 - Close what a runtime memory assembly build obtained when the build fails
   partway. The artifact store, and the memory store with its audit sink for
   the built-in backend, are closed once each through their current owner,
@@ -43,6 +49,12 @@ This file tracks package-facing release notes for `openminion`.
   SDK `Agent.run` call with an aliased argument, top-level or nested, is
   still rejected before the handler runs, as it is without this change. That
   runtime alias bug is tracked in #454 (Refs #435).
+- Make `python -m openminion.modules.storage` exit with the status that
+  storagectl's `main()` returns, as `python -m openminion.modules.storage.cli`
+  already does. A command that prints `"ok": false` and returns 2, such as
+  `pool-stats` without a PostgreSQL URL, now exits 2 instead of 0. The
+  printed output is unchanged, and a command that raises still exits 1
+  (Refs #450, #412).
 
 ## Current package line - 2026-10-26 update
 
