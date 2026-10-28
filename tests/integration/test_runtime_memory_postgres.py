@@ -28,6 +28,7 @@ from openminion.modules.memory.backends.external import (
     register_reference_sqlite_backend,
 )
 from openminion.modules.memory.config import from_base_config
+from openminion.modules.memory.errors import StoreWriteError
 from openminion.modules.memory.models import MemoryRecord
 from openminion.modules.memory.storage import AuditedMemoryStore
 from openminion.modules.memory.storage.postgres.store import PostgresMemoryStore
@@ -403,3 +404,94 @@ def test_failed_memory_assembly_build_disposes_its_postgres_engine_once(
     assert [type(store) for store in stores] == [PostgresMemoryStore]
     assert disposals_after_failure == 1
     assert open_after_failure == 0
+
+
+def test_capture_recovery_on_the_postgres_memory_store_extracts_and_commits_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    memory_database: tuple[str, Callable[[], int]],
+) -> None:
+    """The PostgreSQL store commits capture bundles, so recovery is unchanged (#449).
+
+    The turn's own bundle write fails once, which leaves its intent pending.
+    Recovery then asks the store, extracts once and commits the bundle to
+    PostgreSQL; a second pass finds nothing pending.
+    """
+    memory_url, _server_connections = memory_database
+    runtime = _postgres_memory_runtime(tmp_path / "root", memory_url)
+    extractions: list[str] = []
+
+    def extract(
+        _sessions: object, _session_id: str, root_turn_id: str, user_message: str
+    ) -> list[dict[str, object]]:
+        extractions.append(root_turn_id)
+        return [
+            {
+                "kind": "user_preference",
+                "normalized_key": "user_preference:indentation",
+                "title": "Indentation",
+                "content": user_message,
+                "tags": [],
+                "confidence": 0.7,
+            }
+        ]
+
+    def failing_write(**_kwargs: object) -> dict[str, object]:
+        raise StoreWriteError("memory store write failed")
+
+    try:
+        with monkeypatch.context() as patch:
+            memctl = runtime.resolve_memory_assembly("openminion").memctl
+            patch.setattr(memctl, "apply_capture_bundle", failing_write)
+            with Agent(runtime=runtime) as agent:
+                turn = agent.run("remember that I prefer tabs", session_id="capture")
+        sessions = runtime.sessions
+        [outcome] = [
+            event
+            for event in sessions.list_events(session_id="capture", limit=100)
+            if event.event_type == "turn.outcome"
+        ]
+        agent_id = str(outcome.payload["agent_id"])
+        assembly = runtime.resolve_memory_assembly(agent_id)
+        supported = assembly.memctl.supports_capture_bundles()
+        recoveries = [
+            assembly.recover_pending_captures(
+                sessions=sessions,
+                agent_id=agent_id,
+                extract_candidates=extract,
+                authorize=lambda *_: True,
+            )
+            for _run in range(2)
+        ]
+        results = [
+            event
+            for event in sessions.list_events(session_id="capture", limit=100)
+            if event.event_type == "memory.capture.result"
+        ]
+        engine = sa.create_engine(memory_url, future=True)
+        try:
+            with engine.connect() as conn:
+                receipts = (
+                    conn.execute(
+                        sa.text("SELECT capture_id FROM memory_capture_bundle_receipts")
+                    )
+                    .scalars()
+                    .all()
+                )
+        finally:
+            engine.dispose()
+    finally:
+        runtime.close()
+
+    assert turn.run_state == "completed"
+    assert outcome.payload["capture_state"] == "pending"
+    assert supported is True
+    assert [(r.scanned, r.recovered, r.pending) for r in recoveries] == [
+        (1, 1, 0),
+        (0, 0, 0),
+    ]
+    assert extractions == [outcome.payload["root_turn_id"]]
+    assert [event.payload["capture_id"] for event in results] == [
+        outcome.payload["capture_id"]
+    ]
+    assert receipts == [outcome.payload["capture_id"]]
