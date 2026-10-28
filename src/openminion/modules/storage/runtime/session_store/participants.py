@@ -76,18 +76,8 @@ class RuntimeSessionStoreParticipants:
             channel=normalized_channel,
             role=normalized_role,
             display_name=(display_name or "").strip(),
+            activate_agent=normalized_type == "agent",
         )
-        refreshed = self._get_session(session_id)
-        if (
-            normalized_type == "agent"
-            and refreshed is not None
-            and not (refreshed.active_agent_id or "").strip()
-        ):
-            now = utc_now_iso()
-            self._backend.execute_count(
-                "UPDATE sessions SET active_agent_id = ?, updated_at = ? WHERE id = ?",
-                (normalized_id, now, session_id),
-            )
         participant = self.get_participant(
             session_id=session_id,
             participant_type=normalized_type,
@@ -285,7 +275,17 @@ class RuntimeSessionStoreParticipants:
         channel: str,
         role: str,
         display_name: str,
+        activate_agent: bool = False,
     ) -> None:
+        """Write the participant row in its own transaction.
+
+        With `activate_agent`, the participant also becomes the session's
+        active agent when the session has none, read and written under the
+        session-row lock in that transaction. A concurrent join, selection or
+        leave in the session then waits for this commit, and a join does not
+        replace an active agent another connection stored in the meantime.
+        The legacy owner records are written without it and activate nobody.
+        """
         now = utc_now_iso()
         participant_row_id = uuid4().hex
         with self._backend.transaction():
@@ -340,3 +340,10 @@ class RuntimeSessionStoreParticipants:
                     session_id,
                 ),
             )
+            if activate_agent:
+                session = self._get_session(session_id)
+                if session is not None and not (session.active_agent_id or "").strip():
+                    self._backend.execute_count(
+                        "UPDATE sessions SET active_agent_id = ?, updated_at = ? WHERE id = ?",
+                        (participant_id, now, session_id),
+                    )
