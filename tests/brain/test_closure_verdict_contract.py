@@ -162,6 +162,22 @@ def test_closure_submit_output_schema_requires_verdict_fields() -> None:
     assert {"satisfied", "next_action"} <= set(
         submit_output.input_schema.get("required", [])
     )
+    assert not {"plan_reconciliation", "verification", "review"} & set(
+        submit_output.input_schema["properties"]
+    )
+    assert (
+        _extract_structured_output(
+            _submit_output_response(
+                {
+                    "satisfied": True,
+                    "next_action": "close",
+                    "plan_reconciliation": {"unreconciled_step_ids": "invalid"},
+                }
+            ),
+            ClosureJudgment,
+        )
+        is None
+    )
 
 
 def test_closure_final_answer_only_reply_does_not_replace_grounded_answer() -> None:
@@ -192,3 +208,8 @@ def test_closure_complete_close_verdict_keeps_model_final_answer() -> None:
     assert judgment.satisfied is True
     assert judgment.next_action == "close"
     assert judgment.final_answer == _GROUNDED_ANSWER
+    payload = judgment.model_dump(mode="json")
+    assert payload["plan_reconciliation"]["state"] == "complete"
+    assert payload["verification"]["signal"] == "unavailable"
+    assert payload["review"]["severity"] == "unavailable"
+    assert ClosureJudgment.model_validate(payload) == judgment

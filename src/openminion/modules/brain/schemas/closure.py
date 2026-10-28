@@ -1,6 +1,7 @@
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
 
 from .state.action import MemoryUseRef
 
@@ -59,14 +60,6 @@ class ClosureJudgment(BaseModel):
     memory_use_refs: list[MemoryUseRef] = Field(default_factory=list)
     mutation_claimed: bool = False
     post_completion_critique: PostCompletionCritique | None = None
-    plan_reconciliation: PlanReconciliationFact | None = Field(
-        default=None, description="Runtime-derived plan facts; omit from model output."
-    )
-    verification: VerificationFact | None = Field(
-        default=None,
-        description="Runtime-derived verifier facts; omit from model output.",
-    )
-    review: ReviewFact | None = Field(
-        default=None,
-        description="Runtime-derived review facts; omit from model output.",
-    )
+    plan_reconciliation: SkipJsonSchema[PlanReconciliationFact | None] = None
+    verification: SkipJsonSchema[VerificationFact | None] = None
+    review: SkipJsonSchema[ReviewFact | None] = None
