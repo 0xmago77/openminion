@@ -27,6 +27,13 @@ This file tracks package-facing release notes for `openminion`.
   SDK `Agent.run` call with an aliased argument, top-level or nested, is
   still rejected before the handler runs, as it is without this change. That
   runtime alias bug is tracked in #454 (Refs #435).
+- Report the migration error in `openminion storage migrate` entries. When a
+  module's `MigrationReport` failed, its entry had status `error` but no
+  message, and the text output printed only `FAIL <module>`. The entry now
+  carries the report's `error`, and the text line prints it after the module
+  id. The `applied` list is left out: it read a field that `MigrationReport`
+  does not have, so it was always empty. Exit status is unchanged (Refs
+  #446).
 
 ## Current package line - 2026-10-26 update
 
