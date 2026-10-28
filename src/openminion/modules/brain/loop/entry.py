@@ -350,6 +350,7 @@ def build_entry_tool_specs(
     act_profile: str,
     execution_target_kind: str,
     include_control_tools: bool = True,
+    metadata: dict[str, Any] | None = None,
 ) -> tuple[list[ToolSpec], bool]:
     normalized_profile = str(act_profile or "").strip().lower()
     normalized_target = str(execution_target_kind or "").strip().lower()
@@ -361,6 +362,7 @@ def build_entry_tool_specs(
         runner,
         act_profile=normalized_profile,
         execution_target_kind=normalized_target,
+        metadata=metadata,
     )
     tool_specs: list[ToolSpec] = []
     if requestable_specs:
@@ -389,6 +391,7 @@ def build_entry_requestable_tool_specs(
     *,
     act_profile: str,
     execution_target_kind: str,
+    metadata: dict[str, Any] | None = None,
 ) -> list[ToolSpec]:
     if not entry_supports_seed_response(
         act_profile=act_profile,
@@ -401,5 +404,34 @@ def build_entry_requestable_tool_specs(
         else ACT_ADAPTIVE_ALLOWED_TOOLS
     )
     if runner is not None:
-        allowed_tools = frozenset({*allowed_tools, *collect_runtime_tool_names(runner)})
-    return build_runtime_tool_specs(runner, allowed_tools=allowed_tools)
+        allowed_tools = frozenset(
+            {*allowed_tools, *collect_runtime_tool_names(runner, metadata=metadata)}
+        )
+    return build_runtime_tool_specs(
+        runner, allowed_tools=allowed_tools, metadata=metadata
+    )
+
+
+def _with_forced_runtime_tool_specs(
+    runner: Any,
+    tool_specs: list[Any],
+    forced_tools: list[str] | None,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> list[Any]:
+    forced = {str(name or "").strip() for name in list(forced_tools or [])}
+    forced.discard("")
+    if not forced:
+        return tool_specs
+    existing = {
+        str(getattr(spec, "name", "") or "").strip()
+        for spec in tool_specs
+        if str(getattr(spec, "name", "") or "").strip()
+    }
+    missing = forced - existing
+    if not missing:
+        return tool_specs
+    dynamic_specs = build_runtime_tool_specs(
+        runner, allowed_tools=frozenset(missing), metadata=metadata
+    )
+    return [*tool_specs, *dynamic_specs]

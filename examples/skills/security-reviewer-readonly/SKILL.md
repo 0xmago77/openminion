@@ -65,7 +65,10 @@ reports. Stop before remediation; acceptance alone does not authorize a repair.
    `resolved` only with affirmative evidence; `residual` cites current findings
    and next steps; `not_reproduced` gives the unresolved limitation and next steps.
    Use JSON arrays for `closure_reviews`, `new_finding_reviews`, and
-   `current_finding_ids`, including `[]` when an optional list is empty.
+   `current_finding_ids`, never strings or `item` wrappers. Omit
+   `new_finding_reviews` when there are no unmatched candidates. For `resolved`,
+   omit both `current_finding_ids` and `next_step_guidance`; only `residual`
+   requires current IDs, and both nonresolved outcomes require next steps.
 
 # Checks
 

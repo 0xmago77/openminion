@@ -31,6 +31,7 @@ def _handler(
     scanner: Scanner,
     *,
     requires_semgrep_config: bool = False,
+    check: str = "code",
 ):
     def handler(args: dict[str, Any], ctx: Any) -> dict[str, Any]:
         parsed = args_model.model_validate(args)
@@ -43,7 +44,13 @@ def _handler(
             config=config,
             requires_semgrep_config=requires_semgrep_config,
         )
-        result = scanner(parsed, target=target, config=config)
+        from .trusted_source import scheduled_scan
+
+        result = scheduled_scan(
+            parsed, ctx=ctx, target=target, config=config, check=check
+        )
+        if result is None:
+            result = scanner(parsed, target=target, config=config)
         if target_revision:
             result.target_revision = target_revision
             result.permission_mode = "readonly"
@@ -184,9 +191,9 @@ def _local_semgrep_config(config: SecurityConfig) -> str:
 
 
 _h_scan_code = _handler(LocalScanArgs, scan_code, requires_semgrep_config=True)
-_h_scan_dependencies = _handler(LocalScanArgs, scan_dependencies)
-_h_scan_artifact = _handler(LocalScanArgs, scan_artifact)
-_h_scan_secrets = _handler(LocalScanArgs, scan_secrets)
+_h_scan_dependencies = _handler(LocalScanArgs, scan_dependencies, check="dependencies")
+_h_scan_artifact = _handler(LocalScanArgs, scan_artifact, check="iac")
+_h_scan_secrets = _handler(LocalScanArgs, scan_secrets, check="secrets")
 
 
 def _h_publish_report(args: dict[str, Any], ctx: Any) -> dict[str, Any]:

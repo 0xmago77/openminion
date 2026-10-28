@@ -1,4 +1,5 @@
 import re
+import hashlib
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -37,6 +38,8 @@ _RESULT_STATUSES = frozenset(
         "partial",
         "timed_out",
         "unavailable",
+        "comparable",
+        "not_comparable",
     }
 )
 _CANONICAL_ARTIFACT_REF = re.compile(r"^artifact://sha256/[0-9a-f]{64}$")
@@ -118,6 +121,53 @@ def structural_result_fields(data: Mapping[str, Any]) -> dict[str, Any]:
         value = data.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             fields[key] = value
+    for key in (
+        "input_sha256",
+        "target_lineage_sha256",
+        "config_sha256",
+        "database_sha256",
+    ):
+        value = data.get(key)
+        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value):
+            fields[key] = value
+    for key, allowed in (
+        ("target_kind", {"source", "source_snapshot", "container_archive"}),
+        ("scan_mode", {"code", "vuln", "misconfig", "secret"}),
+        ("isolation_mode", {"offline_docker"}),
+    ):
+        value = data.get(key)
+        if isinstance(value, str) and value in allowed:
+            fields[key] = value
+    if isinstance(data.get("cleanup_completed"), bool):
+        fields["cleanup_completed"] = data["cleanup_completed"]
+    target = data.get("target_identity")
+    if isinstance(target, Mapping):
+        digest = target.get("content_sha256")
+        if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
+            fields["input_sha256"] = digest
+        if target.get("kind") in {"source", "source_snapshot", "container_archive"}:
+            fields["target_kind"] = target["kind"]
+        lineage = target.get("target_id")
+        if isinstance(lineage, str):
+            fields["target_lineage_sha256"] = hashlib.sha256(
+                lineage.encode()
+            ).hexdigest()
+    configuration = data.get("configuration_identity")
+    if isinstance(configuration, Mapping):
+        for key in ("config_sha256", "database_sha256"):
+            value = configuration.get(key)
+            if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value):
+                fields[key] = value
+        if configuration.get("scan_mode") in {"code", "vuln", "misconfig", "secret"}:
+            fields["scan_mode"] = configuration["scan_mode"]
+    provenance = data.get("provenance")
+    if isinstance(provenance, Mapping):
+        if provenance.get("isolation_mode") == "offline_docker":
+            fields["isolation_mode"] = "offline_docker"
+        if isinstance(provenance.get("cleanup_completed"), bool):
+            fields["cleanup_completed"] = provenance["cleanup_completed"]
+    if isinstance(data.get("truncated"), bool):
+        fields["truncated"] = data["truncated"]
     refs = data.get("artifact_refs")
     if isinstance(refs, list):
         artifact_refs = [

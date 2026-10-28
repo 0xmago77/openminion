@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from openminion.modules.artifact import content as artifact_content
 from openminion.modules.artifact import control as artifact_control
 from openminion.modules.artifact.control import ArtifactCtl
 from openminion.modules.retrieve.runtime.retrieve import RetrieveCtl
@@ -130,13 +131,13 @@ def test_retrieval_extraction_is_bounded_and_multibyte_safe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     decoded_sizes: list[int] = []
-    decode_text = artifact_control._decode_text
+    decode_text = artifact_content._decode_text
 
     def _recording_decode(data: bytes):
         decoded_sizes.append(len(data))
         return decode_text(data)
 
-    monkeypatch.setattr(artifact_control, "_decode_text", _recording_decode)
+    monkeypatch.setattr(artifact_content, "_decode_text", _recording_decode)
     retrieve_ctl = Mock()
     content = ("🙂" * 20_005).encode()
 

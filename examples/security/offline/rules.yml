@@ -1,0 +1,11 @@
+rules:
+  - id: python-eval
+    languages: [python]
+    message: Evaluate input only after an independent security review.
+    severity: ERROR
+    pattern: eval($X)
+  - id: javascript-eval
+    languages: [javascript]
+    message: Evaluate input only after an independent security review.
+    severity: ERROR
+    pattern: eval($X)

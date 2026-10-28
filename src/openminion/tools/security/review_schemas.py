@@ -75,10 +75,19 @@ class SecurityClosureDecision(BaseModel):
     finding_id: str = Field(pattern=_FINDING_ID_PATTERN)
     outcome: Literal["resolved", "residual", "not_reproduced"]
     current_finding_ids: list[Annotated[str, Field(pattern=_FINDING_ID_PATTERN)]] = (
-        Field(default_factory=list, max_length=200)
+        Field(
+            default_factory=list,
+            max_length=200,
+            description="Nonempty JSON array required only for residual outcomes; omit for resolved or not_reproduced.",
+        )
     )
     rationale: str = Field(min_length=1, max_length=3000)
-    next_step_guidance: str | None = Field(default=None, min_length=1, max_length=3000)
+    next_step_guidance: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=3000,
+        description="Required for residual or not_reproduced outcomes; omit for resolved.",
+    )
 
     @model_validator(mode="after")
     def _closure_fields(self) -> "SecurityClosureDecision":
@@ -107,9 +116,15 @@ class SecurityFollowUpReviewArgs(BaseModel):
     review_kind: Literal["follow_up"]
     prior_review_ref: str = Field(pattern=_CANONICAL_REF_PATTERN)
     rescan_report_ref: str = Field(pattern=_CANONICAL_REF_PATTERN)
-    closure_reviews: list[SecurityClosureDecision] = Field(min_length=1, max_length=200)
+    closure_reviews: list[SecurityClosureDecision] = Field(
+        min_length=1,
+        max_length=200,
+        description="JSON array with exactly one object per finding marked accepted in prior_review_ref. Copy each prior accepted finding_id exactly once; no duplicate or extra IDs. These are prior finding IDs, not current rescan candidate IDs.",
+    )
     new_finding_reviews: list[SecurityFindingDecision] = Field(
-        default_factory=list, max_length=200
+        default_factory=list,
+        max_length=200,
+        description="JSON array of decisions for unmatched current candidates; omit when there are none.",
     )
     summary: str = Field(min_length=1, max_length=4000)
     limitations: str = Field(default="", max_length=4000)

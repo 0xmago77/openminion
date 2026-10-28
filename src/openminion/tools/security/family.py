@@ -5,6 +5,13 @@ from openminion.modules.tool.framework import ToolDecl, ToolFamilySpec
 
 from .interfaces import (
     READONLY_SECURITY_TOOLS,
+    OFFLINE_SECURITY_TOOLS,
+    DERIVED_SECURITY_TOOLS,
+    TOOL_SECURITY_EVALUATE_AWS_SNAPSHOT,
+    TOOL_SECURITY_EXPORT_SARIF,
+    TOOL_SECURITY_COMPARE_SCANS,
+    TOOL_SECURITY_SCAN_SNAPSHOT,
+    TOOL_SECURITY_SCAN_IMAGE,
     TOOL_SECURITY_REVIEW_REPORT,
     TOOL_SECURITY_PUBLISH_REPORT,
     TOOL_SECURITY_SCAN_ARTIFACT,
@@ -21,8 +28,21 @@ from .plugin import (
     _h_publish_report,
     _h_review_report,
 )
-from .schemas import LocalScanArgs, SecurityReportPublishArgs
+from .archive_schemas import ArchiveScanArgs, SnapshotScanArgs
+from .schemas import (
+    LocalScanArgs,
+    SecurityReportPublishArgs,
+)
+from .offline import scan_image_handler, scan_snapshot_handler
 from .review_schemas import SecurityReviewArgs
+
+from .aws_snapshot import AwsSnapshotArgs, evaluate_snapshot_handler
+from .derived import (
+    ExportSarifArgs,
+    CompareScansArgs,
+    export_sarif_handler,
+    compare_scans_handler,
+)
 
 SECURITY_FAMILY = ToolFamilySpec(
     module_id="security",
@@ -30,6 +50,25 @@ SECURITY_FAMILY = ToolFamilySpec(
     common_tags=("plugin", "security", "read_only"),
     common_capabilities=("read_only", "security", "evidence"),
     exposure_profiles=(
+        ToolExposureProfile(
+            profile_id="security_reporting",
+            title="Security evidence",
+            summary="Offline AWS snapshots, SARIF export and exact scan comparison.",
+            tool_names=frozenset(DERIVED_SECURITY_TOOLS),
+            evidence_expectations=("preserve source references and completeness",),
+            stop_rules=("do not infer resolution from absence",),
+        ),
+        ToolExposureProfile(
+            profile_id="security_offline",
+            title="Isolated security scanning",
+            summary="Offline scans of approved source and image archives.",
+            tool_names=frozenset(OFFLINE_SECURITY_TOOLS),
+            evidence_expectations=(
+                "return immutable scanner evidence and isolation facts",
+            ),
+            stop_rules=("stop if offline isolation is unavailable",),
+            activation_hint="Configure a pinned local worker and approved archive targets.",
+        ),
         ToolExposureProfile(
             profile_id="security_review",
             title="Independent security review",
@@ -67,6 +106,41 @@ SECURITY_FAMILY = ToolFamilySpec(
         ),
     ),
     tools=(
+        ToolDecl(
+            TOOL_SECURITY_EVALUATE_AWS_SNAPSHOT,
+            AwsSnapshotArgs,
+            evaluate_snapshot_handler,
+            "Evaluate two AWS controls from supplied offline snapshot facts.",
+            idempotent=True,
+        ),
+        ToolDecl(
+            TOOL_SECURITY_EXPORT_SARIF,
+            ExportSarifArgs,
+            export_sarif_handler,
+            "Export canonical source scan evidence as SARIF 2.1.0.",
+            idempotent=True,
+        ),
+        ToolDecl(
+            TOOL_SECURITY_COMPARE_SCANS,
+            CompareScansArgs,
+            compare_scans_handler,
+            "Compare exact IDs from compatible complete scans without claiming resolution.",
+            idempotent=True,
+        ),
+        ToolDecl(
+            TOOL_SECURITY_SCAN_SNAPSHOT,
+            SnapshotScanArgs,
+            scan_snapshot_handler,
+            "Scan an approved source tar inside an offline worker.",
+            idempotent=True,
+        ),
+        ToolDecl(
+            TOOL_SECURITY_SCAN_IMAGE,
+            ArchiveScanArgs,
+            scan_image_handler,
+            "Scan one approved Docker-save image archive offline.",
+            idempotent=True,
+        ),
         ToolDecl(
             TOOL_SECURITY_REVIEW_REPORT,
             SecurityReviewArgs,

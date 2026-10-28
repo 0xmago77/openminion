@@ -91,7 +91,7 @@ def _required_inputs() -> tuple[str, str, str, str]:
         "A reachable local Unix Docker socket is required: " + socket
     )
     for image in (target_image, worker_image):
-        assert re.fullmatch(r"\S+@sha256:[0-9a-f]{64}", image), (
+        assert re.fullmatch(r"(?:\S+@)?sha256:[0-9a-f]{64}", image), (
             "Supply an already-local digest-pinned image: " + image
         )
     docker = shutil.which("docker")
@@ -99,7 +99,9 @@ def _required_inputs() -> tuple[str, str, str, str]:
     return docker, socket, target_image, worker_image
 
 
-def _create_target(lab: LocalLab, image: str, name: str, network: str) -> str:
+def _create_target(
+    lab: LocalLab, image: str, name: str, network: str, script: str = TARGET_SCRIPT
+) -> str:
     container_id = lab.docker(
         "create",
         "--name",
@@ -122,7 +124,7 @@ def _create_target(lab: LocalLab, image: str, name: str, network: str) -> str:
         "-B",
         "-u",
         "-c",
-        TARGET_SCRIPT,
+        script,
     ).stdout.strip()
     return container_id
 
@@ -141,7 +143,7 @@ def _wait_ready(lab: LocalLab, container_id: str) -> None:
 
 
 @contextmanager
-def local_lab(tmp_path: Path):
+def local_lab(tmp_path: Path, *, target_script: str = TARGET_SCRIPT):
     if os.environ.get("OPENMINION_TEST_DOCKER_SECURITY_LAB") != "1":
         pytest.skip(
             "Set OPENMINION_TEST_DOCKER_SECURITY_LAB=1 for real local Docker proof"
@@ -173,13 +175,13 @@ def local_lab(tmp_path: Path):
         ), "The real resource-boundary probes require Docker cgroup v2"
         for image in (target_image, worker_image):
             metadata = lab.inspect("image", image)
-            assert image.rpartition("@")[2] in {
+            assert image == metadata["Id"] or image.rpartition("@")[2] in {
                 value.rpartition("@")[2] for value in metadata["RepoDigests"]
             }
             assert not metadata["Config"].get("Volumes"), (
                 "Images must not declare volumes"
             )
-        lab.target_id = _create_target(lab, target_image, name, "none")
+        lab.target_id = _create_target(lab, target_image, name, "none", target_script)
         _wait_ready(lab, lab.target_id)
         lab.peer_id = _create_target(lab, target_image, name + "-peer", "bridge")
         _wait_ready(lab, lab.peer_id)

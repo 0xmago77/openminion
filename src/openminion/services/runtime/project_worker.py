@@ -32,6 +32,7 @@ from openminion.modules.task import (
 )
 from openminion.modules.task.autonomy import now_ms
 from openminion.modules.task.constants import DEFAULT_INTEGRATED_SQLITE_SUBPATH
+from openminion.modules.task.scheduling import CronError
 from openminion.modules.task.project import (
     AutonomyLoopConditionKind,
     ProjectDomainVerificationStatus,
@@ -341,7 +342,7 @@ class ProjectWorker:
                 project_tool_calls_remaining=project_tool_calls_remaining,
                 cycle_limit=cycle_limit,
             )
-        except (OSError, RuntimeError, ValueError) as exc:
+        except (CronError, OSError, RuntimeError, ValueError) as exc:
             project_progress.record_project_cycle_interruption_if_current(
                 task_manager=self._task_manager,
                 autonomy_store=self._autonomy_store,

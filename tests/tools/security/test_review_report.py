@@ -320,6 +320,7 @@ def test_new_actionable_findings_prevent_aggregate_resolution(
         "unknown_match",
         "missing_new",
         "duplicate_closure",
+        "extra_closure",
     ],
 )
 def test_followup_admission_and_identity_negatives(audit_context, kind):
@@ -347,8 +348,38 @@ def test_followup_admission_and_identity_negatives(audit_context, kind):
         )
     if kind == "duplicate_closure":
         args["closure_reviews"] *= 2
-    with pytest.raises(ToolRuntimeError):
+    if kind == "extra_closure":
+        args["closure_reviews"].append(
+            {**args["closure_reviews"][0], "finding_id": "EXTRA"}
+        )
+    before = list(reviewer.artifacts)
+    with pytest.raises(ToolRuntimeError) as failure:
         _h_review_report(args, reviewer)
+    assert reviewer.artifacts == before
+    if kind in {"duplicate_closure", "extra_closure", "missing_new"}:
+        expected = ["NEW"] if kind == "missing_new" else ["F-1"]
+        received = {
+            "duplicate_closure": ["F-1", "F-1"],
+            "extra_closure": ["F-1", "EXTRA"],
+            "missing_new": [],
+        }[kind]
+        feedback = action_result_to_tool_message(
+            "review-failure",
+            "security.review_report",
+            ActionResult(
+                command_id="review-failure",
+                status="failed",
+                error=ActionError(
+                    code=failure.value.code,
+                    message=failure.value.message,
+                    details=failure.value.details,
+                ),
+            ),
+        )
+        assert json.loads(feedback.content)["error"]["details"] == {
+            "expected_finding_ids": expected,
+            "received_finding_ids": received,
+        }
 
 
 @pytest.mark.parametrize(

@@ -14,6 +14,8 @@ from pydantic import (
     model_validator,
 )
 
+from .archive_schemas import ScanTargetIdentity, ScanProvenance
+
 ScanStatus = Literal[
     "completed",
     "partial",
@@ -47,6 +49,7 @@ class SecurityConfigurationIdentity(BaseModel):
     scan_mode: Literal["code", "vuln", "misconfig", "secret"]
     config_sha256: str = Field(default="", pattern=r"^$|^[0-9a-f]{64}$")
     fixed_flags: list[str] = Field(default_factory=list)
+    database_sha256: str = Field(default="", pattern=r"^$|^[0-9a-f]{64}$")
 
 
 class FindingLocation(BaseModel):
@@ -92,6 +95,8 @@ class SecurityScanResult(BaseModel):
     adapter_id: Literal["semgrep", "trivy"]
     scanner: Literal["semgrep", "trivy"]
     scanner_version: str = ""
+    target_identity: ScanTargetIdentity | None = None
+    provenance: ScanProvenance | None = None
     target: str
     target_revision: str = ""
     permission_mode: str = ""

@@ -558,3 +558,41 @@ def test_scheduler_defaults_isolated_session_id_for_agent_turn() -> None:
     run = next(iter(store.runs.values()))
     assert run["state"] == "finished"
     assert run["isolated_session_id"] == f"cron:job-iso-default:{run['run_id']}"
+
+
+def test_failed_run_preserves_evidence_without_delivery():
+    store = FakeCronStore()
+    store.add_job(
+        job_id="security",
+        payload={"kind": "agentTurn"},
+        delivery={"mode": "announce", "to": "cli:ops"},
+    )
+    store.seed_due("security")
+    evidence = {
+        "security_scan": {
+            "status": "failed",
+            "report_ref": "artifact://sha256/" + "a" * 64,
+        }
+    }
+    deliveries = []
+    scheduler = CronScheduler(
+        store=store,
+        daemon_id="fixture",
+        tick_seconds=0.05,
+        lease_ttl_seconds=2,
+        execute_agent_turn=lambda job, run: {
+            "summary": "failed audit",
+            "error": True,
+            "output": evidence,
+        },
+        delivery_handler=lambda *args: deliveries.append(args),
+    )
+    scheduler.start()
+    try:
+        assert store.finished.wait(timeout=3)
+    finally:
+        scheduler.shutdown(grace_s=1)
+    run = next(iter(store.runs.values()))
+    assert run["state"] == "failed"
+    assert run["output"] == evidence
+    assert deliveries == []

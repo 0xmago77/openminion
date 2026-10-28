@@ -21,6 +21,7 @@ from openminion.tools.task.constants import (
 )
 
 _TRUSTED_TASK_METADATA_KEYS = WATCH_EPHEMERAL_METADATA_KEYS | {
+    "security_scan_context",
     "memory_consolidation_job",
     "memory_consolidation_target_scope",
     "memory_consolidation_batch_limit",

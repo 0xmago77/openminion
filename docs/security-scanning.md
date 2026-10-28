@@ -135,17 +135,16 @@ operator-controlled scanner configuration; approved roots are not a sandbox
 for hostile repositories. The output cap limits returned results after
 collection, not peak scanner or host memory usage.
 
-The local MVP does not:
+The ordinary host scanner profile does not add the isolated capabilities below.
+OpenMinion still does not:
 
 - install scanners or download rule/vulnerability databases,
-- pull or scan container images,
+- pull images during assessment,
 - use hosted scanner APIs or registry credentials,
-- schedule scans,
 - scan remote hosts,
-- create SARIF or baselines,
 - change code, dependencies, policies, or suppressions.
 
-Those capabilities require separately reviewed configuration, policy, and E2E
+External capabilities require separately reviewed configuration, policy, and live
 proof. Roll back the local surface by deactivating `security_readonly` or
 removing the scanner configuration. Roll back the researcher example by also
 removing its profile binding and restoring the previously admitted skill
@@ -274,3 +273,102 @@ The lab harnesses never start Docker, pull/build images, or reuse an existing
 target. They remove only their fixture resources. Missing prerequisites fail
 an explicitly opted-in test; opt-out skips and provider-free checks do not
 establish live proof.
+
+
+## Isolated archive and offline snapshot assessment
+
+Use the optional `security-researcher-offline` identity and skill with
+`security_offline` and `security_reporting` activated in readonly mode.
+[Prepare the worker and inputs](../examples/security/offline/README.md) before
+starting. Existing host scan calls retain their original trusted-source meaning.
+
+- `security.scan_snapshot` accepts an approved target ID, plain source tar,
+  expected SHA256 and one check: code, dependencies, IaC or secrets.
+- `security.scan_image` accepts one Docker-save image archive. It inspects package
+  inventory without starting the assessed image or pulling from a registry.
+- `security.evaluate_aws_snapshot` evaluates supplied offline facts for public
+  administrative ingress and unencrypted EBS volumes. Missing resources,
+  collection errors or remaining pages produce partial coverage.
+- `security.export_sarif` exports canonical scan or source-report evidence as
+  SARIF 2.1.0. Candidate/rejected interpretation and incomplete execution remain
+  visible. Compatibility is validated against the schema only.
+- `security.compare_scans` requires complete, untruncated scans from the same
+  target lineage, scanner, worker image and configuration/rules/database.
+  It reports exact IDs as added, present or not observed. Different or missing
+  provenance produces `not_comparable`; absence never means resolved.
+
+Raw archives are opaque, creating-session artifacts: no text extraction, preview
+or retrieval indexing. A fresh session may rescan identical approved archive
+bytes; deduplication preserves the original creator and grants no raw-read access.
+Active workers retain them through existing collection
+references. Normal completion releases those references; ordinary artifact
+retention then applies. Export/evaluation tools require the same actual session
+as their input. A report or SARIF export does not authorize repair.
+
+The worker uses a local Unix Docker socket, an immutable local image, no network,
+non-root execution, a read-only filesystem and input, dropped capabilities and
+bounded temporary storage. Defaults are 100 MiB input (or the lower artifact-store
+limit), 10,000 archive entries, 512 MiB scratch, 1 GiB memory, 1 CPU, 64 processes,
+1 MiB scanner output and 120 seconds. Input/rule/database preparation happens
+outside assessment. The bundled worker rejects vulnerability databases older
+than its operator-prepared manifest allows (48 hours in the example).
+
+Assessed ignore files cannot suppress the offline Semgrep check. Language and
+rule coverage remains finite; a completed scanner invocation is not proof that
+all vulnerabilities or languages were assessed.
+
+## Fixed web/API fixture checks
+
+The existing approved lab can run `python3 -B /opt/security/web_checks.py` from
+the prepared worker. Approve `python3` and a command deadline of at least 60
+seconds plus execution overhead. The command performs seven fixed checks against
+loopback port 8080: anonymous denial, permitted user, invalid identity, forbidden
+role, forbidden object, header/cookie attributes, and an unfollowed redirect.
+Role/object checks require the permitted-user check to succeed. Synthetic
+identity headers are fixture inputs, not production authentication support.
+
+Only declared checks/identities are accepted. Responses are capped at 64 KiB,
+each request at five seconds and the complete matrix at 60 seconds. Evidence
+contains status, marker and header-attribute facts, without bodies, cookie values
+or authorization values. Unknown targets, arbitrary routes, real login, browser
+sessions and remote scanning remain unsupported. Publish the existing active
+lab v2 report from canonical exec evidence.
+
+## Finite recurring source audits
+
+An operator can bind one configured agent to a clean, absolute Git root, exact
+checks/tools, pinned asset configuration, expiry and finite run budget through
+`OPENMINION_SECURITY_SCHEDULE_CONFIG`. The existing `task.schedule` and cron
+owners persist and execute the admission; no separate scheduler is created.
+See the [configuration example](../examples/security/offline/README.md).
+
+Each tick resolves the clean revision at runtime and scans its Git archive in
+the offline worker. Scope changes, cancellation, expiry or exhausted budget
+prevent dispatch. A claimed run is admitted once and has one attempt; restart
+cannot silently rerun it. Mid-run source changes preserve partial evidence and
+prevent a complete comparison. Completion requires a successful agent turn and
+one complete canonical report. Failed worker evidence is retained even when
+no report can be published. Failure never replaces the previous successful
+report/baseline references.
+
+Each job's report, scan, export, comparison and baseline dependencies are pinned
+under collection owner `security-schedule:<job_id>`. Cancellation stops work but
+retains history. Explicit history disposal uses the existing artifact reference
+removal for that owner, followed by normal GC; other jobs' references remain.
+
+## Declared local coverage
+
+| Surface | Executed fixture coverage | Boundary |
+| --- | --- | --- |
+| Code | Python and JavaScript eval rules, including hostile ignore files | Fixed rules, not all language vulnerabilities |
+| Dependencies | Python requirements and npm lockfile | Prepared Trivy database; npm negative removes dependency |
+| Configuration | Terraform and Dockerfile | Local static fixtures, no cloud deployment |
+| Secrets | Synthetic GitHub-token fixture | Redacted facts; no real credential validation |
+| Images | Vulnerable nginx archive and minimal empty-inventory image | Different fixture inventories, not application remediation proof |
+| Web/API | Seven checks on vulnerable/corrected synthetic server | Loopback fixture protocol only |
+| AWS | Two seeded/corrected snapshot controls | Offline facts, no SDK/account discovery |
+| Reporting | SARIF schema, exact comparison, finite source ticks | No SARIF consumer interoperability or compliance certification |
+
+Other ecosystems, remote hosts, real authentication and live cloud collection
+are outside this proven matrix. Package publication is separate from delivery
+to the development branch.

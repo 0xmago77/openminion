@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from openminion.modules.artifact.control import _determine_mime
+from openminion.modules.artifact.content import _determine_mime
 from openminion.modules.artifact.errors import ArtifactCtlError
 
 from .utils import artifact_ctl, read_fixture_bytes
@@ -172,3 +172,92 @@ def test_ingest_logs_unexpected_view_failure(
 
     assert "view generation failed for" in caplog.text
     assert "boom" in caplog.text
+
+
+@pytest.mark.parametrize("payload", [b"secret archive canary", b"\x00\xffprivate"])
+def test_opaque_input_has_no_views_or_content_index(tmp_path, payload):
+    retrieve = Mock()
+    with artifact_ctl(tmp_path) as ctl:
+        ref = ctl.ingest_bytes(
+            payload, opaque=True, session_id="scan", retrieve_ctl=retrieve
+        )
+        assert ctl.list_views(ref.ref) == []
+        retrieve.ingest_event.assert_not_called()
+        assert ctl.read_bytes(ref.ref, session_id="scan") == payload
+        for session in (None, "other"):
+            with pytest.raises(ArtifactCtlError, match="another session"):
+                ctl.read_bytes(ref.ref, session_id=session)
+        for view in ("text", "digest", "json", "table"):
+            with pytest.raises(ArtifactCtlError, match="no content views"):
+                ctl.ensure_view(ref.ref, view)
+        assert ctl.ingest_bytes(payload, opaque=True, session_id="scan") == ref
+        with pytest.raises(ArtifactCtlError, match="different input policy"):
+            ctl.ingest_bytes(payload, retrieve_ctl=retrieve)
+        assert ctl.ingest_bytes(payload, opaque=True, session_id="other") == ref
+        assert ctl.get(ref.ref).session_id == "scan"
+        assert ctl.read_bytes(ref.ref, session_id="scan") == payload
+        with pytest.raises(ArtifactCtlError, match="another session"):
+            ctl.read_bytes(ref.ref, session_id="other")
+        path = tmp_path / "duplicate.tar"
+        path.write_bytes(payload)
+        with pytest.raises(ArtifactCtlError, match="different input policy"):
+            ctl.ingest_file(path)
+        retrieve.ingest_event.assert_not_called()
+
+
+def test_opaque_input_cannot_relabel_previously_public_bytes(tmp_path):
+    with artifact_ctl(tmp_path) as ctl:
+        ctl.ingest_bytes(b"public")
+        with pytest.raises(ArtifactCtlError, match="different input policy"):
+            ctl.ingest_bytes(b"public", opaque=True, session_id="scan")
+        with pytest.raises(ArtifactCtlError, match="require a session"):
+            ctl.ingest_bytes(b"private", opaque=True)
+        with pytest.raises(ArtifactCtlError, match="not caller metadata"):
+            ctl.ingest_bytes(b"private", meta={"opaque": True})
+
+
+@pytest.mark.parametrize("winner_opaque", [False, True])
+def test_concurrent_ingest_cannot_change_first_opaque_policy(
+    tmp_path, monkeypatch, winner_opaque
+):
+    from openminion.modules.artifact.control import ArtifactCtl
+
+    retrieve = Mock()
+    with artifact_ctl(tmp_path) as outer, ArtifactCtl(outer.config) as winner:
+        upsert = outer.index.upsert_artifact
+
+        def interleave(meta):
+            winner.ingest_bytes(
+                b"racing input", opaque=winner_opaque, session_id="winner"
+            )
+            upsert(meta)
+
+        monkeypatch.setattr(outer.index, "upsert_artifact", interleave)
+        with pytest.raises(ArtifactCtlError, match="different input policy"):
+            outer.ingest_bytes(
+                b"racing input",
+                opaque=not winner_opaque,
+                session_id="outer",
+                retrieve_ctl=retrieve,
+            )
+        retrieve.ingest_event.assert_not_called()
+
+
+def test_concurrent_opaque_ingest_preserves_first_creator(tmp_path, monkeypatch):
+    from openminion.modules.artifact.control import ArtifactCtl
+
+    with artifact_ctl(tmp_path) as outer, ArtifactCtl(outer.config) as winner:
+        upsert = outer.index.upsert_artifact
+
+        def interleave(meta):
+            winner.ingest_bytes(b"same private input", opaque=True, session_id="first")
+            upsert(meta)
+
+        monkeypatch.setattr(outer.index, "upsert_artifact", interleave)
+        ref = outer.ingest_bytes(
+            b"same private input", opaque=True, session_id="second"
+        )
+        assert outer.get(ref.ref).session_id == "first"
+        assert outer.read_bytes(ref.ref, session_id="first") == b"same private input"
+        with pytest.raises(ArtifactCtlError, match="another session"):
+            outer.read_bytes(ref.ref, session_id="second")

@@ -318,6 +318,8 @@ def _build_closure_hints(
                 "(bool), and optional "
                 "post_completion_critique "
                 "(intent_id, summary, lessons, next_time_action). "
+                "Omit plan_reconciliation, verification, and review; the runtime derives "
+                "these fact blocks from execution evidence after this verdict. "
                 "If post_completion_critique is present, its intent_id must exactly "
                 "match one of the typed intent outcomes for this turn. When "
                 "next_action='close', final_answer should be a concise user-facing "

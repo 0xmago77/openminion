@@ -72,7 +72,10 @@ scope	max_python_files	max_loc
 # Issue 456 (2026-10-28) carries task-owned consolidation context through the
 # existing cron, manager, ingress, and gateway owners while keeping caller
 # metadata untrusted and pausing unverifiable legacy jobs (+131 LOC; file count unchanged).
-services	208	41983
+# SECX-08 (2026-10-28) adds finite security scan admission/completion in the cron
+# owner and carries trusted scope through existing manager/ingress contracts.
+# Failed cron results retain their canonical evidence; no second scheduler.
+services	209	42298
 services/security	6	187
 services/stats	1	25
 services/tool	3	50

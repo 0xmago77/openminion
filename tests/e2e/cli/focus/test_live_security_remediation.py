@@ -271,6 +271,19 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
     assert usage["input_tokens"] > 0 and usage["output_tokens"] > 0
     sessions = SQLiteSessionStore(probe.data_root / "state/brain/sessions.db")
     try:
+        final_closure = _assert_closed_readonly_turn(
+            [
+                (event["event_type"], event["payload"])
+                for event in sessions.get_events(
+                    brain_session,
+                    types=[
+                        "brain.entry",
+                        "brain.closure_gate.completed",
+                        "brain.closure_gate.failed",
+                    ],
+                )
+            ]
+        )
         transcript = sessions.get_tool_transcript(brain_session)
         assert transcript["causal_fidelity"] == "exact" and transcript["events"]
         assert {event["payload"]["call_id"] for event in transcript["events"]} == {
@@ -289,11 +302,31 @@ def _readonly_turn(probe: FocusProbe, root: Path, name: str, prompt: str) -> dic
         "calls": calls,
         "recovered_validation_attempts": recovered,
         "terminal_statuses": terminal_statuses,
+        "final_closure": final_closure,
         "approvals": approvals,
         "usage": usage,
         "tool_transcript": f"{name}.tools.json",
         "content_boundary": "Structural transcript omits invocation arguments and results; canonical CAS documents are read in full by the operator.",
     }
+
+
+def _assert_closed_readonly_turn(events: list) -> dict:
+    assert not any(
+        kind == "brain.entry" and data.get("reason_code") == "token_budget_exceeded"
+        for kind, data in events
+    ), "turn exhausted its token budget"
+    closures = [
+        (kind, data)
+        for kind, data in events
+        if kind in {"brain.closure_gate.completed", "brain.closure_gate.failed"}
+    ]
+    assert closures and closures[-1][0] == "brain.closure_gate.completed", (
+        "turn has no successful final closure verdict"
+    )
+    final = closures[-1][1]
+    assert final.get("satisfied") is True, "turn did not satisfy final closure"
+    assert final.get("next_action") == "close", "turn requires continuation"
+    return final
 
 
 def _assert_readonly_outcomes(
@@ -1000,7 +1033,8 @@ def test_live_security_remediation(
                 "Call security.review_report review_kind=initial for the exact report ref, disposition each candidate once, "
                 "using JSON arrays for finding_reviews and verification_criteria, not objects with item keys, "
                 "and give accepted findings a minimal objective and explicit regression criteria, with the complete remediation brief under 1000 characters. "
-                "If review publication rejects arguments, correct them using its feedback; stop after successful publication. Do not repair.\n"
+                "If review publication rejects arguments, correct them using its feedback. "
+                "After successful publication, return the canonical review ref in your final answer and stop. Do not repair.\n"
                 + _operator_evidence(
                     reviewer, ctl, [report_ref, *report.evidence_refs]
                 ),
@@ -1083,9 +1117,11 @@ def test_live_security_remediation(
                 "Independently evaluate the original accepted finding against the fresh complete rescan. "
                 "Call security.review_report review_kind=follow_up with the initial review ref and rescan report ref, "
                 "one closure per accepted finding and decisions for unmatched current candidates. "
-                "Use JSON arrays for closure_reviews, new_finding_reviews and current_finding_ids, including [] when empty. "
+                "Use JSON arrays for closure_reviews and any other list you supply; omit optional empty lists. "
+                "For resolved outcomes omit next_step_guidance and current_finding_ids. "
                 "Use evidence to choose resolved/residual/not_reproduced. "
-                "If review publication rejects arguments, correct them using its feedback; stop after successful publication. Do not repair.\n"
+                "If review publication rejects arguments, correct them using its feedback. "
+                "After successful publication, return the canonical review ref in your final answer and stop. Do not repair.\n"
                 + _operator_evidence(
                     reviewer,
                     ctl,

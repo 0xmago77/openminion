@@ -212,6 +212,7 @@ def runtime_turn_request_from_manager_request(
             explicit_category=meta.get("capability_category"),
         ),
         run_profile_overrides=run_profile_overrides,
+        trusted_security_scan_context=request.trusted_security_scan_context,
         trusted_task_context=(
             MappingProxyType(dict(request.trusted_task_context))
             if request.trusted_task_context is not None

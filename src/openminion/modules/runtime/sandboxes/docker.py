@@ -114,7 +114,10 @@ class DockerSandboxRunner:
             raise DockerSandboxError(
                 "SANDBOX_UNAVAILABLE", "Docker preflight returned incomplete identities"
             )
-        if self.config.worker_image.rpartition("@")[2] not in worker_digests:
+        if (
+            self.config.worker_image != worker_image_id
+            and self.config.worker_image.rpartition("@")[2] not in worker_digests
+        ):
             raise DockerSandboxError(
                 "POLICY_DENIED", "Docker worker image digest does not match config"
             )
