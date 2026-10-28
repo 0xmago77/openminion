@@ -66,6 +66,9 @@ def publish_security_audit(
             "security report publication requires canonical artifact storage",
         )
 
+    from .trusted_source import admit_scheduled_report
+
+    admit_scheduled_report(args, ctx)
     config = resolve_security_config(ctx)
     target = resolve_local_target(args.scope.target, config)
     target_name = display_target(target, config)
@@ -94,13 +97,12 @@ def publish_security_audit(
     limitations, count = redact_sensitive_text(args.limitations)
     redaction_count += count
     scope = scope.model_copy(update={"objective": objective})
-    execution_status = _execution_status(checks)
     assessment_id = uuid.uuid4().hex
     report = SecurityAuditReport(
         assessment_id=assessment_id,
         scope=scope,
         checks=checks,
-        execution_status=execution_status,
+        execution_status=_execution_status(checks),
         summary=summary,
         limitations=limitations,
         findings=findings,
@@ -127,24 +129,23 @@ def publish_security_audit(
             "security report publication did not produce a canonical artifact",
         )
     candidate_count = sum(item.disposition == "candidate" for item in findings)
-    rejected_count = len(findings) - candidate_count
     return {
         "ok": True,
         "assessment_id": assessment_id,
         "schema_version": report.schema_version,
-        "execution_status": execution_status,
+        "execution_status": report.execution_status,
         "review_status": report.review_status,
         "check_count": len(checks),
         "finding_count": len(findings),
         "candidate_count": candidate_count,
-        "rejected_count": rejected_count,
+        "rejected_count": len(findings) - candidate_count,
         "redaction_count": redaction_count,
         "report_ref": report_ref,
         "artifact_ref": report_ref,
         "artifact_refs": [report_ref],
         "content": (
             f"Published unreviewed security audit {assessment_id} "
-            f"with status={execution_status}"
+            f"with status={report.execution_status}"
         ),
     }
 
@@ -464,7 +465,14 @@ def _validate_scan(
         and (
             configuration.config_sha256 == semgrep_config_sha256
             if check == "code"
-            else configuration.fixed_flags == list(TRIVY_FIXED_FLAGS)
+            else (
+                configuration.fixed_flags == list(TRIVY_FIXED_FLAGS)
+                or (
+                    scan.provenance is not None
+                    and scan.provenance.isolation_mode == "offline_docker"
+                    and bool(configuration.database_sha256)
+                )
+            )
         )
     )
     usable = scan.status in {"completed", "partial"}

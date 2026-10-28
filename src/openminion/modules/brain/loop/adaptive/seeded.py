@@ -47,6 +47,7 @@ from ..services import runner_from_context
 
 from .allowed_tools import (
     ACT_ADAPTIVE_ALLOWED_TOOLS,
+    _with_exposed_runtime_tools,
 )
 from .context import (
     _AdaptiveLoopContextAdapter,
@@ -251,11 +252,15 @@ class ActLoopSeededMixin:
         )
         if not self._seeded_continue_stays_autonomous(ctx):
             return seeded_tool_names or ACT_ADAPTIVE_ALLOWED_TOOLS
-        return frozenset(
-            {
-                *_without_control_tool_names(ACT_ADAPTIVE_ALLOWED_TOOLS),
-                *seeded_tool_names,
-            }
+        return _with_exposed_runtime_tools(
+            frozenset(
+                {
+                    *_without_control_tool_names(ACT_ADAPTIVE_ALLOWED_TOOLS),
+                    *seeded_tool_names,
+                }
+            ),
+            runner=runner_from_context(ctx),
+            session_id=str(ctx.state.session_id or ""),
         )
 
     def _seeded_replay_loop_limits(
@@ -383,11 +388,11 @@ class ActLoopSeededMixin:
                 tool_specs = build_runtime_tool_specs(
                     runner_from_context(ctx),
                     allowed_tools=allowed_tools,
+                    metadata={"session_id": str(ctx.state.session_id or "")},
                 )
             except AdaptiveToolLoopRuntimeUnavailableError:
                 runtime = None
                 model = ""
-                tool_specs = []
         profile = AdaptiveToolLoopProfile(
             profile_name="general_seeded_v1",
             mode_name=BRAIN_INTERNAL_MODE_ACT_ADAPTIVE,

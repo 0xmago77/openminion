@@ -7,13 +7,18 @@ import hashlib
 import io
 import json
 import logging
-import mimetypes
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
 
 from openminion.base.time import utc_now_iso as iso_now
+from openminion.modules.artifact.content import (
+    _determine_mime,
+    _decode_text,
+    _detect_encoding,
+    _extract_ingest_text_from_bytes,
+)
 from openminion.modules.artifact.config import ArtifactCtlConfig, load_config
 from openminion.modules.artifact.constants import (
     DEFAULT_CONFIG_FILENAME,
@@ -44,13 +49,6 @@ _LONG_NUM_RE = re.compile(r"(?<![0-9A-Fa-f])\d{12,19}(?![0-9A-Fa-f])")
 _ISO_TIMESTAMP_RE = re.compile(
     r"\d{4}-?\d{2}-?\d{2}T\d{2,14}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
 )
-_FALLBACK_MIME_BY_SUFFIX = {
-    ".yaml": "text/yaml",
-    ".yml": "text/yaml",
-    ".md": "text/markdown",
-    ".csv": "text/csv",
-    ".tsv": "text/tab-separated-values",
-}
 logger = logging.getLogger(__name__)
 
 
@@ -105,7 +103,12 @@ class ArtifactCtl:
         trace_id: str | None = None,
         agent_id: str | None = None,
         retrieve_ctl: Any | None = None,
+        opaque: bool = False,
     ) -> ArtifactRef:
+        if opaque and not session_id:
+            raise ArtifactCtlError(
+                "INVALID_ARGUMENT", "Opaque inputs require a session"
+            )
         return self._ingest_bytes_internal(
             data=data,
             mime=mime,
@@ -116,8 +119,9 @@ class ArtifactCtl:
             session_id=session_id,
             trace_id=trace_id,
             agent_id=agent_id,
-            auto_generate=True,
+            auto_generate=not opaque,
             retrieve_ctl=retrieve_ctl,
+            opaque=opaque,
         )
 
     def ingest_file(
@@ -131,9 +135,14 @@ class ArtifactCtl:
         agent_id: str | None = None,
         retrieve_ctl: Any | None = None,
     ) -> ArtifactRef:
+        if "opaque" in (meta or {}):
+            raise ArtifactCtlError(
+                "INVALID_ARGUMENT", "Opaque policy is not caller metadata"
+            )
         src = Path(path).expanduser().resolve(strict=True)
         self._enforce_ingest_size(src.stat().st_size, source=str(src))
         sha256, size_bytes = _hash_file(src)
+        self._check_ingest_policy(sha256, session_id=session_id, opaque=False)
         sample = _read_sample(src, 256000)
         sniff = sample[:4096]
         inferred_mime = _determine_mime(provided=mime, path=src, sample=sniff)
@@ -160,6 +169,7 @@ class ArtifactCtl:
             meta_json=meta,
         )
         self.index.upsert_artifact(artifact_meta)
+        self._check_ingest_policy(sha256, session_id=session_id, opaque=False)
 
         self._auto_generate_views(sha256)
         ref = self.get(sha256).to_ref()
@@ -179,14 +189,21 @@ class ArtifactCtl:
             raise ArtifactCtlError("NOT_FOUND", f"Artifact not found: {ref_or_sha}")
         return meta
 
-    def open(self, ref_or_sha: str) -> BinaryIO:
+    def open(self, ref_or_sha: str, *, session_id: str | None = None) -> BinaryIO:
         sha = self._resolve_active_sha(ref_or_sha)
+        meta = self.get(sha)
+        if (meta.meta_json or {}).get("opaque") and (
+            not session_id or session_id != meta.session_id
+        ):
+            raise ArtifactCtlError(
+                "POLICY_DENIED", "Opaque input belongs to another session"
+            )
         if not self.blob_store.exists(sha):
             raise ArtifactCtlError("NOT_FOUND", f"Blob is missing for artifact: {sha}")
         return self.blob_store.get_stream(sha)
 
-    def read_bytes(self, ref_or_sha: str) -> bytes:
-        with self.open(ref_or_sha) as fh:
+    def read_bytes(self, ref_or_sha: str, *, session_id: str | None = None) -> bytes:
+        with self.open(ref_or_sha, session_id=session_id) as fh:
             return fh.read()
 
     def ensure_digest(
@@ -207,6 +224,11 @@ class ArtifactCtl:
         raw_meta = self.index.get_artifact(raw_sha, include_deleted=False)
         if raw_meta is None:
             raise ArtifactCtlError("NOT_FOUND", f"Artifact not found: {ref_or_sha}")
+
+        if (raw_meta.meta_json or {}).get("opaque"):
+            raise ArtifactCtlError(
+                "POLICY_DENIED", "Opaque inputs have no content views"
+            )
 
         settings: dict[str, dict[str, Any]] = {
             "digest": {
@@ -548,9 +570,17 @@ class ArtifactCtl:
         agent_id: str | None,
         auto_generate: bool,
         retrieve_ctl: Any | None = None,
+        opaque: bool = False,
     ) -> ArtifactRef:
         self._enforce_ingest_size(len(data), source=original_name or "bytes")
         sha256 = hashlib.sha256(data).hexdigest()
+        self._check_ingest_policy(sha256, session_id=session_id, opaque=opaque)
+        if "opaque" in (meta or {}):
+            raise ArtifactCtlError(
+                "INVALID_ARGUMENT", "Opaque policy is not caller metadata"
+            )
+        if opaque:
+            meta = {**(meta or {}), "opaque": True}
         size_bytes = len(data)
         inferred_mime = _determine_mime(
             provided=mime,
@@ -581,18 +611,32 @@ class ArtifactCtl:
             meta_json=meta,
         )
         self.index.upsert_artifact(artifact_meta)
+        self._check_ingest_policy(sha256, session_id=session_id, opaque=opaque)
 
         if auto_generate:
             self._auto_generate_views(sha256)
         ref = self.get(sha256).to_ref()
-        self._emit_retrieve_ingest_event(
-            retrieve_ctl=retrieve_ctl,
-            artifact_ref=ref,
-            artifact_text=_extract_ingest_text_from_bytes(data),
-            artifact_meta=artifact_meta,
-            fallback_title=label or original_name,
-        )
+        if not opaque:
+            self._emit_retrieve_ingest_event(
+                retrieve_ctl=retrieve_ctl,
+                artifact_ref=ref,
+                artifact_text=_extract_ingest_text_from_bytes(data),
+                artifact_meta=artifact_meta,
+                fallback_title=label or original_name,
+            )
         return ref
+
+    def _check_ingest_policy(
+        self, sha256: str, *, session_id: str | None, opaque: bool
+    ) -> None:
+        existing = self.index.get_artifact(sha256, include_deleted=True)
+        if existing is None:
+            return
+        was_opaque = bool((existing.meta_json or {}).get("opaque"))
+        if was_opaque != opaque or (opaque and existing.session_id != session_id):
+            raise ArtifactCtlError(
+                "POLICY_DENIED", "Existing artifact has a different input policy"
+            )
 
     def _emit_retrieve_ingest_event(
         self,
@@ -829,73 +873,6 @@ def _hash_file(path: Path) -> tuple[str, int]:
 def _read_sample(path: Path, n: int = 4096) -> bytes:
     with path.open("rb") as fh:
         return fh.read(n)
-
-
-def _determine_mime(provided: str | None, path: Path | None, sample: bytes) -> str:
-    if provided:
-        return provided
-    if path is not None:
-        guessed, _ = mimetypes.guess_type(str(path))
-        if guessed:
-            return guessed
-        fallback = _FALLBACK_MIME_BY_SUFFIX.get(path.suffix.lower())
-        if fallback:
-            return fallback
-
-    normalized_sample = sample
-    if normalized_sample.startswith(b"\xef\xbb\xbf"):
-        normalized_sample = normalized_sample[3:]
-    normalized_sample = normalized_sample.lstrip()
-
-    if normalized_sample.startswith(b"{") or normalized_sample.startswith(b"["):
-        return "application/json"
-
-    if not normalized_sample:
-        return "application/octet-stream"
-
-    if b"\x00" in normalized_sample:
-        return "application/octet-stream"
-
-    if _is_probably_text(normalized_sample):
-        return "text/plain"
-
-    return "application/octet-stream"
-
-
-def _decode_text(data: bytes) -> tuple[str, list[str]]:
-    if not data:
-        return "", []
-
-    if b"\x00" in data[:4096]:
-        return "", ["binary_content"]
-
-    try:
-        return data.decode("utf-8"), []
-    except UnicodeDecodeError:
-        return data.decode("utf-8", errors="replace"), ["decode_errors_replaced"]
-
-
-def _detect_encoding(data: bytes) -> str | None:
-    if not data:
-        return None
-    _text, warnings = _decode_text(data)
-    if "binary_content" in warnings:
-        return "binary"
-    if "decode_errors_replaced" in warnings:
-        return "utf-8-lossy"
-    return "utf-8"
-
-
-def _extract_ingest_text_from_bytes(data: bytes, *, max_chars: int = 20000) -> str:
-    text, _warnings = _decode_text(data)
-    return text[:max_chars].strip()
-
-
-def _is_probably_text(sample: bytes) -> bool:
-    if not sample:
-        return True
-    printable = sum(b in {9, 10, 13} or 32 <= b <= 126 for b in sample)
-    return printable / len(sample) >= 0.85
 
 
 def _bounded_excerpt(

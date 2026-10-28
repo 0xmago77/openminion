@@ -24,7 +24,6 @@ from openminion.modules.brain.bootstrap.recovery import (
 from openminion.modules.brain.execution.delegation import _runner_delegate
 from openminion.modules.brain.loop.tools.runtime import (
     DefaultAdaptiveToolLoopLLMRuntime,
-    build_runtime_tool_specs,
 )
 from openminion.modules.llm.client_call import (
     response_cost_payload,
@@ -65,6 +64,7 @@ from .entry_routing import (
     _should_bypass_unified_entry,
 )
 from .entry import (
+    _with_forced_runtime_tool_specs,
     build_entry_requestable_tool_specs,
     build_entry_tool_specs,
     detect_entry_path,
@@ -231,27 +231,6 @@ def _apply_entry_freshness(
             trace_id=state.trace_id,
         )
     _apply_freshness_result(state=state, logger=logger, result=result)
-
-
-def _with_forced_runtime_tool_specs(
-    runner: Any,
-    tool_specs: list[Any],
-    forced_tools: list[str] | None,
-) -> list[Any]:
-    forced = {str(name or "").strip() for name in list(forced_tools or [])}
-    forced.discard("")
-    if not forced:
-        return tool_specs
-    existing = {
-        str(getattr(spec, "name", "") or "").strip()
-        for spec in tool_specs
-        if str(getattr(spec, "name", "") or "").strip()
-    }
-    missing = forced - existing
-    if not missing:
-        return tool_specs
-    dynamic_specs = build_runtime_tool_specs(runner, allowed_tools=frozenset(missing))
-    return [*tool_specs, *dynamic_specs]
 
 
 def _explicit_direct_tool_names_from_user_input(user_input: str | None) -> list[str]:
@@ -466,26 +445,23 @@ def decide(
     )
     llm_call_id = new_uuid()
     query_text = _entry_query_text(state=state, user_input=user_input)
-    tool_specs, supports_seed_response = build_entry_tool_specs(
-        runner,
-        act_profile=str(getattr(provisional_route, "act_profile", "") or ""),
-        execution_target_kind=str(
+    entry_scope: dict[str, Any] = {
+        "act_profile": str(getattr(provisional_route, "act_profile", "") or ""),
+        "execution_target_kind": str(
             getattr(getattr(provisional_route, "execution_target", None), "kind", "")
             or ""
         ),
+        "metadata": {"session_id": state.session_id},
+    }
+    tool_specs, supports_seed_response = build_entry_tool_specs(
+        runner,
+        **entry_scope,
         include_control_tools=(
             str(getattr(state, "decision_reason_code", "") or "").strip()
             != "research_iteration_fallback"
         ),
     )
-    requestable_tool_specs = build_entry_requestable_tool_specs(
-        runner,
-        act_profile=str(getattr(provisional_route, "act_profile", "") or ""),
-        execution_target_kind=str(
-            getattr(getattr(provisional_route, "execution_target", None), "kind", "")
-            or ""
-        ),
-    )
+    requestable_tool_specs = build_entry_requestable_tool_specs(runner, **entry_scope)
     explicit_runtime_tools = [
         *list(forced_tools or []),
         *_explicit_direct_tool_names_from_user_input(user_input),
@@ -494,6 +470,7 @@ def decide(
         runner,
         tool_specs,
         explicit_runtime_tools,
+        metadata={"session_id": state.session_id},
     )
     if forced_tools:
         forced = {str(name).strip() for name in forced_tools if str(name).strip()}

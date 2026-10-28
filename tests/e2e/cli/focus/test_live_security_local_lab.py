@@ -33,7 +33,7 @@ from tests.e2e.cli.focus.harness.artifacts import artifact_root, write_transcrip
 from tests.e2e.cli.focus.harness.probe import _record_approval_event, focus_session_id
 from tests.e2e.cli.focus.test_live_goal_only import _events, _usage
 from tests.e2e.cli.focus.test_live_security_researcher import _install_profile
-from tests.e2e.security_lab.fixture import TARGET_BODY, local_lab
+from tests.e2e.security_lab.fixture import TARGET_BODY, TARGET_SCRIPT, local_lab
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(600)]
 
@@ -117,7 +117,7 @@ def _approve_command(probe, command, kind, screen):
     assert shown.splitlines()[0].rstrip() == expected
 
 
-def _assert_evidence(probe, lab, command, evidence):
+def _assert_evidence(probe, lab, command, evidence, *, web=False):
     artifact_root_path = probe.data_root / "artifact"
     with ArtifactCtl(
         ArtifactCtlConfig(
@@ -144,7 +144,7 @@ def _assert_evidence(probe, lab, command, evidence):
         finding = report.findings[0]
         assert finding["disposition"] == "candidate"
         assert (
-            finding["location"]["path"] == "/defect"
+            finding["location"]["path"] == ("/admin" if web else "/defect")
             and finding["location"]["method"] == "GET"
         )
         assert finding["evidence_ref"] == report.evidence_refs[0]
@@ -172,7 +172,7 @@ def _assert_evidence(probe, lab, command, evidence):
         assert execution["target_container_id"] == lab.target_id
         assert execution["worker_image_digest"] == lab.config.worker_image
         assert (
-            execution["timeout_seconds"] == 10
+            execution["timeout_seconds"] == (70 if web else 10)
             and execution["max_output_bytes"] == lab.config.max_output_bytes
         )
         assert result["status"] == "ok" and result["exit_code"] == 0
@@ -180,9 +180,22 @@ def _assert_evidence(probe, lab, command, evidence):
             result["timed_out"] or result["output_limited"] or result["terminated"]
         )
         stdout = result["stdout"]
-        assert not stdout["truncated"] and stdout["retained_bytes"] == len(TARGET_BODY)
-        assert ctl.read_bytes(stdout["artifact_ref"]) == TARGET_BODY
-        assert stdout["sha256"] == sha256(TARGET_BODY).hexdigest()
+        assert not stdout["truncated"]
+        retained = ctl.read_bytes(stdout["artifact_ref"])
+        assert stdout["retained_bytes"] == len(retained)
+        assert stdout["sha256"] == sha256(retained).hexdigest()
+        if web:
+            observations = json.loads(retained)
+            assert observations["status"] == "completed"
+            checks = {item["check_id"]: item for item in observations["checks"]}
+            assert len(checks) == 7
+            assert checks["user-allowed"]["observed"]["marker_matched"]
+            assert not checks["role-denied"]["expectation_matched"]
+            assert not checks["object-denied"]["expectation_matched"]
+            assert checks["redirect-contained"]["observed"]["http_status"] == 302
+            evidence["web_observations"] = observations
+        else:
+            assert retained == TARGET_BODY
         assert (
             lab.docker(
                 "container", "inspect", execution["worker_container_id"], check=False
@@ -237,8 +250,9 @@ def _assert_evidence(probe, lab, command, evidence):
     assert usage["input_tokens"] > 0 and usage["output_tokens"] > 0
 
 
+@pytest.mark.parametrize("web", [False, True], ids=["legacy", "web-matrix"])
 def test_live_security_local_lab_publishes_active_report(
-    tmp_path, python_bin, openminion_root, framework_root, monkeypatch
+    tmp_path, python_bin, openminion_root, framework_root, monkeypatch, web
 ):
     if os.getenv("OPENMINION_LIVE_SECURITY_LOCAL_LAB") != "1":
         pytest.skip(
@@ -250,16 +264,27 @@ def test_live_security_local_lab_publishes_active_report(
     assert os.getenv("OPENMINION_TEST_DOCKER_SECURITY_LAB") == "1", (
         "real Docker opt-in required"
     )
-    root = artifact_root(tmp_path) / "security-local-lab"
+    root = artifact_root(tmp_path) / (
+        "security-web-lab" if web else "security-local-lab"
+    )
     root.mkdir()
     evidence = {"status": "failed", "approvals": []}
     started = time.monotonic()
     config, settings = _configuration(root, monkeypatch)
     evidence.update(settings)
-    with local_lab(root) as lab:
+    target_script = (
+        (openminion_root / "examples/security/offline/web_fixture.py").read_text()
+        if web
+        else TARGET_SCRIPT
+    )
+    with local_lab(root, target_script=target_script) as lab:
         payload = json.loads(config.read_text())
         payload["runtime"]["security_lab"] = security_lab_config_to_dict(
-            replace(lab.config, executable_allowlist=("curl",))
+            replace(
+                lab.config,
+                executable_allowlist=("python3" if web else "curl",),
+                command_timeout_seconds=70 if web else 10,
+            )
         )
         config.write_text(json.dumps(payload))
         data_root = root / "data"
@@ -279,7 +304,11 @@ def test_live_security_local_lab_publishes_active_report(
             include_project_context=False,
             allow_unsandboxed_exec=False,
         )
-        command = f"curl --silent --show-error --fail --max-time 5 {lab.target_url}"
+        command = (
+            "python3 -B /opt/security/web_checks.py"
+            if web
+            else f"curl --silent --show-error --fail --max-time 5 {lab.target_url}"
+        )
         prompt = (
             "Validate only the synthetic /defect endpoint in this approved local lab. "
             f"Call exec.run exactly once with command={command!r}, host=sandbox, "
@@ -292,6 +321,18 @@ def test_live_security_local_lab_publishes_active_report(
             "Describe the observed authorization defect without claiming independent validation. "
             "Return the canonical report ref and stop; do not retry commands or perform other work."
         )
+        if web:
+            prompt = (
+                "Run all seven fixed web/API checks against this disposable local fixture. "
+                f"Call exec.run exactly once with command={command!r}, host=sandbox, "
+                "security=deny, ask=always, timeout_s=70, include_evidence_artifact=true, "
+                "foreground mode, no pty, workdir or env. Then call security.publish_report exactly once "
+                "with activity_class=local_lab_active and validation_evidence containing its canonical exec evidence ref. "
+                "Publish one candidate finding F-1 for the observed role authorization defect, tied to that ref, "
+                'location={"component":"synthetic HTTP fixture","path":"/admin","method":"GET"}. '
+                "Summarize all seven observed checks without claiming independent validation or resolution. "
+                "Return the canonical report ref and stop; no other commands or retries."
+            )
         evidence.update(
             prompt=prompt, session_id=probe.session_id, target_id=lab.target_id
         )
@@ -324,7 +365,11 @@ def test_live_security_local_lab_publishes_active_report(
                         session, "/tools status", marker="Security lab: ready"
                     )
                     compact = "".join(visible_text(posture).split())
-                    assert lab.target_id in compact and "executables=curl" in compact
+                    assert (
+                        lab.target_id in compact
+                        and ("executables=python3" if web else "executables=curl")
+                        in compact
+                    )
                     assert (
                         "approved_by=e2e-operator" in compact and "expires=" in compact
                     )
@@ -351,7 +396,7 @@ def test_live_security_local_lab_publishes_active_report(
                 finally:
                     write_transcript(root, "live-lab", session.visible_transcript)
             assert len(evidence["approvals"]) == 1
-            _assert_evidence(probe, lab, command, evidence)
+            _assert_evidence(probe, lab, command, evidence, web=web)
             assert list(workdir.iterdir()) == [], "lab turn mutated the host workspace"
             evidence["status"] = "passed"
         finally:

@@ -152,6 +152,24 @@ class CronTurnExecutor:
                 job=job, run=run, payload=payload, watch=watch
             )
 
+        if "security_scan" in payload:
+            from .security import execute_security_run
+
+            if not self._agent_is_registered(str(job.get("agent_id", ""))):
+                return {
+                    "summary": "security scan agent is not registered",
+                    "error": True,
+                }
+            return execute_security_run(
+                runtime=self._runtime,
+                manager=self._task_manager,
+                store=self._cron_store,
+                job=job,
+                run=run,
+                request_builder=self._request_builder,
+                artifactctl_factory=self._artifactctl_factory,
+                timeout_s=self._timeout_s,
+            )
         return self._execute_agent_turn(job=job, run=run, payload=payload)
 
     def _execute_project_cycle(

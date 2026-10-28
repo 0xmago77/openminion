@@ -190,7 +190,7 @@ def test_entry_exposes_only_direct_tools_when_runtime_scope_denies_controls(
     )
     monkeypatch.setattr(
         "openminion.modules.brain.loop.entry.collect_runtime_tool_names",
-        lambda _runner: frozenset({"git.status", "security.scan_code"}),
+        lambda _runner, **_metadata: frozenset({"git.status", "security.scan_code"}),
     )
     runner = SimpleNamespace(
         tool_api=SimpleNamespace(
@@ -212,9 +212,8 @@ def test_forced_dynamic_runtime_tool_specs_are_added_before_entry_filter(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        orchestration,
-        "build_runtime_tool_specs",
-        lambda runner, *, allowed_tools: [
+        "openminion.modules.brain.loop.entry.build_runtime_tool_specs",
+        lambda runner, *, allowed_tools, metadata=None: [
             type("Spec", (), {"name": name})() for name in sorted(allowed_tools)
         ],
     )
@@ -236,7 +235,7 @@ def test_general_entry_makes_dynamic_runtime_tools_requestable(monkeypatch) -> N
     registered = [{"name": dynamic_name, "description": "Echo text."}]
     monkeypatch.setattr(
         "openminion.modules.brain.loop.entry.collect_runtime_tool_names",
-        lambda _runner: frozenset({dynamic_name}),
+        lambda _runner, **_metadata: frozenset({dynamic_name}),
     )
     monkeypatch.setattr(
         "openminion.modules.brain.loop.tools.runtime.collect_runtime_tool_schemas",
@@ -267,3 +266,55 @@ def test_decompose_prose_without_tool_call_does_not_auto_invoke() -> None:
 
     assert detection.path == "respond"
     assert detection.tool_call_names == ()
+
+
+def test_entry_scope_preserves_activated_only_identity_and_revocation():
+    from openminion.modules.tool import build_default_tool_registry
+    from openminion.modules.brain.loop.adaptive.seeded import ActLoopSeededMixin
+    from openminion.tools.security.interfaces import (
+        OFFLINE_SECURITY_TOOLS,
+        DERIVED_SECURITY_TOOLS,
+    )
+
+    registry = build_default_tool_registry(strict=False)
+    allowed = {*OFFLINE_SECURITY_TOOLS, *DERIVED_SECURITY_TOOLS}
+    runner = SimpleNamespace(
+        tool_api=SimpleNamespace(
+            registry=registry, is_tool_allowed=lambda name: name in allowed
+        )
+    )
+    for profile in ("security_offline", "security_reporting"):
+        registry.exposure_service.activate(
+            profile, session_id="approved", approved=True
+        )
+    for session_id, expected in (("approved", allowed), ("other", set())):
+        kwargs = dict(
+            act_profile="general",
+            execution_target_kind="local",
+            metadata={"session_id": session_id},
+        )
+        specs, _ = build_entry_tool_specs(runner, **kwargs)
+        assert {spec.name for spec in specs} == expected
+        assert {
+            spec.name for spec in build_entry_requestable_tool_specs(runner, **kwargs)
+        } == expected
+    ctx = SimpleNamespace(
+        _services=SimpleNamespace(runner=runner),
+        state=SimpleNamespace(session_id="approved"),
+        decision=SimpleNamespace(
+            reason_code="entry_tool_call",
+            _seeded_commands=[
+                SimpleNamespace(kind="tool", tool_name="security.scan_snapshot")
+            ],
+        ),
+    )
+    assert ActLoopSeededMixin()._seeded_replay_allowed_tools(ctx) == allowed
+    for profile in ("security_offline", "security_reporting"):
+        registry.exposure_service.deactivate(profile, session_id="approved")
+    specs, _ = build_entry_tool_specs(
+        runner,
+        act_profile="general",
+        execution_target_kind="local",
+        metadata={"session_id": "approved"},
+    )
+    assert specs == []

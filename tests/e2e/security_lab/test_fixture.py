@@ -90,7 +90,9 @@ def test_cleanup_only_removes_created_ids_even_when_readiness_fails(
     runner = SimpleNamespace(preflight=lambda: None, close=lambda: closed.append(True))
     monkeypatch.setattr(fixture, "DockerSandboxRunner", lambda *a, **kw: runner)
     monkeypatch.setattr(
-        fixture.LocalLab, "inspect", lambda *a: {"RepoDigests": [_IMAGE], "Config": {}}
+        fixture.LocalLab,
+        "inspect",
+        lambda *a: {"Id": "sha256:" + "a" * 64, "RepoDigests": [_IMAGE], "Config": {}},
     )
     created, removed = [], []
 

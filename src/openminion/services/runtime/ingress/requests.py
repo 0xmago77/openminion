@@ -216,6 +216,7 @@ def runtime_turn_request_from_manager_request(
             explicit_category=meta.get("capability_category"),
         ),
         run_profile_overrides=run_profile_overrides,
+        trusted_security_scan_context=request.trusted_security_scan_context,
         trusted_memory_consolidation_context=(
             MappingProxyType(dict(request.trusted_memory_consolidation_context))
             if request.trusted_memory_consolidation_context is not None
@@ -284,6 +285,7 @@ def _without_memory_consolidation_context(
     inbound_metadata: dict[str, str] | None,
 ) -> dict[str, str] | None:
     filtered = dict(inbound_metadata or {})
+    filtered.pop("security_scan_context", None)
     for key in _MEMORY_CONSOLIDATION_CONTEXT_KEYS:
         filtered.pop(key, None)
     return filtered or None

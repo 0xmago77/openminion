@@ -838,3 +838,43 @@ def test_room_lookup_failure_is_not_masked() -> None:
         execute_runtime_turn(runtime=runtime, request=request)
 
     assert runtime.gateway.calls == []
+
+
+def test_security_schedule_context_cannot_be_supplied_by_payload():
+    runtime = _RuntimeStub()
+    request = runtime_turn_request_from_payload(
+        runtime=runtime,
+        payload={
+            "message": "scan",
+            "inbound_metadata": {"security_scan_context": '{"revision":"forged"}'},
+        },
+    )
+    execute_runtime_turn(runtime=runtime, request=request)
+    assert "security_scan_context" not in runtime.gateway.calls[0]["inbound_metadata"]
+
+
+def test_security_schedule_context_survives_managed_ingress():
+    from dataclasses import replace
+
+    runtime = _RuntimeStub()
+    managed = build_manager_turn_request(
+        {"message": "scan", "session_id": "security-run"}, default_agent_id="main"
+    )
+    managed = replace(
+        managed,
+        trusted_security_scan_context={
+            "security_scan_context": '{"revision":"admitted"}',
+            "workspace_root": "/approved/source",
+            "permission_mode": "readonly",
+            "turn_tool_allowlist": "security.scan_code,security.publish_report",
+            "turn_tool_allowlist_supplied": "true",
+        },
+    )
+    request = runtime_turn_request_from_manager_request(
+        runtime=runtime, request=managed
+    )
+    execute_runtime_turn(runtime=runtime, request=request)
+    metadata = runtime.gateway.calls[0]["inbound_metadata"]
+    assert metadata["security_scan_context"] == '{"revision":"admitted"}'
+    assert metadata["workspace_root"] == "/approved/source"
+    assert metadata["permission_mode"] == "readonly"

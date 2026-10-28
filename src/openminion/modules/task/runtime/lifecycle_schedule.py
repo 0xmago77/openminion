@@ -1,6 +1,9 @@
 # mypy: ignore-errors
 from __future__ import annotations
 
+import hashlib
+import json
+
 from typing import Any
 from collections.abc import Mapping
 
@@ -85,11 +88,14 @@ class TaskManagerScheduleMixin:
         schedule: Mapping[str, Any],
         agent_id: str,
         origin: Mapping[str, str] | None = None,
+        security_scan: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "kind": "agentTurn",
             "message": str(instruction).strip(),
         }
+        if security_scan is not None:
+            payload["security_scan"] = dict(security_scan)
         if origin:
             payload["_openminion_origin"] = dict(origin)
         for job in self.list_scheduled_jobs(limit=1000):
@@ -118,6 +124,20 @@ class TaskManagerScheduleMixin:
             session_target="isolated",
             delete_after_run=False,
             misfire_policy="skip",
+            max_attempts=1 if security_scan is not None else 3,
+            metadata=(
+                {
+                    "security_scan_admission": hashlib.sha256(
+                        json.dumps(
+                            dict(security_scan),
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                        ).encode()
+                    ).hexdigest()
+                }
+                if security_scan is not None
+                else None
+            ),
         )
         return {
             "record": record,
@@ -296,6 +316,7 @@ class TaskManagerScheduleMixin:
         error = run.get("error")
         normalized_error = bounded_task_run_error(error)
         metadata = dict(record.metadata)
+        _project_security_scan_outcome(metadata, output, run_id, run_state, cron_job_id)
         metadata["last_run"] = {
             "run_id": run_id,
             "state": run_state,
@@ -602,3 +623,21 @@ class TaskManagerScheduleMixin:
         finally:
             metadata.pop("linked_cron_job_id", None)
             self.update_task_metadata(task_id=task_id, metadata=metadata)
+
+
+def _project_security_scan_outcome(metadata, output, run_id, run_state, cron_job_id):
+    if "security_scan_admission" in metadata:
+        scan_state = dict(metadata.get("security_scan") or {})
+        verified = (
+            (output or {}).get("security_scan") if isinstance(output, Mapping) else None
+        )
+        scan_state.update(status=run_state, completed_run_id=run_id)
+        if (
+            isinstance(verified, Mapping)
+            and verified.get("job_id") == cron_job_id
+            and verified.get("run_id") == run_id
+        ):
+            scan_state["last_attempt"] = dict(verified)
+            if run_state == "finished" and verified.get("status") == "completed":
+                scan_state.update(verified)
+        metadata["security_scan"] = scan_state

@@ -3,7 +3,11 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict
+
+from openminion.modules.runtime.sandboxes.scan_config import DockerScanConfig
 
 from openminion.modules.tool.errors import ToolRuntimeError
 from openminion.tools.config import (
@@ -93,3 +97,27 @@ __all__ = [
     "resolve_local_target",
     "resolve_security_config",
 ]
+
+
+_SCAN_CONFIG_ENV = "OPENMINION_SECURITY_SCAN_CONFIG"
+
+
+class ArchiveTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    root: Path
+    kind: Literal["source_snapshot", "container_archive"]
+
+
+class OfflineScanConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    docker: DockerScanConfig
+    targets: dict[str, ArchiveTarget]
+
+
+def resolve_offline_scan_config(ctx: Any) -> OfflineScanConfig:
+    path = get_tool_env(_SCAN_CONFIG_ENV, context=ctx)
+    if not path:
+        raise ToolRuntimeError(
+            "UNAVAILABLE", "Offline scanner configuration is missing"
+        )
+    return OfflineScanConfig.model_validate_json(Path(path).read_bytes())

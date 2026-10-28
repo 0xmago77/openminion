@@ -11,7 +11,7 @@ from typing import Any, Mapping
 from openminion.base.config.base import ConfigError
 from openminion.base.runtime.sandbox import ExecutionSandboxSpec
 
-_DIGEST_IMAGE = re.compile(r"^\S+@sha256:[0-9a-f]{64}$")
+_DIGEST_IMAGE = re.compile(r"^(?:\S+@)?sha256:[0-9a-f]{64}$")
 _FIELDS = {
     "daemon_socket",
     "target_container",

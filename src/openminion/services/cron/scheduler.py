@@ -59,6 +59,7 @@ class CronExecutionResult:
     artifact_refs: list[dict[str, Any]] = field(default_factory=list)
     output: dict[str, Any] = field(default_factory=dict)
     isolated_session_id: str | None = None
+    error: dict[str, Any] | None = None
 
 
 CronStore: TypeAlias = CronStoreProtocol
@@ -298,6 +299,8 @@ class CronScheduler:
                 run_id=run_id,
                 expected_attempts=expected_attempts,
             )
+            if result.error is not None:
+                state, error = "failed", result.error
         except TimeoutError as exc:
             state = "timed_out"
             error = {
@@ -387,10 +390,13 @@ class CronScheduler:
                     artifact_refs=list(result.artifact_refs),
                     output=dict(result.output),
                     isolated_session_id=f"cron:{job_id}:{run_id}",
+                    error=result.error,
                 )
         else:
             raise RuntimeError(f"unsupported cron payload kind: {kind}")
 
+        if result.error is not None:
+            return job, result
         delivery = deliver_cron_run(
             store=self._store,
             job=job,
@@ -509,10 +515,6 @@ class CronScheduler:
         if isinstance(value, str):
             return CronExecutionResult(summary=value)
         if isinstance(value, dict):
-            if bool(value.get("error", False)):
-                raise RuntimeError(
-                    str(value.get("summary") or "cron executor reported failure")
-                )
             summary = str(value.get("summary", "") or "").strip()
             artifact_refs_raw = value.get("artifact_refs", [])
             artifact_refs = (
@@ -531,6 +533,13 @@ class CronScheduler:
                 artifact_refs=artifact_refs,
                 output=output,
                 isolated_session_id=isolated_session_id,
+                error={
+                    "code": "cron_failed",
+                    "message": summary or "cron executor reported failure",
+                    "retryable": False,
+                }
+                if value.get("error")
+                else None,
             )
         raise RuntimeError(f"unsupported cron execution result type: {type(value)!r}")
 

@@ -330,6 +330,15 @@ def _h_task_schedule(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any
     origin = _origin_delivery_context(ctx)
     agent_id = _agent_id_from_context(ctx)
     manager = _resolve_task_manager(ctx)
+    from openminion.tools.security.schedule import configured_admission
+
+    scan_admission = configured_admission(agent_id=agent_id, ctx=ctx)
+    if scan_admission is not None and scan_admission.baseline_ref:
+        from openminion.tools.security.schedule import report_dependencies
+
+        report_dependencies(
+            ctx.artifactctl, scan_admission.baseline_ref, agent_id=agent_id
+        )
     with _storage_operation(message="Failed to create scheduled task"):
         created = manager.schedule_user_task(
             name=task_name,
@@ -337,11 +346,20 @@ def _h_task_schedule(args: dict[str, Any], ctx: RuntimeContext) -> dict[str, Any
             schedule=normalized_schedule,
             agent_id=agent_id,
             origin=origin,
+            security_scan=scan_admission.model_dump(mode="json")
+            if scan_admission
+            else None,
         )
         task_row = created["record"]
         job = created["job"]
         task_id = task_row.task_id
         deduped = bool(created["deduped"])
+        if scan_admission is not None:
+            from openminion.tools.security.schedule import pin_baseline
+
+            pin_baseline(
+                ctx.artifactctl, job_id=job["job_id"], admission=scan_admission
+            )
 
     scheduler = _scheduler_readiness(ctx)
     scheduler_note = (

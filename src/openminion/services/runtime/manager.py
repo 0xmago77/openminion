@@ -359,6 +359,7 @@ class AgentRuntimeManager:
             stream=bool(req.stream),
             meta=dict(req.meta or {}),
             explicit_agent=bool(req.explicit_agent),
+            trusted_security_scan_context=req.trusted_security_scan_context,
             trusted_memory_consolidation_context=(
                 dict(req.trusted_memory_consolidation_context)
                 if req.trusted_memory_consolidation_context is not None
