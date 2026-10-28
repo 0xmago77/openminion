@@ -142,6 +142,46 @@ def test_telemetryctl_doctor_reports_incomplete_external_exporter(
     assert payload["otel_exporter"]["endpoint_configured"] is False
 
 
+def test_telemetryctl_debug_error_keeps_configured_export_posture(
+    capsys,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home_root = tmp_path / "home"
+    config_path = home_root / ".openminion" / "agents.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime": {
+                    "telemetry_exporter": {
+                        "enabled": True,
+                        "endpoint": "http://collector.internal:4318",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_inspection(**_kwargs):
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(
+        "openminion.modules.telemetry.cli.open_telemetry_inspection",
+        fail_inspection,
+    )
+
+    assert main(["--home-root", str(home_root), "debug", "latest"]) == 3
+
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert payload["error"]["code"] == "TELEMETRY_STORAGE_UNAVAILABLE"
+    assert payload["export_health"]["enabled"] is True
+    assert payload["export_health"]["endpoint_configured"] is True
+    assert "collector.internal" not in output
+
+
 def test_telemetryctl_rejects_non_positive_list_limit() -> None:
     with pytest.raises(SystemExit):
         main(["invocation", "list", "--limit", "0"])

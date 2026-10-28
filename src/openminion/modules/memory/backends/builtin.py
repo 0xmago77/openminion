@@ -463,6 +463,13 @@ class BackendMemoryStoreAdapter(MemoryStore):
     def list_all(self):
         return _call_backend_extra(self._backend, "list_all")
 
+    def supports_capture_bundles(self) -> bool:
+        """Whether the backend has a callable ``apply_capture_bundle``.
+
+        The check ``apply_capture_bundle`` makes, without a write.
+        """
+        return callable(getattr(self._backend, "apply_capture_bundle", None))
+
     def apply_capture_bundle(self, bundle: Any) -> Any:
         """Apply an atomic capture bundle, which external backends may not offer.
 

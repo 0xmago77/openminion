@@ -9,6 +9,7 @@ def test_load_config_reads_runtime_telemetry_exporter_from_mapping() -> None:
     config = load_config(
         {
             "runtime": {
+                "env": {"OPENMINION_TRACE_REQUESTS": "1"},
                 "telemetry_exporter": {
                     "enabled": True,
                     "endpoint": "http://collector:4318",
@@ -16,7 +17,7 @@ def test_load_config_reads_runtime_telemetry_exporter_from_mapping() -> None:
                     "service_name": "telemetry-test",
                     "sample_rate": 0.25,
                     "include_assistant_body": True,
-                }
+                },
             }
         }
     )
@@ -28,6 +29,7 @@ def test_load_config_reads_runtime_telemetry_exporter_from_mapping() -> None:
     assert config.export.oteler.sample_rate == 0.25
     assert config.export.oteler.include_assistant_body is True
     assert config.export.oteler.include_output_messages is True
+    assert config.exact_request_traces_enabled is True
 
 
 def test_load_config_reads_runtime_telemetry_exporter_from_path(tmp_path) -> None:
