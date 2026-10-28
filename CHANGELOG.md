@@ -27,6 +27,12 @@ This file tracks package-facing release notes for `openminion`.
   SDK `Agent.run` call with an aliased argument, top-level or nested, is
   still rejected before the handler runs, as it is without this change. That
   runtime alias bug is tracked in #454 (Refs #435).
+- Make `python -m openminion.modules.storage` exit with the status that
+  storagectl's `main()` returns, as `python -m openminion.modules.storage.cli`
+  already does. A command that prints `"ok": false` and returns 2, such as
+  `pool-stats` without a PostgreSQL URL, now exits 2 instead of 0. The
+  printed output is unchanged, and a command that raises still exits 1
+  (Refs #450, #412).
 - Report the migration error in `openminion storage migrate` entries. When a
   module's `MigrationReport` failed, its entry had status `error` but no
   message, and the text output printed only `FAIL <module>`. The entry now
