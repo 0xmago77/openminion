@@ -94,7 +94,9 @@ def test_invalid_alias_expiry_fails_before_index_or_ref_lookup(
         ("2030-10-28T12:00:00-07:00", "2030-10-28T19:00:00+00:00"),
     ],
 )
-def test_alias_expiry_is_stored_in_utc(tmp_path, expires_at: str, expected: str) -> None:
+def test_alias_expiry_is_stored_in_utc(
+    tmp_path, expires_at: str, expected: str
+) -> None:
     with artifact_ctl(tmp_path) as ctl:
         ref = ctl.ingest_bytes(b"payload", original_name="payload.txt")
 
