@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,10 @@ import pytest
 
 from openminion.modules.runtime.sandboxes.docker_scan import DockerScanRunner
 from openminion.modules.runtime.sandboxes.scan_config import DockerScanConfig
+from openminion.base.config.env import EnvironmentConfig
+from openminion.modules.artifact import ArtifactCtlError
+from openminion.tools.security.offline import scan_snapshot_handler
+from tests.tools.security.test_audit_report import audit_context  # noqa: F401
 
 pytestmark = pytest.mark.e2e
 
@@ -36,6 +41,44 @@ def snapshot(path: Path, files: dict[str, bytes]) -> Path:
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
     return path
+
+
+def test_unchanged_archive_can_be_rescanned_in_a_fresh_session(
+    offline_runner, audit_context  # noqa: F811
+):
+    ctx, _ = audit_context
+    archive = snapshot(ctx.workspace / "input.tar", {"app.py": b"eval(input())\n"})
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    config = ctx.run_root / "scan.json"
+    config.write_text(
+        json.dumps(
+            {
+                "docker": offline_runner.config.model_dump(mode="json"),
+                "targets": {
+                    "fixture": {"root": str(ctx.workspace), "kind": "source_snapshot"}
+                },
+            }
+        )
+    )
+    ctx.env = EnvironmentConfig(values={"OPENMINION_SECURITY_SCAN_CONFIG": str(config)})
+    ctx.tool_name = "security.scan_snapshot"
+    args = dict(
+        target_id="fixture", archive=str(archive), expected_sha256=digest, check="code"
+    )
+    creator = ctx.session_id
+    for session in (creator, "fresh-" + uuid4().hex):
+        ctx.session_id = session
+        result = scan_snapshot_handler(args, ctx)
+        assert result["status"] == "completed" and result["findings"]
+        assert result["provenance"]["cleanup_completed"]
+        assert digest not in ctx.artifactctl.index.active_reference_shas()
+    assert ctx.artifactctl.get(digest).session_id == creator
+    assert (
+        ctx.artifactctl.read_bytes(digest, session_id=creator) == archive.read_bytes()
+    )
+    with pytest.raises(ArtifactCtlError, match="another session"):
+        ctx.artifactctl.read_bytes(digest, session_id=ctx.session_id)
+    assert ctx.artifactctl.list_views(digest) == []
 
 
 _CASES = [

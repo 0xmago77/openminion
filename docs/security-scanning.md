@@ -298,7 +298,9 @@ starting. Existing host scan calls retain their original trusted-source meaning.
   provenance produces `not_comparable`; absence never means resolved.
 
 Raw archives are opaque, creating-session artifacts: no text extraction, preview
-or retrieval indexing. Active workers retain them through existing collection
+or retrieval indexing. A fresh session may rescan identical approved archive
+bytes; deduplication preserves the original creator and grants no raw-read access.
+Active workers retain them through existing collection
 references. Normal completion releases those references; ordinary artifact
 retention then applies. Export/evaluation tools require the same actual session
 as their input. A report or SARIF export does not authorize repair.

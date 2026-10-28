@@ -142,7 +142,7 @@ class ArtifactCtl:
         src = Path(path).expanduser().resolve(strict=True)
         self._enforce_ingest_size(src.stat().st_size, source=str(src))
         sha256, size_bytes = _hash_file(src)
-        self._check_ingest_policy(sha256, session_id=session_id, opaque=False)
+        self._check_ingest_policy(sha256, opaque=False)
         sample = _read_sample(src, 256000)
         sniff = sample[:4096]
         inferred_mime = _determine_mime(provided=mime, path=src, sample=sniff)
@@ -169,7 +169,7 @@ class ArtifactCtl:
             meta_json=meta,
         )
         self.index.upsert_artifact(artifact_meta)
-        self._check_ingest_policy(sha256, session_id=session_id, opaque=False)
+        self._check_ingest_policy(sha256, opaque=False)
 
         self._auto_generate_views(sha256)
         ref = self.get(sha256).to_ref()
@@ -574,7 +574,7 @@ class ArtifactCtl:
     ) -> ArtifactRef:
         self._enforce_ingest_size(len(data), source=original_name or "bytes")
         sha256 = hashlib.sha256(data).hexdigest()
-        self._check_ingest_policy(sha256, session_id=session_id, opaque=opaque)
+        self._check_ingest_policy(sha256, opaque=opaque)
         if "opaque" in (meta or {}):
             raise ArtifactCtlError(
                 "INVALID_ARGUMENT", "Opaque policy is not caller metadata"
@@ -611,7 +611,7 @@ class ArtifactCtl:
             meta_json=meta,
         )
         self.index.upsert_artifact(artifact_meta)
-        self._check_ingest_policy(sha256, session_id=session_id, opaque=opaque)
+        self._check_ingest_policy(sha256, opaque=opaque)
 
         if auto_generate:
             self._auto_generate_views(sha256)
@@ -626,14 +626,12 @@ class ArtifactCtl:
             )
         return ref
 
-    def _check_ingest_policy(
-        self, sha256: str, *, session_id: str | None, opaque: bool
-    ) -> None:
+    def _check_ingest_policy(self, sha256: str, *, opaque: bool) -> None:
         existing = self.index.get_artifact(sha256, include_deleted=True)
         if existing is None:
             return
         was_opaque = bool((existing.meta_json or {}).get("opaque"))
-        if was_opaque != opaque or (opaque and existing.session_id != session_id):
+        if was_opaque != opaque:
             raise ArtifactCtlError(
                 "POLICY_DENIED", "Existing artifact has a different input policy"
             )

@@ -85,6 +85,21 @@ def test_snapshot_admission_is_opaque_and_has_no_host_git(audit_context, monkeyp
     assert ctx.artifactctl.list_views(digest) == []
     assert digest not in ctx.artifactctl.index.active_reference_shas()
     assert calls and not calls[0]["input_path"].exists()
+    original_session = ctx.session_id
+    ctx.session_id = "repeat-scan-session"
+    repeated = scan_snapshot_handler(
+        dict(
+            target_id="example",
+            archive=str(archive),
+            expected_sha256=digest,
+            check="code",
+        ),
+        ctx,
+    )
+    assert repeated["status"] == "completed"
+    assert repeated["target_identity"] == result["target_identity"]
+    assert ctx.artifactctl.get(digest).session_id == original_session
+    assert digest not in ctx.artifactctl.index.active_reference_shas()
     with pytest.raises(ToolRuntimeError, match="digest"):
         scan_snapshot_handler(
             dict(
@@ -106,7 +121,7 @@ def test_snapshot_admission_is_opaque_and_has_no_host_git(audit_context, monkeyp
             ),
             ctx,
         )
-    assert len(calls) == 1
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize(
