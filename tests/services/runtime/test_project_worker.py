@@ -39,7 +39,10 @@ from openminion.modules.task.project.reports import (
     render_project_report,
 )
 from openminion.base.errors import ErrorInfo
+from openminion.modules.runtime.contracts import TurnError, TurnResponse
 from openminion.modules.task.autonomy import now_ms
+from openminion.modules.task.cron_payloads import build_cron_turn_result
+from openminion.modules.task.scheduling import CronError
 from openminion.modules.task.plan import (
     TaskPlan,
     TaskPlanRevision,
@@ -2271,8 +2274,12 @@ def test_project_worker_blocks_after_one_failed_replan(tmp_path) -> None:
     assert manager.get_task("task-1").state == TaskLifecycleState.PAUSED
 
 
+@pytest.mark.parametrize(
+    "through_cron", [False, True], ids=["runtime-error", "cron-timeout"]
+)
 def test_project_worker_records_interruption_after_resumed_turn_starts(
     tmp_path,
+    through_cron,
 ) -> None:
     store, manager, run = _project(tmp_path, max_iterations=1)
     first = ProjectWorker(
@@ -2305,6 +2312,22 @@ def test_project_worker_records_interruption_after_resumed_turn_starts(
 
     def interrupted_turn(_request: ProjectTurnRequest) -> ProjectTurnResult:
         assert store.require(resumed.run_id).status == AutonomyRunStatus.RUNNING
+        if through_cron:
+            build_cron_turn_result(
+                result=TurnResponse(
+                    final_text="",
+                    errors=[
+                        TurnError(
+                            code="turn_timeout",
+                            message="Turn execution timed out after 300.00 seconds.",
+                            details={"timeout_seconds": 300},
+                        )
+                    ],
+                ),
+                session_id="resumed-project",
+                consolidation=None,
+                completed_at="2026-10-28T00:00:00Z",
+            )
         raise RuntimeError("provider interrupted")
 
     worker = ProjectWorker(
@@ -2315,13 +2338,23 @@ def test_project_worker_records_interruption_after_resumed_turn_starts(
         owner_id="worker-2",
     )
 
-    with pytest.raises(RuntimeError, match="provider interrupted"):
+    error_type = CronError if through_cron else RuntimeError
+    message = "timed out" if through_cron else "provider interrupted"
+    with pytest.raises(error_type, match=message) as raised:
         worker.run(resumed.run_id, max_cycles=1)
 
     interrupted = store.require(resumed.run_id)
     assert interrupted.status == AutonomyRunStatus.BLOCKED
     assert interrupted.last_error is not None
-    assert interrupted.last_error.code == "project_cycle_interrupted"
+    code = "turn_timeout" if through_cron else "project_cycle_interrupted"
+    assert interrupted.last_error.code == code
+    assert manager.get_task("task-1").state == TaskLifecycleState.PAUSED
+    checkpoint = load_latest_project_checkpoint(manager, task_id="task-1")
+    assert checkpoint.payload["error"]["code"] == code
+    assert checkpoint.payload["error"]["message"] == str(raised.value)
+    assert checkpoint.project_run.next_wake_job_id is None
+    if through_cron:
+        assert raised.value.details == {"timeout_seconds": 300}
 
 
 def test_project_error_dominates_passing_verifier(tmp_path) -> None:
