@@ -248,16 +248,15 @@ def _run_migrate_apply(
         result = {
             "module_id": module_id,
             "status": "ok" if report.success else "error",
-            "applied": (
-                list(report.applied_versions)
-                if hasattr(report, "applied_versions")
-                else []
-            ),
             "success": report.success,
         }
+        if not report.success:
+            result["error"] = report.error
         if not as_json:
-            status = "ok" if report.success else "FAIL"
-            print(f"  {status}  {module_id}")
+            if report.success:
+                print(f"  ok  {module_id}")
+            else:
+                print(f"  FAIL  {module_id}: {report.error}")
         return result
     except Exception as exc:
         if not as_json:
