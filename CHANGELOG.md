@@ -7,6 +7,8 @@ This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
 
+## Current package line - 2026-10-27
+
 - Document what `openminion storage backup` covers in a SQLite runtime home.
   The command snapshots one file and refuses the module databases that carry
   their own `application_id` (artifact, authored tools, brain, identity,
@@ -23,8 +25,6 @@ This file tracks package-facing release notes for `openminion`.
   runtime turn writes after the upgrade can lack both. The working state
   lives in the brain's session store, not in the runtime database
   (`docs/runtime-database-upgrades.md`, Refs #452, #419).
-
-## Current package line - 2026-10-27
 
 - Accept the canonical `time.now` tool's `utc` timestamp as exact-date
   evidence. Current-date answers that successfully called the time tool no
