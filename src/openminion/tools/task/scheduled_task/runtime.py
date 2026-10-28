@@ -2,6 +2,10 @@ from collections.abc import Mapping
 from typing import Any
 
 from openminion.modules.tool.runtime.context import RuntimeContext
+from openminion.modules.task.constants import (
+    TASK_INTERNAL_PAUSE_REASON_KEY,
+    TASK_INTERNAL_PAUSE_SOURCE_KEY,
+)
 
 from ..constants import (
     CONSOLIDATION_PAYLOAD_KEY,
@@ -49,6 +53,28 @@ def _safe_str(obj: Mapping[str, Any], key: str, default: str = "") -> str:
 
 def _text(value: Any) -> str:
     return str(value).strip() if value else ""
+
+
+def _paused_reason_from_payload(payload: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    return _text(payload.get(TASK_INTERNAL_PAUSE_REASON_KEY)) or None
+
+
+def _apply_pause_metadata(
+    payload: Mapping[str, Any] | None,
+    *,
+    reason: str | None,
+    source: str | None,
+) -> dict[str, Any]:
+    updated = dict(payload or {})
+    if reason:
+        updated[TASK_INTERNAL_PAUSE_REASON_KEY] = str(reason)
+        updated[TASK_INTERNAL_PAUSE_SOURCE_KEY] = str(source or "operator")
+    else:
+        updated.pop(TASK_INTERNAL_PAUSE_REASON_KEY, None)
+        updated.pop(TASK_INTERNAL_PAUSE_SOURCE_KEY, None)
+    return updated
 
 
 def _truthy_flag(value: Any) -> bool:

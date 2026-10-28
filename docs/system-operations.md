@@ -212,7 +212,7 @@ readiness together without exposing raw cron rows:
 
 ```bash
 openminion tasks list --json
-openminion tasks show TASK_ID --json
+openminion tasks show TASK_ID --runs-limit 20 --json
 openminion tasks run-now TASK_ID --json
 openminion tasks update TASK_ID --instruction "New instruction" \
   --every-ms 3600000 --expected-updated-at SCHEDULE_REVISION --json
@@ -221,7 +221,9 @@ openminion tasks resume TASK_ID --json
 openminion tasks cancel TASK_ID --json
 ```
 
-`tasks show` returns the opaque `schedule_revision` required by `tasks update`.
+`tasks show` returns five recent runs by default. `--runs-limit` can request more
+and is capped at 20. The response also returns the opaque `schedule_revision`
+required by `tasks update`.
 Run-now queues an ordinary run without changing the recurring deadline. Paused,
 terminal, busy, foreign, and specialized watch/consolidation tasks are rejected
 rather than guessed or rewritten.

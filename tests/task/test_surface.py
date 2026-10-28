@@ -25,7 +25,7 @@ def test_task_surface_lists_digest_tasks_and_pending_actions() -> None:
     assert payload["source"] == "task_ctl"
     assert payload["tasks"][0]["id"] == "t1"
     assert payload["tasks"][0]["operator_state"] == "waiting"
-    assert payload["tasks"][0]["resume_action"] == "approve"
+    assert payload["tasks"][0]["resume_action"] == "inspect-blocker"
     assert payload["tasks"][0]["pending_actions"][0]["decision_id"] == "pr1"
     assert payload["pending_actions"][0]["reason"] == "approval needed"
 
@@ -57,11 +57,10 @@ def test_task_surface_does_not_expose_pending_actions_for_hidden_tasks() -> None
     assert [item["decision_id"] for item in payload["pending_actions"]] == [
         "visible-decision"
     ]
-    with pytest.raises(ValueError, match="unknown task action"):
-        build_task_surface(source).apply_action(task_id="", action="deny")
+    assert not hasattr(build_task_surface(source), "apply_action")
 
 
-def test_task_surface_lists_and_controls_lifecycle_tasks() -> None:
+def test_task_surface_lists_lifecycle_tasks_without_mutation_api() -> None:
     manager = TaskManager.for_lifecycle_db(db_path=":memory:")
     manager.create_task(
         session_id="s1",
@@ -86,15 +85,7 @@ def test_task_surface_lists_and_controls_lifecycle_tasks() -> None:
         "turn_inputs_path": "/v1/sessions/s1/turn-inputs",
         "turn_stream_path": "/v1/turn/trace-1/stream",
     }
-    paused = surface.apply_action(task_id="lt1", action="pause")
-    assert paused["task"]["status"] == "WAITING"
-    paused_task = build_task_surface(manager, agent_id="agent").show_task("lt1")
-    assert paused_task is not None
-    assert paused_task["operator_state"] == "waiting"
-    resumed = surface.apply_action(task_id="lt1", action="resume")
-    assert resumed["task"]["status"] == "ACTIVE"
-    cancelled = surface.apply_action(task_id="lt1", action="cancel")
-    assert cancelled["task"]["status"] == "CANCELED"
+    assert not hasattr(surface, "apply_action")
 
     manager.create_linked_task(
         linked_job_id="job-without-session",
@@ -104,6 +95,17 @@ def test_task_surface_lists_and_controls_lifecycle_tasks() -> None:
     without_activity = surface.show_task("lt2")
     assert without_activity is not None
     assert "activity" not in without_activity
+
+    project = manager.create_task(
+        session_id="s1",
+        mode_name="project",
+        goal="specialized project",
+        agent_id="agent",
+        task_id="project-task",
+    )
+    projected = surface.show_task(project.task_id)
+    assert projected is not None
+    assert projected["valid_actions"] == []
 
 
 def test_task_surface_quotes_activity_route_segments() -> None:
@@ -310,6 +312,37 @@ def test_task_surface_does_not_advertise_update_for_specialized_watch(tmp_path) 
 
     assert task is not None
     assert task["valid_actions"] == ["pause", "cancel", "run-now", "delete-history"]
+
+
+def test_task_surface_bounds_recent_run_limit(tmp_path) -> None:
+    manager = TaskManager.from_cron_repository(
+        create_sqlite_cron_repository(db_path=tmp_path / "run-limit.db")
+    )
+    record = manager.schedule_task(
+        name="bounded-runs",
+        schedule={"kind": "every", "every_ms": 60_000},
+        payload={"kind": "agentTurn", "message": "check"},
+        agent_id="agent-a",
+    )
+    repository = getattr(manager, "_cron_repository")
+    for index in range(25):
+        run_id = repository.trigger_cron_run(record.cron_job_id)
+        repository.finish_cron_run(run_id, state="finished", summary=f"run-{index}")
+
+    default_task = build_task_surface(manager, agent_id="agent-a").show_task(
+        record.task_id
+    )
+    surface = build_task_surface(manager, agent_id="agent-a")
+    explicit_task = surface.show_task(record.task_id, runs_limit=8)
+    capped_task = surface.show_task(record.task_id, runs_limit=100)
+    minimum_task = surface.show_task(record.task_id, runs_limit=0)
+
+    assert default_task is not None and len(default_task["recent_runs"]) == 5
+    assert explicit_task is not None and len(explicit_task["recent_runs"]) == 8
+    assert capped_task is not None and len(capped_task["recent_runs"]) == 20
+    assert minimum_task is not None and len(minimum_task["recent_runs"]) == 1
+    with pytest.raises(ValueError):
+        surface.show_task(record.task_id, runs_limit="invalid")
 
 
 def test_task_surface_distinguishes_backend_failure_from_empty_inventory() -> None:

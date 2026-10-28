@@ -7,6 +7,7 @@ from openminion.modules.policy.adapters.composition import (
 )
 from openminion.modules.tool.base import ToolExecutionContext
 from openminion.modules.tool.contracts.schemas import TOOL_ERROR_CONFIRM_REQUIRED
+from openminion.modules.task.constants import TASK_REASON_RESUME_EXPIRED_ONE_SHOT
 from openminion.modules.task.scheduling.user_schedule import normalize_user_schedule
 from openminion.modules.task.surface import (
     build_task_surface,
@@ -23,6 +24,11 @@ class TaskControlOperationError(RuntimeError):
     @property
     def is_forbidden(self) -> bool:
         return self.code in {TOOL_ERROR_CONFIRM_REQUIRED, "POLICY_DENIED"}
+
+    @property
+    def response_code(self) -> str:
+        reason = str(self.details.get("reason_code") or "")
+        return reason if reason == TASK_REASON_RESUME_EXPIRED_ONE_SHOT else self.code
 
 
 def execute_task_control(
@@ -74,7 +80,19 @@ def execute_task_control(
             str(result.error or "task control failed"),
             dict(details) if isinstance(details, dict) else data,
         )
-    return dict(result.data or {})
+    payload = dict(result.data or {})
+    if tool_name in {"task.pause", "task.resume", "task.cancel"}:
+        task_id = str(arguments["task_id"])
+        payload = {
+            **payload,
+            "action": tool_name.removeprefix("task."),
+            "task": build_task_surface(
+                resolve_task_surface_source(runtime),
+                agent_id=agent_id,
+                session_id=session_id,
+            ).show_task(task_id),
+        }
+    return payload
 
 
 def create_task(
@@ -82,6 +100,7 @@ def create_task(
     runtime: Any,
     body: dict[str, object] | None,
     agent_id: str,
+    request_id: str,
     session_id: str = "",
 ) -> dict[str, Any]:
     if body is None:
@@ -90,56 +109,36 @@ def create_task(
     if unknown_fields:
         raise ValueError(f"unknown task fields: {', '.join(unknown_fields)}")
     instruction = str(body.get("instruction") or "").strip()
-    name = " ".join(str(body.get("name") or instruction).split())
-    if len(name) > 60:
-        name = f"{name[:57].rstrip()}..."
     schedule = body.get("schedule")
     if not instruction:
         raise ValueError("instruction is required")
     if not isinstance(schedule, dict):
         raise ValueError("schedule is required")
-    owner = resolve_task_surface_source(runtime)
-    create = getattr(owner, "schedule_user_task", None)
-    if not callable(create):
-        raise RuntimeError("task scheduling is unavailable")
-    origin = {"channel": "api"}
-    if session_id:
-        origin["session_id"] = session_id
-    normalized_schedule = normalize_user_schedule(schedule)
-    created = create(
-        name=name,
-        instruction=instruction,
-        schedule=normalized_schedule,
+    arguments: dict[str, object] = {
+        "instruction": instruction,
+        "schedule": normalize_user_schedule(schedule),
+    }
+    name = str(body.get("name") or "").strip()
+    if name:
+        arguments["name"] = name
+    created = execute_task_control(
+        runtime=runtime,
+        tool_name="task.schedule",
+        arguments=arguments,
         agent_id=agent_id,
-        origin=origin,
+        session_id=session_id,
+        request_id=request_id,
     )
-    record = created["record"]
-    job = created["job"]
+    task_id = str(created.get("task_id") or "")
+    owner = resolve_task_surface_source(runtime)
     return {
         "ok": True,
         "task": build_task_surface(
             owner,
             agent_id=agent_id,
             session_id=session_id,
-        ).show_task(record.task_id),
+        ).show_task(task_id),
         "deduped": bool(created["deduped"]),
-        "job_id": job.get("job_id"),
-        "scheduler": runtime.scheduler_readiness(),
+        "job_id": task_id,
+        "scheduler": dict(created.get("scheduler") or {}),
     }
-
-
-def apply_task_action(
-    *,
-    runtime: Any,
-    task_id: str,
-    action: str,
-    agent_id: str = "",
-    session_id: str = "",
-    limit: int = 50,
-) -> dict[str, Any]:
-    return build_task_surface(
-        resolve_task_surface_source(runtime),
-        agent_id=agent_id,
-        session_id=session_id,
-        limit=limit,
-    ).apply_action(task_id=task_id, action=action)

@@ -14,6 +14,7 @@ from openminion.base.constants import (
 )
 from openminion.base.types import Message
 from openminion.base.user_io import UserIO
+from openminion.tools.task.constants import WATCH_EPHEMERAL_METADATA_KEYS
 
 _USER_IO = UserIO()
 
@@ -25,10 +26,7 @@ def _resolve_turn_timeout_seconds(
 ) -> int:
     env_timeout = (
         resolve_environment_config()
-        .get(
-            OPENMINION_TURN_TIMEOUT_SECONDS_ENV,
-            "",
-        )
+        .get(OPENMINION_TURN_TIMEOUT_SECONDS_ENV, "")
         .strip()
     )
     if env_timeout:
@@ -255,6 +253,7 @@ def _extract_ephemeral_prompt_metadata(
         "cron_job_id",
         "cron_run_id",
         "scheduled_for",
+        *WATCH_EPHEMERAL_METADATA_KEYS,
         "memory_consolidation_job",
         "memory_consolidation_target_scope",
         "memory_consolidation_batch_limit",

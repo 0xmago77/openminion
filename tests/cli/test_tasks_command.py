@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from argparse import Namespace
+from argparse import ArgumentParser, Namespace
 from types import SimpleNamespace
 
 import openminion.cli.commands.tasks as tasks_command
+import pytest
 
+from openminion.base.config import ToolSelectionConfig
 from openminion.cli.commands.tasks import run_tasks
 from openminion.modules.session.storage.repository import create_sqlite_cron_repository
 from openminion.modules.task import InMemoryTaskCtl, TaskCreateInput, TaskManager
+from openminion.modules.tool.registry import ToolRegistry
+from openminion.tools.task.plugin import register as register_task_tools
 
 
 def test_tasks_cli_lists_task_as_json(capsys) -> None:
@@ -112,6 +116,112 @@ def test_tasks_cli_shows_live_scheduler_readiness_for_scheduled_task(
     assert "scheduler_reason: Provider maintenance" in detail
 
 
+def test_tasks_cli_controls_lifecycle_task_through_registered_tool(
+    tmp_path,
+    capsys,
+) -> None:
+    manager = TaskManager.for_lifecycle_db(db_path=tmp_path / "lifecycle.db")
+    manager.create_task(
+        session_id="session-1",
+        mode_name="research",
+        goal="finish the report",
+        agent_id="agent-1",
+        task_id="lifecycle-task",
+    )
+    registry = ToolRegistry()
+    register_task_tools(registry)
+    app = SimpleNamespace(
+        config=SimpleNamespace(
+            agents={"agent-1": object()},
+            default_agent="agent-1",
+            runtime=SimpleNamespace(
+                env={}, tools=None, tool_selection=ToolSelectionConfig()
+            ),
+        ),
+        tools=registry,
+        task_manager=manager,
+        scheduler_readiness=lambda: {"state": "ready"},
+    )
+
+    for command, expected_state in (
+        ("pause", "paused"),
+        ("resume", "active"),
+        ("cancel", "cancelled"),
+    ):
+        args = Namespace(
+            tasks_command=command,
+            task_id="lifecycle-task",
+            agent_id="agent-1",
+            session="session-1",
+            limit=10,
+            json=True,
+            confirm=False,
+        )
+        assert run_tasks(args, app) == 0
+        assert manager.get_task("lifecycle-task").state.value == expected_state
+        capsys.readouterr()
+
+
+def test_tasks_show_parser_accepts_run_limit_and_rejects_invalid_value() -> None:
+    parser = ArgumentParser()
+    tasks_command.register(parser.add_subparsers(dest="command"))
+
+    args = parser.parse_args(["tasks", "show", "task-1", "--runs-limit", "8"])
+
+    assert args.runs_limit == 8
+    with pytest.raises(SystemExit):
+        parser.parse_args(["tasks", "show", "task-1", "--runs-limit", "invalid"])
+
+    compatibility_args = parser.parse_args(["tasks", "show", "task-1", "--limit", "20"])
+    assert compatibility_args.limit == 20
+    assert compatibility_args.runs_limit is None
+
+
+def test_tasks_cli_show_renders_requested_recent_runs(tmp_path, capsys) -> None:
+    manager = TaskManager.from_cron_repository(
+        create_sqlite_cron_repository(db_path=tmp_path / "runs.db")
+    )
+    record = manager.schedule_task(
+        name="recent-runs",
+        schedule={"kind": "every", "every_ms": 60_000},
+        payload={"kind": "agentTurn", "message": "check"},
+        agent_id="agent",
+    )
+    repository = getattr(manager, "_cron_repository")
+    for index in range(8):
+        run_id = repository.trigger_cron_run(record.cron_job_id)
+        repository.finish_cron_run(run_id, state="finished", summary=f"run-{index}")
+    args = Namespace(
+        tasks_command="show",
+        task_id=record.task_id,
+        agent_id="agent",
+        session="s1",
+        limit=10,
+        runs_limit=8,
+        json=False,
+    )
+
+    assert run_tasks(args, SimpleNamespace(task_manager=manager)) == 0
+
+    output = capsys.readouterr().out
+    assert len([line for line in output.splitlines() if line.startswith("- ")]) == 8
+
+    args.runs_limit = None
+    args.limit = 7
+    assert run_tasks(args, SimpleNamespace(task_manager=manager)) == 0
+    compatibility_output = capsys.readouterr().out
+    assert (
+        len(
+            [
+                line
+                for line in compatibility_output.splitlines()
+                if line.startswith("- ")
+            ]
+        )
+        == 7
+    )
+
+
 def test_tasks_cli_uses_configured_default_agent(capsys) -> None:
     ctl = InMemoryTaskCtl()
     seen: dict[str, str] = {}
@@ -214,6 +324,38 @@ def test_tasks_cli_run_now_dispatches_registered_tool(monkeypatch, capsys) -> No
         "payload": {"task_id": "task-1"},
     }
     assert '"run_id": "run-1"' in capsys.readouterr().out
+
+
+def test_tasks_cli_pause_dispatches_registered_tool(monkeypatch, capsys) -> None:
+    captured = {}
+
+    def execute(_app, _args, *, tool_name, payload):
+        captured.update(tool_name=tool_name, payload=payload)
+        return {
+            "ok": True,
+            "error": "",
+            "data": {"task_id": "task-1", "paused": True},
+        }
+
+    monkeypatch.setattr(tasks_command, "_execute_task_tool", execute)
+    args = Namespace(
+        tasks_command="pause",
+        task_id="task-1",
+        agent_id="agent",
+        session="s1",
+        limit=10,
+        json=True,
+    )
+
+    ctl = InMemoryTaskCtl()
+    ctl.create_task(TaskCreateInput(task_id="task-1", title="Task 1"))
+
+    assert run_tasks(args, SimpleNamespace(task_ctl=ctl)) == 0
+    assert captured == {
+        "tool_name": "task.pause",
+        "payload": {"task_id": "task-1"},
+    }
+    assert '"paused": true' in capsys.readouterr().out
 
 
 def test_tasks_cli_scheduler_pause_dispatches_revision(monkeypatch, capsys) -> None:

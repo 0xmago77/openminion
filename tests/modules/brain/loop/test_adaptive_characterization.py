@@ -563,7 +563,7 @@ def test_profile_overrides_and_metadata_paths() -> None:
     assert watch_check == {
         "turn_kind": "check",
         "allowed_tools": frozenset({"file.read", "time"}),
-        "max_iterations": 3,
+        "max_iterations": 5,
         "write_authorized": False,
         "profile_id": "ops_minimal",
         "target_id": "host:local",

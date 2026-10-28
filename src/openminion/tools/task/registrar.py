@@ -62,13 +62,13 @@ def _model_tools() -> tuple[ModelToolDef, ...]:
             "Create a recurring memory-consolidation task backed by the cron scheduler",
         ),
         (MODEL_TASK_WATCH, _WATCH_DESCRIPTION),
-        (MODEL_TASK_CANCEL, "Cancel a previously scheduled task"),
-        (MODEL_TASK_LIST, "List scheduled tasks visible to the current agent scope"),
-        (MODEL_TASK_PAUSE, "Pause a scheduled task by exact task identifier"),
-        (MODEL_TASK_RESUME, "Resume a paused scheduled task by exact task identifier"),
+        (MODEL_TASK_CANCEL, "Cancel a controllable task by exact identifier"),
+        (MODEL_TASK_LIST, "List controllable tasks visible to the current agent scope"),
+        (MODEL_TASK_PAUSE, "Pause a controllable task by exact identifier"),
+        (MODEL_TASK_RESUME, "Resume a paused controllable task by exact identifier"),
         (
             MODEL_TASK_SHOW,
-            "Show one scheduled task and recent run history by exact task identifier",
+            "Show one controllable task by exact identifier, including run history when scheduled",
         ),
         (
             MODEL_TASK_RUN_NOW,

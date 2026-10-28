@@ -23,7 +23,7 @@ DEFAULT_CONSOLIDATION_RETRY_BACKOFF_SECONDS = 30
 DEFAULT_CONSOLIDATION_TIMEOUT_SECONDS = 30
 DEFAULT_WATCH_MAX_CHECKS = 6
 DEFAULT_WATCH_TIMEOUT_SECONDS = 60
-DEFAULT_WATCH_MAX_ITERATIONS = 3
+DEFAULT_WATCH_MAX_ITERATIONS = 5
 DEFAULT_WATCH_TTL_MINUTES = 60
 PR_REVIEW_SUMMARY_MAX_CHARS = 1000
 PR_REVIEW_ANNOUNCE_MAX_CHARS = 200
@@ -46,6 +46,21 @@ WATCH_DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
     "web.search",
     "exec.run",
     "time",
+)
+WATCH_EPHEMERAL_METADATA_KEYS = frozenset(
+    {
+        "watch_job",
+        "watch_turn_kind",
+        "watch_description",
+        "watch_alert_condition",
+        "watch_profile_id",
+        "watch_target_id",
+        "watch_allowed_tools",
+        "watch_max_iterations",
+        "watch_timeout_seconds",
+        "watch_write_authorized",
+        "watch_write_authorization_scope",
+    }
 )
 EVERY_UNIT_TO_MS: dict[str, int] = {
     "ms": 1,
@@ -114,6 +129,7 @@ __all__ = [
     "TASK_REASON_PAST_DUE",
     "TASK_REASON_SCHEDULER_REVISION_CONFLICT",
     "WATCH_DEFAULT_ALLOWED_TOOLS",
+    "WATCH_EPHEMERAL_METADATA_KEYS",
     "WATCH_PAYLOAD_KEY",
     "WATCH_TURN_KIND_ACTION",
     "WATCH_TURN_KIND_CHECK",

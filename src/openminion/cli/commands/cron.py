@@ -23,16 +23,36 @@ def run_cron(args, app: APIRuntime) -> int:
     if action == "show":
         return _cron_show(app, args)
     if action == "status":
-        return _cron_status(app)
+        return _cron_status(app, args)
     if action == "run":
         return _cron_run(app, args)
     print(f"Unknown cron command: {action}")
     return 1
 
 
-def _cron_status(app: APIRuntime) -> int:
+def _cron_status(app: APIRuntime, args: argparse.Namespace) -> int:
     readiness = dict(app.scheduler_readiness())
     state = str(readiness.get("state") or "unavailable")
+    output = execute_task_tool(
+        app,
+        args,
+        tool_name="task.scheduler_status",
+        payload={},
+        owner="cron",
+    )
+    raw_data = output.get("data")
+    data = dict(raw_data) if isinstance(raw_data, dict) else {}
+    control = dict(data.get("scheduler_control") or {})
+    if bool(getattr(args, "json", False)):
+        print_json_payload(
+            {
+                "ok": bool(output.get("ok")),
+                "scheduler": readiness,
+                "scheduler_control": control,
+                "error": str(output.get("error") or ""),
+            }
+        )
+        return 0 if state == "ready" and output.get("ok") else 1
     print("Scheduler Status")
     print("================")
     print(f"State: {state}")
@@ -42,7 +62,13 @@ def _cron_status(app: APIRuntime) -> int:
         print(f"Last heartbeat: {heartbeat}")
     if command := str(readiness.get("check_command") or "").strip():
         print(f"Check: {command}")
-    return 0 if state == "ready" else 1
+    if output.get("ok"):
+        print(f"Dispatch: {'paused' if control.get('paused') else 'enabled'}")
+        if reason := str(control.get("reason") or "").strip():
+            print(f"Dispatch reason: {reason}")
+    else:
+        print(f"Dispatch: unavailable ({output.get('error') or 'unknown error'})")
+    return 0 if state == "ready" and output.get("ok") else 1
 
 
 def _cron_create(app: APIRuntime, args) -> int:
@@ -266,6 +292,8 @@ def _register_cron_simple_subcommand(
     cron_subcommands, *, name: str, help_text: str
 ) -> None:
     parser = cron_subcommands.add_parser(name, help=help_text)
+    parser.add_argument("--agent-id", default=None)
+    _add_cron_session_and_json_args(parser)
     _finalize_cron_subcommand(parser)
 
 
@@ -288,7 +316,9 @@ def _register_cron_family(
 
     _register_cron_create_subcommand(cron_subcommands)
     _register_cron_simple_subcommand(
-        cron_subcommands, name="status", help_text="Show cron scheduler health"
+        cron_subcommands,
+        name="status",
+        help_text="Show scheduler health and dispatch state",
     )
     _register_cron_task_action_subcommand(
         cron_subcommands,

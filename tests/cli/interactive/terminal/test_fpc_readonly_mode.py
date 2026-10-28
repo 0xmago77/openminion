@@ -5,10 +5,12 @@ import io
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from rich.console import Console
 
 from openminion.cli.interactive.terminal.shell import _SLASH_COMMANDS, _handle_slash
 from openminion.cli.interactive.terminal.shell.permissions import _list_grants
+from openminion.cli.presentation.visible_parity import _execute_focus_task_tool
 from openminion.base.config.action_policy import ACTION_POLICY_SESSION_OVERRIDE_KEY
 from openminion.cli.interactive.runtime import OpenMinionRuntime
 
@@ -81,6 +83,56 @@ def test_permission_mode_cycle_uses_three_modes() -> None:
     assert rt.cycle_permission_mode() == "readonly"
     assert rt.cycle_permission_mode() == "auto"
     assert rt.cycle_permission_mode() == "default"
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ("task.pause", "task.resume", "task.cancel", "task.run_now"),
+)
+def test_focus_task_mutations_are_blocked_in_readonly(tool_name: str) -> None:
+    rt = _make_runtime()
+    rt._permission_mode = "readonly"
+
+    result = _execute_focus_task_tool(rt, tool_name, {"task_id": "task-1"})
+
+    assert result == {
+        "ok": False,
+        "error": f"Tool {tool_name!r} blocked by readonly permission mode",
+        "data": {"error_code": "PERMISSION_DENIED_READONLY"},
+    }
+
+
+def test_focus_task_control_uses_cli_registered_tool_runtime(monkeypatch) -> None:
+    rt = _make_runtime()
+    captured = {}
+
+    def execute(app, args, *, tool_name, payload, owner):
+        captured.update(
+            app=app,
+            agent_id=args.agent_id,
+            session=args.session,
+            tool_name=tool_name,
+            payload=payload,
+            owner=owner,
+        )
+        return {"ok": True, "error": "", "data": {"run_id": "run-1"}}
+
+    monkeypatch.setattr(
+        "openminion.cli.presentation.visible_parity.execute_task_tool",
+        execute,
+    )
+
+    result = _execute_focus_task_tool(rt, "task.run_now", {"task_id": "task-1"})
+
+    assert result["data"]["run_id"] == "run-1"
+    assert captured == {
+        "app": rt._rt,
+        "agent_id": "default-agent",
+        "session": "sess-1",
+        "tool_name": "task.run_now",
+        "payload": {"task_id": "task-1"},
+        "owner": "tasks",
+    }
 
 
 def test_permission_posture_persists_as_one_metadata_patch() -> None:

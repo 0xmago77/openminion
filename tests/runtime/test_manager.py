@@ -12,10 +12,10 @@ def test_turn_request_keeps_positional_explicit_agent_compatibility() -> None:
     )
 
     assert request.explicit_agent is True
-    assert request.trusted_memory_consolidation_context is None
+    assert request.trusted_task_context is None
 
 
-def test_manager_preserves_trusted_memory_consolidation_context() -> None:
+def test_manager_preserves_trusted_task_context() -> None:
     seen: list[TurnRequest] = []
 
     def _executor(req, emit_chunk, cancel_event):  # noqa: ANN001
@@ -31,16 +31,12 @@ def test_manager_preserves_trusted_memory_consolidation_context() -> None:
                 agent_id="ops",
                 session_id="session-context",
                 input_text="consolidate",
-                trusted_memory_consolidation_context={
-                    "memory_consolidation_job": "true"
-                },
+                trusted_task_context={"memory_consolidation_job": "true"},
             )
         ).result(timeout_s=2)
 
         assert result.final_text == "ok"
-        assert seen[0].trusted_memory_consolidation_context == {
-            "memory_consolidation_job": "true"
-        }
+        assert seen[0].trusted_task_context == {"memory_consolidation_job": "true"}
     finally:
         manager.shutdown()
 

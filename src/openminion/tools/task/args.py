@@ -59,7 +59,7 @@ class TaskScheduleArgs(BaseModel):
 class _TaskIdArgs(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    task_id: str = Field(..., min_length=1, description="Task identifier (cron job_id)")
+    task_id: str = Field(..., min_length=1, description="Exact task identifier")
 
     @field_validator("task_id", mode="before")
     @classmethod

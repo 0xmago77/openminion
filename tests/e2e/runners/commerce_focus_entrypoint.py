@@ -124,7 +124,10 @@ def _exercise_order_watch(runtime) -> list[dict[str, object]]:
         executor = CronTurnExecutor(
             runtime=runtime,
             cron_store=store,
-            request_builder=lambda payload, agent_id: (payload, agent_id),
+            request_builder=lambda payload, agent_id, _memory=None, _watch=None: (
+                payload,
+                agent_id,
+            ),
             timeout_s=10,
         )
         task_id = str(matching[0]["job_id"])

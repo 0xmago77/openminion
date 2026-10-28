@@ -177,6 +177,8 @@ def _task_list_payload(
                 "lifecycle_state": canonical.get("lifecycle_state"),
                 "task_kind": canonical.get("task_kind"),
                 "valid_actions": list(canonical.get("valid_actions") or []),
+                "agent_id": _safe_str(job, "agent_id") or None,
+                "created_at": job.get("created_at"),
                 "enabled": bool(canonical.get("enabled", job.get("enabled", False))),
                 "next_due_at": canonical.get("due_at") or job.get("next_due_at"),
                 "concurrency_key": _safe_str(job, "concurrency_key") or None,

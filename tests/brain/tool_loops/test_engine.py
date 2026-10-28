@@ -4329,6 +4329,92 @@ def test_terminal_tool_request_uses_existing_direct_tool_closure() -> None:
     )
 
 
+def test_terminal_watch_tool_request_retries_missing_outcome() -> None:
+    seed_response = LLMResponse(
+        ok=True,
+        provider="fake",
+        model="fake-model",
+        tool_calls=[
+            ToolCall(
+                id="request-read",
+                name=TOOL_REQUEST_TOOL_NAME,
+                arguments={"name": "file.read", "terminal_after_success": True},
+            )
+        ],
+        finish_reason="tool_calls",
+    )
+    runtime = _FakeRuntime(
+        responses=[
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="fake-model",
+                tool_calls=[
+                    ToolCall(
+                        id="read",
+                        name="file.read",
+                        arguments={"path": "release-status.json"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="fake-model",
+                output_text="Status is ready; no alert.",
+                finish_reason="stop",
+            ),
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="fake-model",
+                output_text="Status is ready; no alert.",
+                watch_outcome={
+                    "condition_met": False,
+                    "summary": "Status is ready; no alert.",
+                },
+                finish_reason="stop",
+            ),
+        ]
+    )
+    loop_ctx = _LoopContext(
+        state=_state(tool_calls=5, llm_calls_max=10),
+        outcomes=[
+            CommandExecutionOutcome(
+                approved_command=SimpleNamespace(
+                    tool_name="file.read",
+                    args={"path": "release-status.json"},
+                ),
+                action_result=ActionResult(
+                    command_id=new_uuid(),
+                    status="success",
+                    summary='{"status":"ready"}',
+                ),
+            )
+        ],
+    )
+
+    outcome = run_adaptive_tool_loop(
+        loop_ctx,
+        profile=_profile(
+            allowed_tools=frozenset({"file.read"}),
+            max_iterations=5,
+            profile_name="watch_check_v1",
+        ),
+        runtime=runtime,
+        model="fake-model",
+        initial_messages=[Message(role="user", content="Check release status")],
+        tool_specs=[],
+        requestable_tool_specs=_tool_specs("file.read"),
+        seed_response=seed_response,
+    )
+
+    assert len(runtime.calls) == 3
+    assert outcome.watch_condition_met is False
+    assert outcome.watch_summary == "Status is ready; no alert."
+
+
 @pytest.mark.parametrize(
     ("executions", "satisfied", "prior_scope", "pending_job"),
     [
@@ -5159,6 +5245,94 @@ def test_engine_watch_outcome_is_recorded_on_final_text() -> None:
         and "structured watch_outcome signal" in message.content
         for message in runtime.calls[0]["messages"]
     )
+
+
+def test_engine_watch_check_retries_once_when_outcome_is_missing() -> None:
+    runtime = _FakeRuntime(
+        responses=[
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="fake-model",
+                output_text="Deployment is healthy.",
+                finish_reason="stop",
+            ),
+            LLMResponse(
+                ok=True,
+                provider="fake",
+                model="fake-model",
+                output_text="Deployment is healthy.",
+                watch_outcome={
+                    "condition_met": False,
+                    "summary": "Deployment is healthy.",
+                },
+                finish_reason="stop",
+            ),
+        ]
+    )
+    state = _state(tool_calls=2)
+    state.module_state["watch_subscription"] = {
+        "alert_condition": "deployment health is not healthy"
+    }
+    loop_ctx = _LoopContext(state=state)
+
+    outcome = run_adaptive_tool_loop(
+        loop_ctx,
+        profile=_profile(
+            allowed_tools=frozenset({"web.fetch", "time"}),
+            max_iterations=3,
+            profile_name="watch_check_v1",
+        ),
+        runtime=runtime,
+        model="fake-model",
+        initial_messages=[Message(role="user", content="check the deployment")],
+        tool_specs=_tool_specs("web.fetch", "time"),
+    )
+
+    assert len(runtime.calls) == 2
+    assert outcome.final_text == "Deployment is healthy."
+    assert outcome.watch_condition_met is False
+    assert outcome.watch_summary == "Deployment is healthy."
+    assert any(
+        message.role == "system" and "<watch_outcome>" in message.content
+        for message in runtime.calls[1]["messages"]
+    )
+    assert any(
+        message.role == "user"
+        and "<watch_alert_condition>deployment health is not healthy" in message.content
+        for message in runtime.calls[1]["messages"]
+    )
+    assert not any(
+        message.role == "system"
+        and "deployment health is not healthy" in message.content
+        for message in runtime.calls[1]["messages"]
+    )
+
+
+def test_watch_outcome_text_trailer_normalizes_to_typed_signal() -> None:
+    from openminion.modules.brain.loop.tools.runtime import (
+        _normalize_watch_outcome_response,
+    )
+
+    response = LLMResponse(
+        ok=True,
+        provider="fake",
+        model="fake-model",
+        output_text=(
+            "Deployment is healthy.\n"
+            '<watch_outcome>{"condition_met":false,'
+            '"summary":"Deployment is healthy."}</watch_outcome>'
+        ),
+        finish_reason="stop",
+    )
+
+    normalized = _normalize_watch_outcome_response(response)
+
+    assert normalized.output_text == "Deployment is healthy."
+    assert normalized.watch_outcome == {
+        "condition_met": False,
+        "summary": "Deployment is healthy.",
+    }
 
 
 def test_engine_watch_action_turn_uses_standard_completion_without_watch_outcome() -> (

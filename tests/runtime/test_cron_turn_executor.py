@@ -187,6 +187,7 @@ def _request_builder(
     payload: dict[str, object],
     agent_id: str,
     trusted_memory_consolidation_context: dict[str, str] | None = None,
+    trusted_watch_context: dict[str, str] | None = None,
 ) -> object:
     return SimpleNamespace(
         agent_id=agent_id,
@@ -195,6 +196,7 @@ def _request_builder(
         meta=dict(payload.get("meta") or {}),
         payload=dict(payload),
         trusted_memory_consolidation_context=trusted_memory_consolidation_context,
+        trusted_watch_context=trusted_watch_context,
     )
 
 
@@ -904,6 +906,9 @@ def test_monitoring_watch_uses_exact_default_profile_and_stays_active() -> None:
     assert request.meta["watch_profile_id"] == "ops_minimal"
     assert request.meta["watch_target_id"] == "local"
     assert request.meta["target_id"] == "local"
+    assert request.trusted_watch_context == {
+        key: request.meta[key] for key in request.meta if key.startswith("watch_")
+    }
     assert result["output"]["watch_delivery_requested"] is True
     assert result["output"]["watch_delivery_transition"] == "open"
     assert result["output"]["watch_terminal"] is False
