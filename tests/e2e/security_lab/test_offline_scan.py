@@ -44,7 +44,8 @@ def snapshot(path: Path, files: dict[str, bytes]) -> Path:
 
 
 def test_unchanged_archive_can_be_rescanned_in_a_fresh_session(
-    offline_runner, audit_context  # noqa: F811
+    offline_runner,
+    audit_context,  # noqa: F811
 ):
     ctx, _ = audit_context
     archive = snapshot(ctx.workspace / "input.tar", {"app.py": b"eval(input())\n"})
