@@ -107,6 +107,7 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
     turn_input_queue = object()
     sandbox_runner = object()
     security_lab_runner = object()
+    shared_retrieve_ctl = object()
 
     service = SimpleNamespace(
         _config=config,
@@ -115,7 +116,7 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
         _telemetryctl=None,
         _runtime_handle=SimpleNamespace(turn_input_queue=turn_input_queue),
         _logger=logging.getLogger("test.bootstrap.brain_runtime_db"),
-        _retrieve_service=None,
+        _retrieve_service=shared_retrieve_ctl,
         _action_policy_service=None,
         _self_improvement=None,
         _tools=None,
@@ -340,8 +341,10 @@ def test_build_brain_runner_bundle_uses_brain_runtime_db_and_artifact_ownership(
     assert context_factory.call_args.kwargs["owns_artifactctl"] is (mode == "auto")
     assert context_factory.call_args.kwargs["identity_db_path"] == str(identity_db_path)
     assert retrieve_factory.call_count == 1
+    assert retrieve_factory.call_args.kwargs["retrieve_service"] is shared_retrieve_ctl
     assert context_factory.call_args.kwargs["retrieve_api"] is retrieve_api
     assert tool_api_factory.call_args.kwargs["artifactctl"] is expected_artifactctl
+    assert tool_api_factory.call_args.kwargs["retrieve_ctl"] is shared_retrieve_ctl
     assert tool_api_factory.call_args.kwargs["sandbox_runner"] is sandbox_runner
     assert (
         tool_api_factory.call_args.kwargs["security_lab_runner"] is security_lab_runner

@@ -68,8 +68,9 @@ def _detect_encoding(data: bytes) -> str | None:
 
 
 def _extract_ingest_text_from_bytes(data: bytes, *, max_chars: int = 20000) -> str:
-    text, _warnings = _decode_text(data)
-    return text[:max_chars].strip()
+    limit = max(0, int(max_chars))
+    text, _warnings = _decode_text(data[: limit * 4 + 3])
+    return text[:limit].strip()
 
 
 def _is_probably_text(sample: bytes) -> bool:

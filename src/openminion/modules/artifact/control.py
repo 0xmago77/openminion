@@ -19,13 +19,19 @@ from openminion.modules.artifact.content import (
     _detect_encoding,
     _extract_ingest_text_from_bytes,
 )
-from openminion.modules.artifact.config import ArtifactCtlConfig, load_config
+from openminion.modules.artifact.config import (
+    ArtifactCtlConfig,
+    load_config,
+    retention_override,
+    validate_retention_config,
+)
 from openminion.modules.artifact.constants import (
     DEFAULT_CONFIG_FILENAME,
     VALID_OWNER_TYPES,
 )
 from openminion.modules.artifact.errors import ArtifactCtlError
-from openminion.modules.artifact.integrity import build_verify_report
+from openminion.modules.artifact.integrity import build_verify_report, hash_file
+from openminion.modules.artifact.integrity import read_file_sample
 from openminion.modules.artifact.interfaces import ARTIFACT_INTERFACE_VERSION
 from openminion.modules.artifact.models import (
     ArtifactMeta,
@@ -34,6 +40,7 @@ from openminion.modules.artifact.models import (
     PurgeReport,
     VerifyReport,
     ViewRecord,
+    normalize_alias_expiry,
     parse_ref_or_sha,
 )
 from openminion.modules.artifact.storage import (
@@ -63,6 +70,7 @@ class ArtifactCtl:
         | ArtifactCtlConfig = DEFAULT_CONFIG_FILENAME,
     ) -> None:
         self.config = load_config(config)
+        validate_retention_config(self.config)
 
         blob_backend = self.config.blob_store.backend.lower()
         if blob_backend != "filesystem_cas":
@@ -141,9 +149,9 @@ class ArtifactCtl:
             )
         src = Path(path).expanduser().resolve(strict=True)
         self._enforce_ingest_size(src.stat().st_size, source=str(src))
-        sha256, size_bytes = _hash_file(src)
+        sha256, size_bytes = hash_file(src)
         self._check_ingest_policy(sha256, opaque=False)
-        sample = _read_sample(src, 256000)
+        sample = read_file_sample(src, 256000)
         sniff = sample[:4096]
         inferred_mime = _determine_mime(provided=mime, path=src, sample=sniff)
         encoding = _detect_encoding(sniff)
@@ -173,13 +181,14 @@ class ArtifactCtl:
 
         self._auto_generate_views(sha256)
         ref = self.get(sha256).to_ref()
-        self._emit_retrieve_ingest_event(
-            retrieve_ctl=retrieve_ctl,
-            artifact_ref=ref,
-            artifact_text=_extract_ingest_text_from_bytes(sample),
-            artifact_meta=artifact_meta,
-            fallback_title=label or src.name,
-        )
+        if retrieve_ctl is not None:
+            self._emit_retrieve_ingest_event(
+                retrieve_ctl=retrieve_ctl,
+                artifact_ref=ref,
+                artifact_text=_extract_ingest_text_from_bytes(sample),
+                artifact_meta=artifact_meta,
+                fallback_title=label or src.name,
+            )
         return ref
 
     def get(self, ref_or_sha: str) -> ArtifactMeta:
@@ -322,6 +331,11 @@ class ArtifactCtl:
         normalized_alias = (alias or "").strip()
         if not normalized_alias:
             raise ArtifactCtlError("INVALID_ARGUMENT", "Alias cannot be empty")
+        if expires_at is not None:
+            try:
+                expires_at = normalize_alias_expiry(expires_at)
+            except ValueError as exc:
+                raise ArtifactCtlError("INVALID_ARGUMENT", str(exc)) from exc
 
         existing = self.index.alias_resolve(normalized_alias)
         if existing and not overwrite:
@@ -385,11 +399,18 @@ class ArtifactCtl:
         keep_days: int | None = None,
         delete_unreferenced_after_days: int | None = None,
     ) -> GCReport:
-        keep = self.config.retention.keep_days if keep_days is None else int(keep_days)
+        keep = (
+            self.config.retention.keep_days
+            if keep_days is None
+            else retention_override(keep_days, "keep_days")
+        )
         delete_after = (
             self.config.retention.delete_unreferenced_after_days
             if delete_unreferenced_after_days is None
-            else int(delete_unreferenced_after_days)
+            else retention_override(
+                delete_unreferenced_after_days,
+                "delete_unreferenced_after_days",
+            )
         )
         root_set = self.index.active_reference_shas() | self.index.active_alias_shas()
         protected = root_set | self.index.recent_artifact_shas(keep)
@@ -431,7 +452,7 @@ class ArtifactCtl:
         grace = (
             self.config.retention.purge_grace_days
             if grace_days is None
-            else int(grace_days)
+            else retention_override(grace_days, "grace_days")
         )
         views = self.index.purgeable_views(grace)
         protected = self.index.active_reference_shas() | self.index.active_alias_shas()
@@ -541,6 +562,8 @@ class ArtifactCtl:
 
     def ref_add(self, owner_type: str, owner_id: str, ref_or_sha: str) -> None:
         self._validate_owner_type(owner_type)
+        if not owner_id or not owner_id.strip():
+            raise ArtifactCtlError("INVALID_ARGUMENT", "owner_id cannot be blank")
         sha = self._resolve_active_sha(ref_or_sha)
         self.index.add_reference(owner_type, owner_id, sha)
 
@@ -616,7 +639,7 @@ class ArtifactCtl:
         if auto_generate:
             self._auto_generate_views(sha256)
         ref = self.get(sha256).to_ref()
-        if not opaque:
+        if not opaque and retrieve_ctl is not None:
             self._emit_retrieve_ingest_event(
                 retrieve_ctl=retrieve_ctl,
                 artifact_ref=ref,
@@ -639,13 +662,13 @@ class ArtifactCtl:
     def _emit_retrieve_ingest_event(
         self,
         *,
-        retrieve_ctl: Any | None,
+        retrieve_ctl: Any,
         artifact_ref: ArtifactRef,
         artifact_text: str,
         artifact_meta: ArtifactMeta,
         fallback_title: str | None,
     ) -> None:
-        if retrieve_ctl is None:
+        if not artifact_text.strip():
             return
 
         payload_meta = artifact_meta.meta_json or {}
@@ -853,24 +876,6 @@ class ArtifactCtl:
         if stats:
             payload["stats"] = stats
         return payload
-
-
-def _hash_file(path: Path) -> tuple[str, int]:
-    hasher = hashlib.sha256()
-    size = 0
-    with path.open("rb") as fh:
-        while True:
-            chunk = fh.read(1024 * 1024)
-            if not chunk:
-                break
-            hasher.update(chunk)
-            size += len(chunk)
-    return hasher.hexdigest(), size
-
-
-def _read_sample(path: Path, n: int = 4096) -> bytes:
-    with path.open("rb") as fh:
-        return fh.read(n)
 
 
 def _bounded_excerpt(

@@ -279,6 +279,7 @@ class RuntimeContext:
     tool_name: str = ""
     tool_call_id: str = ""
     capture_id: str = ""
+    retrieve_ctl: Optional[Any] = None
 
     def resolve_memory_access_context(self) -> MemoryAccessContext:
         metadata = _context_metadata_from_policy(self.policy)
@@ -382,6 +383,7 @@ class RuntimeContext:
                 session_id=str(getattr(self, "session_id", "") or "").strip() or None,
                 trace_id=trace_id or None,
                 agent_id=str(getattr(self, "agent_id", "") or "").strip() or None,
+                retrieve_ctl=self.retrieve_ctl,
             )
             return str(getattr(ref, "ref", "") or "").strip() or None
         except Exception as exc:

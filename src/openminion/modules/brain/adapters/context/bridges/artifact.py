@@ -42,8 +42,13 @@ class BridgeArtifactClient:
                 query=query,
                 filters={"owner_type": "session", "owner_id": session_id},
             )
-            digests: list[ArtifactDigest] = []
-            for meta in results[:limit]:
+        except Exception as exc:
+            logger.warning("artifact query_digests failed: %s", exc)
+            return []
+
+        digests: list[ArtifactDigest] = []
+        for meta in results[:limit]:
+            try:
                 view_ref = self._artifact_ctl.ensure_digest(meta.sha256)
                 digest = self._artifact_ctl.read_digest(meta.sha256)
                 digests.append(
@@ -54,10 +59,13 @@ class BridgeArtifactClient:
                         excerpt=str(digest.get("excerpt") or "") or None,
                     )
                 )
-            return digests
-        except Exception as exc:
-            logger.warning("artifact query_digests failed: %s", exc)
-            return []
+            except Exception as exc:
+                logger.warning(
+                    "artifact digest skipped: %s (%s)",
+                    sha_to_ref(meta.sha256),
+                    type(exc).__name__,
+                )
+        return digests
 
 
 __all__ = ["BridgeArtifactClient"]

@@ -6,6 +6,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from openminion.modules.artifact import content as artifact_content
+from openminion.modules.artifact import control as artifact_control
 from openminion.modules.artifact.control import ArtifactCtl
 from openminion.modules.retrieve.runtime.retrieve import RetrieveCtl
 
@@ -93,6 +95,58 @@ def test_artifact_creation_no_ctl_is_noop(tmp_path: Path) -> None:
         assert ref.ref.startswith("artifact://sha256/")
     finally:
         ctl.close()
+
+
+def test_artifact_creation_without_ctl_skips_text_extraction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extractor = Mock(side_effect=AssertionError("unexpected extraction"))
+    monkeypatch.setattr(
+        artifact_control,
+        "_extract_ingest_text_from_bytes",
+        extractor,
+    )
+
+    with ArtifactCtl(_artifact_config(tmp_path)) as ctl:
+        ref = ctl.ingest_bytes(b"artifact without retrieval", retrieve_ctl=None)
+
+    assert ref.ref.startswith("artifact://sha256/")
+    extractor.assert_not_called()
+
+
+@pytest.mark.parametrize("content", [b"", b"binary\x00payload"])
+def test_empty_retrieval_text_skips_callback(tmp_path: Path, content: bytes) -> None:
+    retrieve_ctl = Mock()
+
+    with ArtifactCtl(_artifact_config(tmp_path)) as ctl:
+        ref = ctl.ingest_bytes(content, retrieve_ctl=retrieve_ctl)
+
+    assert ref.ref.startswith("artifact://sha256/")
+    retrieve_ctl.ingest_event.assert_not_called()
+
+
+def test_retrieval_extraction_is_bounded_and_multibyte_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decoded_sizes: list[int] = []
+    decode_text = artifact_content._decode_text
+
+    def _recording_decode(data: bytes):
+        decoded_sizes.append(len(data))
+        return decode_text(data)
+
+    monkeypatch.setattr(artifact_content, "_decode_text", _recording_decode)
+    retrieve_ctl = Mock()
+    content = ("🙂" * 20_005).encode()
+
+    with ArtifactCtl(_artifact_config(tmp_path)) as ctl:
+        ctl.ingest_bytes(content, mime="text/plain", retrieve_ctl=retrieve_ctl)
+
+    payload = retrieve_ctl.ingest_event.call_args.args[1]
+    assert payload["text"] == "🙂" * 20_000
+    assert max(decoded_sizes) <= 20_000 * 4 + 3
 
 
 def test_artifact_ingest_event_error_does_not_propagate(

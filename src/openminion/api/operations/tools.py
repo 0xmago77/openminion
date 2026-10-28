@@ -231,6 +231,7 @@ def execute_tool_run(
                 seam_id=SEAM_API_TOOLS,
             ),
             artifactctl=artifactctl,
+            retrieve_ctl=getattr(runtime, "retrieve_ctl", None),
             confirm=confirm,
         )
         result = _security_lab_tool_denial(identity, tool_name)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock
 
 import pytest
 
@@ -65,6 +66,59 @@ def test_alias_expiry_filters_list_and_resolve(tmp_path):
         assert all(item["alias"] != "alias:expired" for item in ctl.alias_list())
 
 
+@pytest.mark.parametrize("expires_at", ["not-a-date", "2026-10-28T12:00:00"])
+def test_invalid_alias_expiry_fails_before_index_or_ref_lookup(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    expires_at: str,
+) -> None:
+    with artifact_ctl(tmp_path) as ctl:
+        alias_lookup = Mock(wraps=ctl.index.alias_resolve)
+        ref_lookup = Mock(wraps=ctl._resolve_active_sha)
+        monkeypatch.setattr(ctl.index, "alias_resolve", alias_lookup)
+        monkeypatch.setattr(ctl, "_resolve_active_sha", ref_lookup)
+
+        with pytest.raises(ArtifactCtlError) as exc_info:
+            ctl.alias_set("alias:invalid", "a" * 64, expires_at=expires_at)
+
+        assert exc_info.value.code == "INVALID_ARGUMENT"
+        alias_lookup.assert_not_called()
+        ref_lookup.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("expires_at", "expected"),
+    [
+        ("2030-10-28T12:00:00Z", "2030-10-28T12:00:00+00:00"),
+        ("2030-10-28T12:00:00+14:00", "2030-10-27T22:00:00+00:00"),
+        ("2030-10-28T12:00:00-07:00", "2030-10-28T19:00:00+00:00"),
+    ],
+)
+def test_alias_expiry_is_stored_in_utc(
+    tmp_path, expires_at: str, expected: str
+) -> None:
+    with artifact_ctl(tmp_path) as ctl:
+        ref = ctl.ingest_bytes(b"payload", original_name="payload.txt")
+
+        ctl.alias_set("alias:utc", ref.sha256, expires_at=expires_at)
+
+        alias = next(item for item in ctl.alias_list() if item["alias"] == "alias:utc")
+        assert alias["expires_at"] == expected
+
+
+def test_expired_offset_alias_does_not_protect_artifact(tmp_path) -> None:
+    with artifact_ctl(tmp_path) as ctl:
+        ref = ctl.ingest_bytes(b"payload", original_name="payload.txt")
+        ctl.alias_set(
+            "alias:expired-offset",
+            ref.sha256,
+            expires_at="2000-01-01T12:00:00+14:00",
+        )
+
+        assert ctl.alias_resolve("alias:expired-offset") is None
+        assert ref.sha256 not in ctl.index.active_alias_shas()
+
+
 def test_reference_edge_idempotency(tmp_path):
     with artifact_ctl(tmp_path) as ctl:
         ref = ctl.ingest_bytes(b"keep", original_name="keep.txt")
@@ -72,6 +126,36 @@ def test_reference_edge_idempotency(tmp_path):
         ctl.ref_add("session", "s1", ref.sha256)
         ctl.ref_add("session", "s1", ref.sha256)
         assert ref.sha256 in ctl.index.active_reference_shas()
+
+
+@pytest.mark.parametrize("owner_id", ["", "   "])
+def test_reference_add_rejects_blank_owner_before_ref_lookup(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    owner_id: str,
+) -> None:
+    with artifact_ctl(tmp_path) as ctl:
+        ref_lookup = Mock(wraps=ctl._resolve_active_sha)
+        monkeypatch.setattr(ctl, "_resolve_active_sha", ref_lookup)
+
+        with pytest.raises(ArtifactCtlError) as exc_info:
+            ctl.ref_add("session", owner_id, "a" * 64)
+
+        assert exc_info.value.code == "INVALID_ARGUMENT"
+        ref_lookup.assert_not_called()
+
+
+def test_reference_remove_cleans_seeded_blank_owner_edges(tmp_path) -> None:
+    with artifact_ctl(tmp_path) as ctl:
+        ref = ctl.ingest_bytes(b"legacy", original_name="legacy.txt")
+        ctl.index.add_reference("session", "", ref.sha256)
+
+        ctl.ref_remove("session", "", ref.sha256)
+
+        assert ref.sha256 not in ctl.index.active_reference_shas()
+        ctl.index.add_reference("session", "", ref.sha256)
+        ctl.ref_remove_owner("session", "")
+        assert ref.sha256 not in ctl.index.active_reference_shas()
 
 
 def test_remove_owner_reference_edges_is_exact_and_idempotent(tmp_path) -> None:
