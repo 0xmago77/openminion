@@ -20,14 +20,6 @@ _STATUS_ORDER = {
     "CANCELED": 4,
     "FAILED": 5,
 }
-_ACTIONS = {"pause", "resume", "cancel"}
-_ACTION_STATES = {
-    "pause": TaskLifecycleState.PAUSED,
-    "resume": TaskLifecycleState.ACTIVE,
-    "cancel": TaskLifecycleState.CANCELLED,
-}
-
-
 @dataclass(frozen=True)
 class TaskSurface:
     """Canonical projection for task inventory surfaces."""
@@ -48,7 +40,8 @@ class TaskSurface:
             "source": _source_kind(self.source),
         }
 
-    def list_tasks(self) -> list[dict[str, Any]]:
+    def list_tasks(self, *, runs_limit: int = 5) -> list[dict[str, Any]]:
+        effective_runs_limit = max(1, min(int(runs_limit), 20))
         digest_tasks = _tasks_from_digest_source(
             self.source,
             agent_id=self.agent_id,
@@ -60,6 +53,7 @@ class TaskSurface:
             self.source,
             agent_id=self.agent_id,
             limit=self.limit,
+            runs_limit=effective_runs_limit,
         )
         tasks_by_id = {
             str(task.get("id") or ""): task for task in digest_tasks if task.get("id")
@@ -86,17 +80,24 @@ class TaskSurface:
             ),
         )[: self.limit]
 
-    def show_task(self, task_id: str) -> dict[str, Any] | None:
+    def show_task(
+        self,
+        task_id: str,
+        *,
+        runs_limit: int = 5,
+    ) -> dict[str, Any] | None:
         normalized = str(task_id or "").strip()
         if not normalized:
             return None
-        for task in self.list_tasks():
+        effective_runs_limit = max(1, min(int(runs_limit), 20))
+        for task in self.list_tasks(runs_limit=effective_runs_limit):
             if str(task.get("id", "")) == normalized:
                 return task
         return _task_from_lifecycle_record(
             self.source,
             normalized,
             agent_id=self.agent_id,
+            runs_limit=effective_runs_limit,
         )
 
     def list_pending_actions(self) -> list[dict[str, Any]]:
@@ -113,20 +114,6 @@ class TaskSurface:
                 str(item.get("decision_id", "")),
             ),
         )
-
-    def apply_action(self, *, task_id: str, action: str) -> dict[str, Any]:
-        normalized_action = str(action or "").strip().lower()
-        if normalized_action not in _ACTIONS:
-            raise ValueError(f"unknown task action: {action!r}")
-        normalized_task_id = str(task_id or "").strip()
-        if self.show_task(normalized_task_id) is None:
-            raise KeyError(f"task not found: {normalized_task_id}")
-        return _apply_lifecycle_action(
-            self.source,
-            task_id=normalized_task_id,
-            action=normalized_action,
-        )
-
 
 def build_task_surface(
     source: Any | None,
@@ -282,7 +269,7 @@ def _iter_digest_tasks(digest: Any | None) -> list[Any]:
 
 
 def _tasks_from_lifecycle_source(
-    source: Any | None, *, agent_id: str, limit: int
+    source: Any | None, *, agent_id: str, limit: int, runs_limit: int
 ) -> list[dict[str, Any]]:
     repository = getattr(source, "lifecycle_repository", None)
     list_records = getattr(repository, "list", None)
@@ -296,7 +283,10 @@ def _tasks_from_lifecycle_source(
         )
     except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
         raise _inventory_unavailable("task lifecycle list", exc) from exc
-    return [_lifecycle_record_payload(source, record) for record in records]
+    return [
+        _lifecycle_record_payload(source, record, runs_limit=runs_limit)
+        for record in records
+    ]
 
 
 def _task_from_lifecycle_record(
@@ -304,6 +294,7 @@ def _task_from_lifecycle_record(
     task_id: str,
     *,
     agent_id: str,
+    runs_limit: int,
 ) -> dict[str, Any] | None:
     get_task = getattr(source, "get_task", None)
     if not callable(get_task):
@@ -316,7 +307,7 @@ def _task_from_lifecycle_record(
         return None
     if not _agent_matches(record, agent_id):
         raise PermissionError(f"task is owned by another agent: {task_id}")
-    return _lifecycle_record_payload(source, record)
+    return _lifecycle_record_payload(source, record, runs_limit=runs_limit)
 
 
 def _agent_matches(record: Any, agent_id: str) -> bool:
@@ -325,7 +316,12 @@ def _agent_matches(record: Any, agent_id: str) -> bool:
     return bool(expected) and owner == expected
 
 
-def _lifecycle_record_payload(source: Any | None, record: Any) -> dict[str, Any]:
+def _lifecycle_record_payload(
+    source: Any | None,
+    record: Any,
+    *,
+    runs_limit: int,
+) -> dict[str, Any]:
     metadata = dict(_value(record, "metadata", {}) or {})
     task_id = str(_value(record, "task_id") or "").strip()
     job = _safe_get_job(source, str(_value(record, "cron_job_id") or task_id).strip())
@@ -350,11 +346,11 @@ def _lifecycle_record_payload(source: Any | None, record: Any) -> dict[str, Any]
         "updated_at": _value(record, "updated_at"),
     }
     payload.update(_operator_projection(str(payload["status"]), ()))
-    payload["valid_actions"] = _valid_lifecycle_actions(payload["lifecycle_state"])
+    payload["valid_actions"] = []
     if job is not None:
         schedule = job.get("schedule") or job.get("schedule_json") or {}
         job_payload = dict(job.get("payload") or {})
-        actions = list(payload["valid_actions"])
+        actions = _valid_lifecycle_actions(payload["lifecycle_state"])
         if payload["lifecycle_state"] == TaskLifecycleState.ACTIVE.value:
             actions.append("run-now")
         if (
@@ -374,7 +370,12 @@ def _lifecycle_record_payload(source: Any | None, record: Any) -> dict[str, Any]
         payload["task_kind"] = _scheduled_task_kind(schedule)
         payload["instruction"] = str(job_payload.get("message") or "")
         payload["session_target"] = job.get("session_target")
-        runs = _safe_list_runs(source, str(payload["cron_job_id"]), limit=5)
+        runs = _safe_list_runs(
+            source,
+            str(payload["cron_job_id"]),
+            limit=runs_limit,
+        )
+        payload["recent_runs_limit"] = runs_limit
         payload["recent_runs"] = runs
         if runs:
             payload["last_run"] = {
@@ -544,7 +545,7 @@ def _operator_projection(
     if pending_actions:
         return {
             "operator_state": ProjectOperatorWorkState.WAITING.value,
-            "resume_action": ProjectOperatorResumeAction.APPROVE.value,
+            "resume_action": ProjectOperatorResumeAction.INSPECT_BLOCKER.value,
         }
     if normalized in {"ACTIVE", "PENDING"}:
         return {
@@ -626,56 +627,6 @@ def _pending_actions_index(
                 if not pending_by_task[removed_task_id]:
                     pending_by_task.pop(removed_task_id, None)
     return pending_by_task, pending_by_id
-
-
-def _apply_lifecycle_action(
-    source: Any | None, *, task_id: str, action: str
-) -> dict[str, Any]:
-    if not task_id:
-        raise ValueError("task_id is required")
-    method_name = {
-        "pause": "pause_task",
-        "resume": "resume_task",
-        "cancel": "cancel_task",
-    }[action]
-    method = getattr(source, method_name, None)
-    if not callable(method):
-        record = _transition_task(source, task_id=task_id, action=action)
-        return _task_action_result(source, action=action, record=record)
-    try:
-        result = method(task_id)
-    except KeyError as exc:
-        record = _transition_task(
-            source, task_id=task_id, action=action, missing_exc=exc
-        )
-        return _task_action_result(source, action=action, record=record)
-    record = result[0] if isinstance(result, tuple) else result
-    return _task_action_result(source, action=action, record=record)
-
-
-def _transition_task(
-    source: Any | None,
-    *,
-    task_id: str,
-    action: str,
-    missing_exc: Exception | None = None,
-) -> Any:
-    transition = getattr(source, "transition_task", None)
-    if not callable(transition):
-        if missing_exc is not None:
-            raise missing_exc
-        raise NotImplementedError(f"task {action} is unavailable")
-    return transition(task_id=task_id, to_state=_ACTION_STATES[action])
-
-
-def _task_action_result(
-    source: Any | None, *, action: str, record: Any
-) -> dict[str, Any]:
-    return {
-        "ok": True,
-        "action": action,
-        "task": _lifecycle_record_payload(source, record),
-    }
 
 
 def _value(obj: Any, key: str, default: Any = None) -> Any:

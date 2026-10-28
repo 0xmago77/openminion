@@ -114,11 +114,13 @@ def test_busy_slash_policy_allows_reads_and_blocks_changes() -> None:
         "/tasks pause task-1",
         "/tasks resume task-1",
         "/tasks cancel task-1",
+        "/tasks run-now task-1",
     ):
         assert not slash_command_runs_while_busy(command)
 
     tasks_help = format_slash_help("tasks")
-    assert "/tasks <pause|resume|cancel> <task-id>" in tasks_help
+    assert "/tasks <pause|resume|cancel|run-now> <task-id>" in tasks_help
+    assert "/tasks scheduler-status" in tasks_help
     assert "allow|deny" not in tasks_help
 
 

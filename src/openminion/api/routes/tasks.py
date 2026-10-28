@@ -6,7 +6,7 @@ from http import HTTPStatus
 from urllib.parse import parse_qs, unquote
 
 from openminion.api.operations.tasks import (
-    apply_task_action,
+    TaskControlOperationError,
     create_task,
 )
 from openminion.api.queries.tasks import list_tasks, show_task
@@ -25,7 +25,6 @@ from .task_responses import (
 )
 
 _TASKS_RE = re.compile(r"/v1/tasks")
-_TASK_ACTION_RE = re.compile(r"/v1/tasks/([^/]+)/(pause|resume|cancel)")
 _TASK_RE = re.compile(r"/v1/tasks/([^/]+)")
 
 
@@ -61,14 +60,6 @@ def handle_request(
         return _list_tasks(ctx, path=path, query=query)
     if method_name == "GET" and (m := _TASK_RE.fullmatch(path)):
         return _show_task(ctx, task_id=unquote(m.group(1)), path=path, query=query)
-    if method_name == "POST" and (m := _TASK_ACTION_RE.fullmatch(path)):
-        return _apply_task_action(
-            ctx,
-            task_id=unquote(m.group(1)),
-            action=m.group(2),
-            path=path,
-            query=query,
-        )
     return None
 
 
@@ -90,6 +81,7 @@ def _create_task(
             body=body,
             agent_id=options.agent_id,
             session_id=options.session_id,
+            request_id=ctx.request_id,
         )
     except ValueError as exc:
         return exception_route_result(
@@ -97,6 +89,14 @@ def _create_task(
             code="invalid_task",
             exc=exc,
             details={},
+            retryable=False,
+        )
+    except TaskControlOperationError as exc:
+        return exception_route_result(
+            HTTPStatus.FORBIDDEN if exc.is_forbidden else HTTPStatus.BAD_REQUEST,
+            code=exc.code,
+            exc=exc,
+            details=exc.details,
             retryable=False,
         )
     except (AttributeError, TypeError, RuntimeError) as exc:
@@ -145,12 +145,27 @@ def _show_task(
     if not options.agent_id:
         return task_agent_id_required()
     try:
+        runs_limit = _show_runs_limit(query)
         task = show_task(
             runtime=ctx.runtime,
             task_id=task_id,
             agent_id=options.agent_id,
             session_id=options.session_id,
             limit=options.limit,
+            runs_limit=runs_limit,
+        )
+    except ValueError as exc:
+        return exception_route_result(
+            HTTPStatus.BAD_REQUEST,
+            code="invalid_runs_limit",
+            exc=exc,
+            details={
+                "runs_limit": _first_query_value(
+                    parse_qs(query or ""),
+                    "runs_limit",
+                )
+            },
+            retryable=False,
         )
     except PermissionError as exc:
         return task_scope_denied(exc, task_id=task_id)
@@ -167,57 +182,6 @@ def _show_task(
     return RouteResult(status=HTTPStatus.OK, payload={"ok": True, "task": task})
 
 
-def _apply_task_action(
-    ctx: APIRouteContext,
-    *,
-    task_id: str,
-    action: str,
-    path: str,
-    query: str | None,
-) -> RouteResult:
-    if ctx.runtime is None:
-        return runtime_unavailable_route_result(path=path, exc="Runtime not available.")
-    options = _query_options(query)
-    if not options.agent_id:
-        return task_agent_id_required()
-    try:
-        payload = apply_task_action(
-            runtime=ctx.runtime,
-            task_id=task_id,
-            action=action,
-            agent_id=options.agent_id,
-            session_id=options.session_id,
-            limit=options.limit,
-        )
-        return RouteResult(status=HTTPStatus.OK, payload=payload)
-    except PermissionError as exc:
-        return task_scope_denied(exc, task_id=task_id)
-    except KeyError as exc:
-        return exception_route_result(
-            HTTPStatus.NOT_FOUND,
-            code="task_not_found",
-            exc=exc,
-            details={"task_id": task_id},
-            retryable=False,
-        )
-    except (ValueError, NotImplementedError) as exc:
-        code = str(getattr(exc, "code", "") or "invalid_task_action")
-        typed_details = getattr(exc, "details", None)
-        return exception_route_result(
-            HTTPStatus.BAD_REQUEST,
-            code=code,
-            exc=exc,
-            details=(
-                dict(typed_details)
-                if isinstance(typed_details, dict)
-                else {"task_id": task_id, "action": action}
-            ),
-            retryable=False,
-        )
-    except (AttributeError, TypeError, RuntimeError) as exc:
-        return task_runtime_error(exc)
-
-
 def _first_query_value(params: dict[str, list[str]], key: str) -> str:
     return (params.get(key) or [""])[0].strip()
 
@@ -227,3 +191,8 @@ def _safe_int(value: str, *, default: int) -> int:
         return max(1, int(value))
     except ValueError:
         return default
+
+
+def _show_runs_limit(query: str | None) -> int:
+    value = _first_query_value(parse_qs(query or ""), "runs_limit")
+    return int(value) if value else 5

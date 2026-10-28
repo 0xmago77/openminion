@@ -196,7 +196,7 @@ def _build_executor(
     return CronTurnExecutor(
         runtime=runtime,
         cron_store=cron_store,
-        request_builder=lambda payload, agent_id: _FakeRequest(
+        request_builder=lambda payload, agent_id, _memory=None, _watch=None: _FakeRequest(
             message=payload.get("message", ""),
             agent_id=agent_id,
             session_id=payload.get("session_id") or "sess-iso-1",

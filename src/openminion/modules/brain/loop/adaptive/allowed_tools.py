@@ -203,10 +203,17 @@ def _watch_profile_overrides(ctx: ExecutionContext) -> dict[str, Any] | None:
         allowed_tools = frozenset(
             str(item or "").strip() for item in raw_allowed if str(item or "").strip()
         )
+    max_iterations = 3 if action_turn else 5
     return {
         "turn_kind": turn_kind,
         "allowed_tools": allowed_tools,
-        "max_iterations": max(1, min(int(raw.get("max_iterations", 3) or 3), 3)),
+        "max_iterations": max(
+            1,
+            min(
+                int(raw.get("max_iterations", max_iterations) or max_iterations),
+                max_iterations,
+            ),
+        ),
         "write_authorized": bool(raw.get("write_authorized", False)),
         "profile_id": str(raw.get("profile_id", "") or "").strip(),
         "target_id": str(raw.get("target_id", "") or "").strip(),
