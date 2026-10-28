@@ -59,7 +59,7 @@ src/openminion/modules/a2a/storage/archive.py	2	0	current broad-handler baseline
 src/openminion/modules/artifact/control.py	4	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
 src/openminion/modules/brain/adapters/a2a/runtime.py	9	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
 src/openminion/modules/brain/adapters/artifact/runtime.py	2	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
-src/openminion/modules/brain/adapters/context/bridges/artifact.py	1	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
+src/openminion/modules/brain/adapters/context/bridges/artifact.py	2	0	search and selected-item boundaries fail independently and log without retry
 src/openminion/modules/brain/adapters/context/bridges/compress.py	1	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
 src/openminion/modules/brain/adapters/context/bridges/memory.py	8	0	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition
 src/openminion/modules/brain/adapters/context/bridges/session.py	2	1	current broad-handler baseline; ratchet by narrowing or typed-boundary-keep disposition

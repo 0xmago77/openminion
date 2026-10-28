@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
 
 from openminion.modules.artifact.control import ArtifactCtl
+from openminion.modules.artifact.errors import ArtifactCtlError
 from openminion.modules.memory.models import (
     ArtifactRef as MemoryArtifactRef,
     MemoryRecord,
@@ -30,6 +34,56 @@ def test_gc_plan_only_does_not_mark_deleted(tmp_path):
         report = ctl.gc(plan_only=True, keep_days=0, delete_unreferenced_after_days=0)
         assert ref.sha256 not in report.candidates
         assert ctl.get(ref.sha256).deleted_at is None
+
+
+@pytest.mark.parametrize("field_name", ["keep_days", "delete_unreferenced_after_days"])
+@pytest.mark.parametrize("value", [-1, -0.5])
+def test_negative_gc_override_fails_before_index_query(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    field_name: str,
+    value: float,
+) -> None:
+    with artifact_ctl(tmp_path) as ctl:
+        active_refs = Mock(wraps=ctl.index.active_reference_shas)
+        monkeypatch.setattr(ctl.index, "active_reference_shas", active_refs)
+
+        with pytest.raises(ArtifactCtlError) as exc_info:
+            ctl.gc(**{field_name: value})
+
+        assert exc_info.value.code == "INVALID_ARGUMENT"
+        active_refs.assert_not_called()
+
+
+@pytest.mark.parametrize("value", [-1, -0.5])
+def test_negative_purge_override_fails_before_index_query(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: float,
+) -> None:
+    with artifact_ctl(tmp_path) as ctl:
+        purgeable_views = Mock(wraps=ctl.index.purgeable_views)
+        monkeypatch.setattr(ctl.index, "purgeable_views", purgeable_views)
+
+        with pytest.raises(ArtifactCtlError) as exc_info:
+            ctl.purge(grace_days=value)
+
+        assert exc_info.value.code == "INVALID_ARGUMENT"
+        purgeable_views.assert_not_called()
+
+
+def test_non_negative_retention_overrides_preserve_integer_coercion(tmp_path) -> None:
+    with artifact_ctl(tmp_path) as ctl:
+        gc_report = ctl.gc(
+            plan_only=True,
+            keep_days=1.5,
+            delete_unreferenced_after_days=0.5,
+        )
+        purge_report = ctl.purge(grace_days=1.5)
+
+    assert gc_report.keep_days == 1
+    assert gc_report.delete_unreferenced_after_days == 0
+    assert purge_report.grace_days == 1
 
 
 def test_gc_marks_unprotected_and_respects_references(tmp_path):

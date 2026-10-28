@@ -3,7 +3,14 @@ from __future__ import annotations
 import logging
 
 from openminion.base.config import OpenMinionConfig
-from openminion.modules.artifact.config import from_base_config
+from openminion.modules.artifact.config import (
+    ArtifactCtlConfig,
+    BlobStoreConfig,
+    IndexConfig,
+    ViewsConfig,
+    from_base_config,
+)
+from openminion.modules.artifact.control import ArtifactCtl
 from openminion.modules.artifact.models import sha_to_ref
 from openminion.modules.brain.adapters.factory import (
     create_memory_adapter,
@@ -12,6 +19,8 @@ from openminion.modules.brain.adapters.factory import (
 from openminion.modules.brain.adapters.tool import ToolAdapter
 from openminion.modules.tool.runtime.policy import Policy
 from openminion.modules.tool.registry import ToolRegistry, ToolSpec
+from openminion.modules.retrieve.config import RetrieveCtlConfig, StorageConfig
+from openminion.modules.retrieve.runtime.retrieve import RetrieveCtl
 from openminion.services.agent.memory.gateway_adapter import MemoryServiceGatewayAdapter
 from openminion.services.runtime.bootstrap import build_agent_memory_service
 from tests._csc_fixtures import _csc_install_default_agent
@@ -33,10 +42,10 @@ class _RecordingArtifactCtl:
 
 class _RuntimeArtifactCtl:
     def __init__(self) -> None:
-        self.calls: list[dict[str, str]] = []
+        self.calls: list[dict[str, object]] = []
 
     def ingest_bytes(self, **kwargs):
-        self.calls.append({str(k): str(v) for k, v in kwargs.items() if v is not None})
+        self.calls.append(dict(kwargs))
         return type(
             "_Ref",
             (),
@@ -212,6 +221,7 @@ def test_tool_adapter_prefers_canonical_refs_for_durable_runtime_artifacts(
     tmp_path,
 ) -> None:
     artifactctl = _RuntimeArtifactCtl()
+    retrieve_ctl = object()
     registry = ToolRegistry()
 
     def _handler(args, ctx):
@@ -236,6 +246,7 @@ def test_tool_adapter_prefers_canonical_refs_for_durable_runtime_artifacts(
         workspace_root=tmp_path,
         runtime_registry=registry,
         artifactctl=artifactctl,
+        retrieve_ctl=retrieve_ctl,
         policy=Policy(
             raw={
                 "workspace_root": str(tmp_path),
@@ -257,3 +268,108 @@ def test_tool_adapter_prefers_canonical_refs_for_durable_runtime_artifacts(
     assert result["status"] == "success"
     assert result["artifact_refs"] == [{"ref": sha_to_ref("b" * 64), "role": "output"}]
     assert artifactctl.calls
+    assert artifactctl.calls[0]["retrieve_ctl"] is retrieve_ctl
+
+    artifactctl_without_retrieve = _RuntimeArtifactCtl()
+    adapter_without_retrieve = ToolAdapter(
+        workspace_root=tmp_path,
+        runtime_registry=registry,
+        artifactctl=artifactctl_without_retrieve,
+        policy=adapter.policy,
+    )
+    no_retrieve_result = adapter_without_retrieve.execute(
+        command={"tool_name": "artifact.echo", "args": {"payload": "hello"}},
+        session_id="sess-artifact-no-retrieve",
+        trace_id="trace-artifact-no-retrieve",
+    )
+
+    assert no_retrieve_result["status"] == "success"
+    assert artifactctl_without_retrieve.calls[0]["retrieve_ctl"] is None
+
+
+def test_tool_adapter_durable_artifact_is_retrievable_by_content(tmp_path) -> None:
+    artifact_root = tmp_path / "artifact"
+    artifact_config = ArtifactCtlConfig(
+        blob_store=BlobStoreConfig(root_dir=str(artifact_root)),
+        index=IndexConfig(sqlite_path=str(artifact_root / "index.db"), wal=False),
+        views=ViewsConfig(auto_generate=[]),
+    )
+    retrieve_root = tmp_path / "retrieve"
+    retrieve_config = RetrieveCtlConfig(
+        storage=StorageConfig(
+            sqlite_path=retrieve_root / "retrieve.db",
+            blob_root=retrieve_root / "blob",
+            wal_mode=False,
+        )
+    )
+    registry = ToolRegistry()
+
+    def _handler(args, ctx):
+        artifact = ctx.write_artifact(
+            "artifacts/retrievable.txt",
+            str(args["payload"]).encode("utf-8"),
+            "text/plain",
+            durable=True,
+        )
+        return {
+            "ok": True,
+            "content": "ok",
+            "data": {"canonical_ref": artifact.canonical_ref},
+        }
+
+    registry.register(
+        ToolSpec(
+            name="artifact.retrievable",
+            args_model=dict,
+            min_scope="READ_ONLY",
+            handler=_handler,
+        )
+    )
+
+    retrieve_ctl = RetrieveCtl(retrieve_config)
+    try:
+        with ArtifactCtl(artifact_config) as artifactctl:
+            adapter = ToolAdapter(
+                workspace_root=tmp_path,
+                runtime_registry=registry,
+                artifactctl=artifactctl,
+                retrieve_ctl=retrieve_ctl,
+                policy=Policy(
+                    raw={
+                        "workspace_root": str(tmp_path),
+                        "tools": {
+                            "allow_prefix": ["artifact."],
+                            "deny_exact": [],
+                            "deny_prefix": [],
+                        },
+                    }
+                ),
+            )
+
+            result = adapter.execute(
+                command={
+                    "tool_name": "artifact.retrievable",
+                    "args": {"payload": "ARRH durable retrieval sentinel"},
+                },
+                session_id="sess-retrievable",
+                trace_id="trace-retrievable",
+            )
+
+            canonical_ref = result["artifact_refs"][0]["ref"]
+            hits = retrieve_ctl.retrieve(
+                query="durable retrieval sentinel",
+                purpose="act",
+                scope={"project": True},
+                k=3,
+                strategy="contextual",
+            )
+
+            assert result["status"] == "success"
+            assert any(hit["ref_type"] == "artifact" for hit in hits)
+            row = retrieve_ctl.store.execute(
+                "SELECT source_ref FROM retrievectl_docs WHERE source_type = 'artifact'"
+            ).fetchone()
+            assert row is not None
+            assert row["source_ref"] == canonical_ref
+    finally:
+        retrieve_ctl.close()
