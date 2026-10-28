@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 from typing import Annotated
 
@@ -30,3 +31,14 @@ def lookback(
 @tool
 def summarize(window: Window, span: Range, label, limit: int = 5) -> str:
     return f"{window.value}:{span.start}-{span.end}:{label}:{limit}"
+
+
+@dataclass
+class Span:
+    start: int
+    end: int
+
+
+@tool
+def summarize_span(span: Span) -> str:
+    return f"{type(span).__name__}:{span.start}-{span.end}"

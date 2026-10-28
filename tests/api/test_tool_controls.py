@@ -1,11 +1,12 @@
 """SDK tool boundaries through real runtime and local provider requests."""
 
 import json
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Event, Thread
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from openminion import Agent, APIRuntime, Handoff, tool
 from openminion.modules.tool.framework import build_registrar
@@ -56,7 +57,7 @@ def sdk_tools(tmp_path, monkeypatch):
             if name and not state.get(sent_key, False):
                 state[sent_key] = True
                 arguments = (
-                    {"order_id": "A-104"}
+                    state.get("tool_arguments", {"order_id": "A-104"})
                     if name != "transfer_to_child"
                     else {"message": "Return LOCAL_MARKER."}
                 )
@@ -412,3 +413,77 @@ def test_handoff_approval_does_not_authorize_child_tools(sdk_tools):
     assert approvals == ["transfer_to_child"]
     assert calls == []
     assert "Risk: destructive" in result.text
+
+
+class _Window(BaseModel):
+    start: int
+    end: int
+
+
+@dataclass
+class _Limits:
+    max_items: int
+    strict: bool = False
+
+
+def test_sdk_tool_receives_structured_arguments_as_instances(sdk_tools):
+    runtime, _requests, state = sdk_tools
+    runtime.config.action_policy.rules = []
+    state.update(
+        tool_name="summarize_window",
+        echo_tool_result=True,
+        tool_arguments={"window": {"start": 1, "end": 4}, "limits": {"max_items": 3}},
+    )
+    received = []
+
+    @tool(name="summarize_window", min_scope="READ_ONLY", idempotent=True)
+    def summarize_window(window: _Window, limits: _Limits, label: str = "all") -> str:
+        received.append((window, limits, label))
+        return f"WINDOW {window.start}-{window.end} max={limits.max_items} {label}"
+
+    result = Agent(runtime=runtime, tools=[summarize_window]).run("Summarize.")
+
+    assert received == [(_Window(start=1, end=4), _Limits(max_items=3), "all")]
+    assert type(received[0][0]) is _Window
+    assert type(received[0][1]) is _Limits
+    assert "WINDOW 1-4 max=3 all" in result.text
+
+
+class _AliasedFilter(BaseModel):
+    min_total: int = Field(alias="minTotal", ge=0)
+    status: str = "open"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Shared runtime, not the @tool handler: tool-command sanitizing "
+        "replaces the model's arguments with the args model's canonical "
+        "model_dump(), and the brain tool adapter then re-validates that "
+        "mapping alias-only, so an aliased argument is rejected as "
+        "INVALID_ARGUMENT before the handler runs. Pre-existing on dev; "
+        "tracked in https://github.com/openminion/openminion/issues/454 "
+        "(#454). A pass here does not mean the SDK alias path is fixed "
+        "until #454 is resolved."
+    ),
+)
+def test_sdk_tool_receives_nested_alias_model_argument(sdk_tools):
+    runtime, _requests, state = sdk_tools
+    runtime.config.action_policy.rules = []
+    state.update(
+        tool_name="filter_orders",
+        echo_tool_result=True,
+        tool_arguments={"query": {"minTotal": 7}},
+    )
+    received = []
+
+    @tool(name="filter_orders", min_scope="READ_ONLY", idempotent=True)
+    def filter_orders(query: _AliasedFilter) -> str:
+        received.append(query)
+        return f"FILTER min={query.min_total} status={query.status}"
+
+    result = Agent(runtime=runtime, tools=[filter_orders]).run("Filter.")
+
+    assert received == [_AliasedFilter(minTotal=7)]
+    assert type(received[0]) is _AliasedFilter
+    assert "FILTER min=7 status=open" in result.text
