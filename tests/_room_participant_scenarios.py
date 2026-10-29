@@ -10,14 +10,22 @@ id of the participant that joined before it, as in the issue. The contract:
   join, with the rejoin's `joined_at`;
 - an explicitly selected active agent stays selected;
 - when the active agent leaves, the earliest remaining agent join is selected.
+
+The active-agent scenarios (#393) cover the join's activation on two
+connections: a join makes its agent the active agent only when the room has
+none, read and written under the session-row lock in the join's transaction.
+The first activation a join commits stays until an explicit selection or a
+leave changes it, and a join, selection or leave on another connection waits
+for that commit, then applies as it would on its own.
 """
 
 from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterator, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -325,6 +333,306 @@ def check_leave_and_rejoin_wait_for_each_other(
     assert participant_ids(sessions, room.id) == ["second", "first"]
     assert join_seq_by_participant(sessions, room.id) == {"first": 3, "second": 2}
     assert sessions.get_active_agent(room.id) == "second"
+
+
+# How long a held join keeps another connection's call waiting before the test
+# lets it go: below the 5 s SQLite busy timeout of the runtime storages.
+HOLD_SECONDS = 1.0
+HOLD_TIMEOUT = 10
+
+
+class ActivationHold:
+    """A join held right after the read that decides its activation."""
+
+    def __init__(self) -> None:
+        self.read = threading.Event()
+        self.release = threading.Event()
+        self.seen: str | None = None
+
+
+@contextmanager
+def held_activation_read(peer: SessionStore) -> Iterator[ActivationHold]:
+    """Hold the next join on `peer` between its active-agent read and write.
+
+    A join decides whether its agent becomes the active agent from the first
+    session read after it writes the participant row. The hold records what
+    that read found in `seen` and keeps the join there until `release` is set.
+    Before #393 that read and the write that follows ran after the
+    participant transaction had committed; they now run in it, under the
+    session-row lock.
+    """
+    owner = peer._participants
+    backend = owner._backend
+    hold = ActivationHold()
+    wrote_row = threading.Event()
+    execute_count = backend.execute_count
+    get_session = owner._get_session
+
+    def execute_count_noting_the_row(sql: str, params: Any = None) -> int:
+        count = execute_count(sql, params)
+        if "INSERT INTO room_participants" in sql:
+            wrote_row.set()
+        return count
+
+    def get_session_held_after_the_row(session_id: str) -> Any:
+        record = get_session(session_id)
+        if wrote_row.is_set() and not hold.read.is_set():
+            hold.seen = None if record is None else record.active_agent_id
+            hold.read.set()
+            assert hold.release.wait(timeout=HOLD_TIMEOUT)
+        return record
+
+    with (
+        patch.object(backend, "execute_count", execute_count_noting_the_row),
+        patch.object(owner, "_get_session", get_session_held_after_the_row),
+    ):
+        try:
+            yield hold
+        finally:
+            hold.release.set()
+
+
+def finished_while_held(future: Future[Any]) -> bool:
+    """Whether `future` finishes within `HOLD_SECONDS` while a join is held."""
+    done, _ = wait([future], timeout=HOLD_SECONDS)
+    return bool(done)
+
+
+def new_room(sessions: SessionStore, target: str) -> str:
+    """A room with its human owner, as `openminion room create` makes it."""
+    room = sessions.create_room(channel="cli", target=target)
+    sessions.add_participant(
+        session_id=room.id,
+        participant_type="human",
+        participant_id="owner",
+        role="owner",
+    )
+    return room.id
+
+
+def join_agent(peer: SessionStore, session_id: str, agent: str) -> RoomParticipant:
+    return peer.add_participant(
+        session_id=session_id, participant_type="agent", participant_id=agent
+    )
+
+
+def join_and_read_active(peer: SessionStore, session_id: str, agent: str) -> str | None:
+    """Join `agent`, then read the active agent as the join's caller sees it."""
+    join_agent(peer, session_id, agent)
+    return peer.get_active_agent(session_id)
+
+
+def agent_ids(sessions: SessionStore, session_id: str) -> list[str]:
+    return [
+        item.participant_id
+        for item in sessions.list_participants(session_id)
+        if item.participant_type == "agent"
+    ]
+
+
+def stored_active_agent(sessions: SessionStore, session_id: str) -> str | None:
+    session = sessions.get_session(session_id)
+    assert session is not None
+    return session.active_agent_id
+
+
+def check_join_keeps_an_activation_committed_during_it(
+    sessions: SessionStore, first: SessionStore, second: SessionStore
+) -> None:
+    """Two first joins on two connections (#393, case 1).
+
+    `alpha` joins on `first` and is held after reading that the room has no
+    active agent; `beta` then joins on `second`. The join of `beta` waits for
+    the held join to commit, finds `alpha` active and leaves it active, so
+    each caller sees the agent that stays active. Before #393 `beta` joined
+    and was activated during the hold, its caller saw `beta` active, and the
+    held join then replaced it with `alpha`.
+    """
+    room_id = new_room(sessions, "two-first-joins")
+    with (
+        ThreadPoolExecutor(max_workers=2) as pool,
+        held_activation_read(first) as hold,
+    ):
+        alpha = pool.submit(join_and_read_active, first, room_id, "alpha")
+        assert hold.read.wait(timeout=HOLD_TIMEOUT)
+        beta = pool.submit(join_and_read_active, second, room_id, "beta")
+        beta_finished = finished_while_held(beta)
+        hold.release.set()
+        seen = {"alpha": alpha.result(timeout=30), "beta": beta.result(timeout=30)}
+
+    assert hold.seen is None, hold.seen
+    # What each caller saw after its join, and the stored active agent.
+    outcome = (seen, stored_active_agent(sessions, room_id))
+    assert outcome == ({"alpha": "alpha", "beta": "alpha"}, "alpha"), outcome
+    assert agent_ids(sessions, room_id) == ["alpha", "beta"]
+    assert not beta_finished, "the join of beta did not wait for the held join"
+
+
+def check_selection_during_a_join_applies_after_it(
+    sessions: SessionStore, first: SessionStore, second: SessionStore
+) -> None:
+    """An explicit selection during a first join (#393, case 2).
+
+    `alpha` joins on `first` and is held after reading that the room has no
+    active agent; on `second`, `beta` then joins and is selected with
+    `set_active_agent`. They wait for the held join to commit, and the
+    selection then applies. Before #393 the held join wrote `alpha` over the
+    selection.
+    """
+    room_id = new_room(sessions, "selection")
+
+    def join_and_select_beta() -> str | None:
+        join_agent(second, room_id, "beta")
+        selected = second.set_active_agent(session_id=room_id, agent_id="beta")
+        return selected.active_agent_id
+
+    with (
+        ThreadPoolExecutor(max_workers=2) as pool,
+        held_activation_read(first) as hold,
+    ):
+        alpha = pool.submit(join_agent, first, room_id, "alpha")
+        assert hold.read.wait(timeout=HOLD_TIMEOUT)
+        selection = pool.submit(join_and_select_beta)
+        selection_finished = finished_while_held(selection)
+        hold.release.set()
+        alpha.result(timeout=30)
+        selected = selection.result(timeout=30)
+
+    assert hold.seen is None, hold.seen
+    # What the selection returned, and the stored active agent.
+    outcome = (selected, stored_active_agent(sessions, room_id))
+    assert outcome == ("beta", "beta"), outcome
+    assert sessions.get_active_agent(room_id) == "beta"
+    assert agent_ids(sessions, room_id) == ["alpha", "beta"]
+    assert not selection_finished, "the selection did not wait for the held join"
+
+
+def check_leave_during_a_join_applies_after_it(
+    sessions: SessionStore, first: SessionStore, second: SessionStore
+) -> None:
+    """The joining agent leaves during its own first join (#393, case 3).
+
+    `alpha` joins on `first` and is held after reading that the room has no
+    active agent; on `second`, `alpha` then leaves. The leave waits for the
+    held join to commit and then applies: `alpha` is no longer a participant
+    and no agent is active. The held join reads its participant back only
+    after the leave has returned, so it raises as it did before #393. Before
+    #393 the held join stored `alpha`, which had left, as the active agent.
+    """
+    room_id = new_room(sessions, "leave")
+    left = threading.Event()
+    owner = first._participants
+    get_participant = owner.get_participant
+
+    def get_participant_after_the_leave(*args: Any, **kwargs: Any) -> Any:
+        assert left.wait(timeout=HOLD_TIMEOUT)
+        return get_participant(*args, **kwargs)
+
+    with (
+        ThreadPoolExecutor(max_workers=2) as pool,
+        held_activation_read(first) as hold,
+        patch.object(owner, "get_participant", get_participant_after_the_leave),
+    ):
+        alpha = pool.submit(join_agent, first, room_id, "alpha")
+        assert hold.read.wait(timeout=HOLD_TIMEOUT)
+        leave = pool.submit(
+            second.remove_participant,
+            session_id=room_id,
+            participant_type="agent",
+            participant_id="alpha",
+        )
+        leave_finished = finished_while_held(leave)
+        hold.release.set()
+        assert leave.result(timeout=30) is True
+        left.set()
+        with pytest.raises(RuntimeError, match="Failed to upsert participant"):
+            alpha.result(timeout=30)
+
+    assert hold.seen is None, hold.seen
+    # The agents listed, and the stored active agent.
+    outcome = (agent_ids(sessions, room_id), stored_active_agent(sessions, room_id))
+    assert outcome == ([], None), outcome
+    assert sessions.get_active_agent(room_id) is None
+    with pytest.raises(ValueError, match="not an active participant"):
+        sessions.set_active_agent(session_id=room_id, agent_id="alpha")
+    assert not leave_finished, "the leave did not wait for the held join"
+
+
+def check_joins_selection_and_leaves_on_two_connections(
+    sessions: SessionStore, first: SessionStore, second: SessionStore
+) -> None:
+    """Joins, a selection and leaves on two connections, one after another."""
+    room_id = new_room(sessions, "one-after-another")
+    # The human owner activates nobody; the first agent join does.
+    assert stored_active_agent(sessions, room_id) is None
+    join_agent(first, room_id, "alpha")
+    assert second.get_active_agent(room_id) == "alpha"
+    join_agent(second, room_id, "beta")
+    assert stored_active_agent(sessions, room_id) == "alpha"
+
+    selected = second.set_active_agent(session_id=room_id, agent_id="beta")
+    assert selected.active_agent_id == "beta"
+    assert first.get_active_agent(room_id) == "beta"
+    join_agent(first, room_id, "alpha")
+    assert stored_active_agent(sessions, room_id) == "beta"
+
+    # The active agent leaving selects the earliest remaining agent join; the
+    # last agent leaving leaves no active agent, and the next join activates.
+    assert second.remove_participant(
+        session_id=room_id, participant_type="agent", participant_id="beta"
+    )
+    assert first.get_active_agent(room_id) == "alpha"
+    assert first.remove_participant(
+        session_id=room_id, participant_type="agent", participant_id="alpha"
+    )
+    assert stored_active_agent(sessions, room_id) is None
+    join_agent(second, room_id, "gamma")
+    assert stored_active_agent(sessions, room_id) == "gamma"
+    assert first.get_active_agent(room_id) == "gamma"
+
+
+def check_legacy_owner_records_activate_no_agent(sessions: SessionStore) -> None:
+    """A legacy session's owner record is written without activating an agent.
+
+    The record is written when the session's participants are first read, or
+    when another agent joins. The stored active agent stays as it was, and
+    `get_active_agent` still answers the session's own agent until an agent
+    join activates one.
+    """
+    read = sessions.resolve_session(
+        agent_id="legacy-agent", channel="console", target="legacy-read"
+    )
+    assert participant_ids(sessions, read.id) == ["legacy-agent"]
+    assert stored_active_agent(sessions, read.id) is None
+    assert sessions.get_active_agent(read.id) == "legacy-agent"
+
+    invited = sessions.resolve_session(
+        agent_id="legacy-agent", channel="console", target="legacy-invite"
+    )
+    join_agent(sessions, invited.id, "guest-agent")
+    assert participant_ids(sessions, invited.id) == ["legacy-agent", "guest-agent"]
+    assert stored_active_agent(sessions, invited.id) == "guest-agent"
+
+    own = sessions.resolve_session(
+        agent_id="legacy-agent", channel="console", target="legacy-own"
+    )
+    join_agent(sessions, own.id, "legacy-agent")
+    assert stored_active_agent(sessions, own.id) == "legacy-agent"
+
+
+def check_blank_active_agent_counts_as_none(sessions: SessionStore) -> None:
+    """An empty or blank stored active agent counts as no active agent."""
+    for target, blank in (("blank-empty", ""), ("blank-spaces", "   ")):
+        room_id = new_room(sessions, target)
+        sessions._backend.execute_count(
+            "UPDATE sessions SET active_agent_id = ? WHERE id = ?", (blank, room_id)
+        )
+        row = sessions._backend.query_one(
+            "SELECT active_agent_id FROM sessions WHERE id = ?", (room_id,)
+        )
+        assert row is not None and row["active_agent_id"] == blank
+        join_agent(sessions, room_id, "alpha")
+        assert stored_active_agent(sessions, room_id) == "alpha"
 
 
 def legacy_participant_rows() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

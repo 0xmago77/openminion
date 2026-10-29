@@ -24,6 +24,20 @@ This file tracks package-facing release notes for `openminion`.
   id. The `applied` list is left out: it read a field that `MigrationReport`
   does not have, so it was always empty. Exit status is unchanged (Refs
   #446).
+- Keep a room's active agent when a first agent join runs at the same time as
+  another join, an explicit selection or a leave on another connection. The
+  join read the room after its participant row had committed and, when the
+  room had no active agent, wrote its agent as active in a separate
+  statement. A second join could then replace the first activation, a join
+  could overwrite a `set_active_agent` selection (`/activate`), and a join
+  whose agent left meanwhile (`/kick`) stored that agent as active. The join
+  now reads and writes the active agent in its participant transaction, under
+  the session-row lock that joins and leaves already take, with the same
+  empty or blank check. The first activation a join commits stays until a
+  selection or a leave changes it, and a selection or leave made during a
+  join waits for it to commit, then applies. The active agent is still not
+  guaranteed to be the earliest join. Legacy owner records still activate no
+  agent (Refs #393).
 
 - Stop pending-capture recovery from calling the extraction model for an
   intent that the current memory store cannot commit. After the identity and

@@ -30,12 +30,18 @@ from openminion.modules.storage.runtime.session_store import (
 from openminion.modules.storage.runtime.session_store import run_facts
 from openminion.modules.storage.runtime.sqlite import connect_database
 from tests._room_participant_scenarios import (
+    check_blank_active_agent_counts_as_none,
     check_concurrent_joins,
     check_explicit_active_agent,
+    check_join_keeps_an_activation_committed_during_it,
     check_join_place_on_upsert_and_rejoin,
+    check_joins_selection_and_leaves_on_two_connections,
     check_leave_and_rejoin_wait_for_each_other,
+    check_leave_during_a_join_applies_after_it,
     check_joins_write_no_session_value,
     check_legacy_owner_join_order,
+    check_legacy_owner_records_activate_no_agent,
+    check_selection_during_a_join_applies_after_it,
     check_tied_join_order,
 )
 from tests._run_status_scenarios import (
@@ -1905,6 +1911,36 @@ class SessionStoreTests(unittest.TestCase):
         finally:
             leaver.close()
             joiner.close()
+
+    def _check_on_two_connections(self, check) -> None:
+        first, second = (build_runtime_storage(self.database_path) for _ in range(2))
+        try:
+            check(self.store, first.sessions, second.sessions)
+        finally:
+            first.close()
+            second.close()
+
+    def test_join_keeps_an_active_agent_stored_during_it(self) -> None:
+        self._check_on_two_connections(
+            check_join_keeps_an_activation_committed_during_it
+        )
+
+    def test_selection_during_a_join_waits_and_then_applies(self) -> None:
+        self._check_on_two_connections(check_selection_during_a_join_applies_after_it)
+
+    def test_leave_during_a_join_waits_and_then_applies(self) -> None:
+        self._check_on_two_connections(check_leave_during_a_join_applies_after_it)
+
+    def test_joins_selection_and_leaves_on_two_connections(self) -> None:
+        self._check_on_two_connections(
+            check_joins_selection_and_leaves_on_two_connections
+        )
+
+    def test_legacy_owner_records_activate_no_agent(self) -> None:
+        check_legacy_owner_records_activate_no_agent(self.store)
+
+    def test_join_treats_a_blank_active_agent_as_none(self) -> None:
+        check_blank_active_agent_counts_as_none(self.store)
 
     # --- RSSD-01 characterization tests ---
 
