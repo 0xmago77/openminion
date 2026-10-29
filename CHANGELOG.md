@@ -1,11 +1,13 @@
 # OpenMinion Changelog
 
 Status: active
-Last updated: 2026-10-27
+Last updated: 2026-10-28
 
 This file tracks package-facing release notes for `openminion`.
 
 ## Unreleased
+
+## Current package line - 2026-10-28
 
 - Start `APIRuntime` with PostgreSQL runtime storage (`storage.backend:
   postgres`). The start read the runtime record store's SQLite connection for
@@ -40,6 +42,28 @@ This file tracks package-facing release notes for `openminion`.
   extracted and then raised `AttributeError`. A memory API without the new
   predicate keeps the previous order, and the bundle write and its errors are
   unchanged (Refs #449).
+
+- Preserve scheduler-owned memory-consolidation context through runtime ingress
+  and gateway prompts, reject raw cron creation of reserved consolidation
+  payloads, and pause unverifiable legacy jobs with clear recreation guidance.
+- Report the configured telemetry exporter posture consistently, including
+  empty and error states, and connect invocation telemetry to current and recent
+  token usage without exposing content by default.
+- Harden MCP interoperability by refreshing tool definitions once after a
+  protocol header mismatch, enforcing the 1 MiB SSE event boundary, and
+  validating the official Python SDK 2.3.0 client/server paths.
+- Close artifact lifecycle gaps by validating retention inputs, normalizing
+  alias expiry, preserving historical cleanup, and carrying the existing
+  retrieval controller through durable tool ingestion with per-item failure
+  isolation.
+- Complete task lifecycle controls across Focus, CLI, and API with canonical
+  policy, run-now, scheduler status, bounded history, deterministic one-shot
+  behavior, and trusted cron/watch metadata. Live MiniMax acceptance confirmed
+  material-change watch delivery without runtime-owned semantic parsing.
+- Add opt-in isolated source, image, AWS snapshot, and local web/API security
+  assessments with bounded recurring evidence, SARIF export, exact finding
+  comparisons, cancellation, expiry, revision limits, and canonical closure
+  verdicts. Remote, cloud, and login assessment remain outside this release.
 
 ## Current package line - 2026-10-27
 
